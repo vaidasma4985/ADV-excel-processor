@@ -224,39 +224,31 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     cleaned_df = df.reset_index(drop=True)
     removed_df = removed_df.reset_index(drop=True)
 
-    # -------------------------------------------------------------------------
+       # -------------------------------------------------------------------------
     # BUILD FINAL EXCEL WORKBOOK IN MEMORY
     # -------------------------------------------------------------------------
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Write both sheets without index columns
         cleaned_df.to_excel(writer, sheet_name="Cleaned", index=False)
         removed_df.to_excel(writer, sheet_name="Removed", index=False)
 
         workbook = writer.book
         ws_cleaned = workbook["Cleaned"]
 
-        # Yellow fill for invalid Name prefixes
         yellow_fill = PatternFill(
             start_color="FFFF00", end_color="FFFF00", fill_type="solid"
         )
 
-        # Header row is 1; data starts at row 2
         max_col = ws_cleaned.max_column
 
-        for excel_row_idx, row in enumerate(
-            cleaned_df.itertuples(index=False), start=2
-        ):
+        for excel_row_idx, row in enumerate(cleaned_df.itertuples(index=False), start=2):
             name_val = getattr(row, "Name", None)
             if not _is_valid_name_prefix(name_val):
                 for col_idx in range(1, max_col + 1):
-                    cell = ws_cleaned.cell(row=excel_row_idx, column=col_idx)
-                    cell.fill = yellow_fill
+                    ws_cleaned.cell(row=excel_row_idx, column=col_idx).fill = yellow_fill
 
-        # Save into the BytesIO buffer
-        writer.save()
-
+    # ❗ IMPORTANT: do NOT call writer.save()
     output_workbook_bytes = output.getvalue()
 
     return cleaned_df, removed_df, output_workbook_bytes
