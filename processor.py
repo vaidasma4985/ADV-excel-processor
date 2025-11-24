@@ -107,8 +107,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
     # -------------------------------------------------------------------------
     # STEP 2 – VALIDATE REMAINING NAME PREFIXES (for highlighting later)
-    # No rows are removed here – this is only used for yellow highlighting.
-    # We'll recompute the validity based on the FINAL Name when writing Excel.
+    # (Nothing removed here – tik žymėjimas geltona vėliau.)
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
@@ -189,28 +188,28 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         pe_df = df.loc[mask_pe_all].copy()
         pe_df["GroupSortingNum"] = _to_numeric_series(pe_df["Group Sorting"])
 
-        # Only those with valid numeric Group Sorting participate in the PE index
+        # Tik PE su normaliu skaičiumi Group Sorting dalyvauja numeracijoje
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
 
         if not pe_df_valid.empty:
-            # Sort by GroupSortingNum ascending, stable order on ties
-            pe_df_valid = pe_df_valid.sort_values(
-                by="GroupSortingNum", kind="mergesort"
-            )
+            # Unikalios GS reikšmės, surūšiuotos didėjimo tvarka
+            unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
 
-            # Assign PE1, PE2, PE3, ...
-            pe_df_valid["PE_Index"] = range(1, len(pe_df_valid) + 1)
+            # 1-a GS reikšmė -> PE1, 2-a -> PE2, t.t.
+            gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
 
-            # Build new Name: "+<GroupSorting>-PE<index>"
+            pe_df_valid["PE_Index"] = pe_df_valid["GroupSortingNum"].map(gs_to_index)
+
+            # Galutinis pavadinimas: "+<GroupSorting>-PE<index>"
             gs_str_pe = pe_df_valid["GroupSortingNum"].astype(int).astype(str)
             pe_df_valid["Name"] = (
                 "+" + gs_str_pe + "-PE" + pe_df_valid["PE_Index"].astype(str)
             )
 
-            # Write back Names into main df
+            # Grąžinam atnaujintus Name į pagrindinį df
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
-        # PE rows with non-numeric Group Sorting keep whatever Name they already have
+        # PE eilutės su ne-skaitine Group Sorting palieka jau esamą Name
 
     # -------------------------------------------------------------------------
     # BUILD REMOVED DF
@@ -224,31 +223,36 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     cleaned_df = df.reset_index(drop=True)
     removed_df = removed_df.reset_index(drop=True)
 
-       # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     # BUILD FINAL EXCEL WORKBOOK IN MEMORY
     # -------------------------------------------------------------------------
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Write both sheets without index columns
         cleaned_df.to_excel(writer, sheet_name="Cleaned", index=False)
         removed_df.to_excel(writer, sheet_name="Removed", index=False)
 
         workbook = writer.book
         ws_cleaned = workbook["Cleaned"]
 
+        # Yellow fill for invalid Name prefixes
         yellow_fill = PatternFill(
             start_color="FFFF00", end_color="FFFF00", fill_type="solid"
         )
 
+        # Header row is 1; data starts at row 2
         max_col = ws_cleaned.max_column
 
-        for excel_row_idx, row in enumerate(cleaned_df.itertuples(index=False), start=2):
+        for excel_row_idx, row in enumerate(
+            cleaned_df.itertuples(index=False), start=2
+        ):
             name_val = getattr(row, "Name", None)
             if not _is_valid_name_prefix(name_val):
                 for col_idx in range(1, max_col + 1):
-                    ws_cleaned.cell(row=excel_row_idx, column=col_idx).fill = yellow_fill
+                    cell = ws_cleaned.cell(row=excel_row_idx, column=col_idx)
+                    cell.fill = yellow_fill
 
-    # ❗ IMPORTANT: do NOT call writer.save()
     output_workbook_bytes = output.getvalue()
 
     return cleaned_df, removed_df, output_workbook_bytes
