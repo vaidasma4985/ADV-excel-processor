@@ -74,6 +74,19 @@ def _extract_x_prefix_two_digits(name: object) -> str | None:
     return digits[:2]
 
 
+def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
+    """
+    Parenka naują Group Sorting reikšmę, kurios dar nėra `existing` rinkinyje.
+    Labai svarbu: šis GS turi NESIKARTOTI su kitomis logikomis (1010, 1030 ir pan.),
+    todėl imame mažiausią laisvą skaičių nuo `start` ir jį rezervuojame.
+    """
+    new = start
+    while new in existing:
+        new += 1
+    existing.add(new)
+    return new
+
+
 # ----- Pagrindinė funkcija -----
 
 
@@ -116,6 +129,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     # STEP 2 – tik highlight logika (nieko neišmetam)
     # -------------------------------------------------------------------------
+    # validumą tikrinsim pildydami Excel (pagal galutinį Name)
 
     # -------------------------------------------------------------------------
     # STEP 3 – Filter by Type values
@@ -187,7 +201,38 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[m, "Type"] = new
 
     # -------------------------------------------------------------------------
-    # STEP 5 – Update Name using Group Sorting
+    # STEP 5 – FUSE Group Sorting logika (WAGO.2002-1611/1000-541 ir ...836)
+    # -------------------------------------------------------------------------
+    gs_all_raw = _to_numeric_series(df["Group Sorting"])
+    existing_gs: set[int] = set(int(v) for v in gs_all_raw.dropna().astype(int).unique())
+
+    # 5.1. WAGO.2002-1611/1000-541 – visi gauna vieną naują GS, nenaudotą kitur
+    mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
+    if mask_541.any():
+        new_gs_541 = _allocate_new_gs(existing_gs, start=1)
+        df.loc[mask_541, "Group Sorting"] = new_gs_541
+
+    # 5.2. WAGO.2002-1611/1000-836 – atskiras GS F9** ir atskiras kitiems
+    mask_836 = df["Type"] == "WAGO.2002-1611/1000-836"
+    if mask_836.any():
+        names_836 = df.loc[mask_836, "Name"].astype(str)
+        f9_mask_sub = names_836.str.contains(r"-F9\d*", regex=True)
+
+        idx_all = df[mask_836].index
+        mask_836_f9 = pd.Series(False, index=df.index)
+        mask_836_f9.loc[idx_all] = f9_mask_sub
+        mask_836_other = mask_836 & ~mask_836_f9
+
+        if mask_836_f9.any():
+            new_gs_f9 = _allocate_new_gs(existing_gs, start=1)
+            df.loc[mask_836_f9, "Group Sorting"] = new_gs_f9
+
+        if mask_836_other.any():
+            new_gs_other = _allocate_new_gs(existing_gs, start=1)
+            df.loc[mask_836_other, "Group Sorting"] = new_gs_other
+
+    # -------------------------------------------------------------------------
+    # STEP 6 – Name prefix iš Group Sorting
     # -------------------------------------------------------------------------
     gs_numeric = _to_numeric_series(df["Group Sorting"])
     mask_has_gs = gs_numeric.notna()
@@ -199,7 +244,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         )
 
     # -------------------------------------------------------------------------
-    # STEP 6 – PE renumeravimas (WAGO.2002-3207)
+    # STEP 7 – PE renumeravimas (WAGO.2002-3207)
     # -------------------------------------------------------------------------
     mask_pe_all = df["Type"] == "WAGO.2002-3207"
     if mask_pe_all.any():
@@ -222,14 +267,16 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
     # -------------------------------------------------------------------------
-    # STEP 7 – Nauji stulpeliai: Accessories, Quantity of accessories, Designation
+    # STEP 8 – Nauji stulpeliai: Accessories, Quantity..., Accessories2, ..., Designation
     # -------------------------------------------------------------------------
     df["Accessories"] = ""
     df["Quantity of accessories"] = 0
+    df["Accessories2"] = ""
+    df["Quantity of accessories2"] = 0
     df["Designation"] = ""
 
     # -------------------------------------------------------------------------
-    # STEP 8 – Split WAGO.2002-3201 / WAGO.2002-3207 pagal Quantity
+    # STEP 9 – Split WAGO.2002-3201 / WAGO.2002-3207 pagal Quantity
     # -------------------------------------------------------------------------
     rows: List[dict] = []
     for _, row in df.iterrows():
@@ -251,6 +298,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             base["Designation"] = ""
             base["Accessories"] = ""
             base["Quantity of accessories"] = 0
+            base["Accessories2"] = ""
+            base["Quantity of accessories2"] = 0
             rows.append(base)
 
             # Kitos eilutės – Designation 1..(n-1)
@@ -260,6 +309,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                 r["Designation"] = str(i)
                 r["Accessories"] = ""
                 r["Quantity of accessories"] = 0
+                r["Accessories2"] = ""
+                r["Quantity of accessories2"] = 0
                 rows.append(r)
         else:
             # Nieko neskaidom
@@ -269,12 +320,14 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df = pd.DataFrame(rows)
 
     # -------------------------------------------------------------------------
-    # STEP 9 – Accessories (WAGO.2002-3292) logika
+    # STEP 10 – Accessories logika
+    # 10.1 – Terminalai (WAGO.2002-3201/3207, WAGO.2002-3292 dangteliai)
     # -------------------------------------------------------------------------
     gs_all = _to_numeric_series(df["Group Sorting"])
+    is_terminal = df["Type"].isin(["WAGO.2002-3201", "WAGO.2002-3207"])
 
-    # --- GS = 1030, grupelės pagal -Xdddd pirmus 2 skaitmenis ---
-    mask_gs1030 = gs_all == 1030
+    # GS = 1030, grupelės pagal -X pirmus 2 skaitmenis
+    mask_gs1030 = is_terminal & (gs_all == 1030)
     if mask_gs1030.any():
         names_1030 = df.loc[mask_gs1030, "Name"]
         subgroup_keys_1030 = names_1030.apply(_extract_x_prefix_two_digits)
@@ -288,8 +341,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- GS = 1010: grupelės pagal 2 pirmus skaičius po -X ---
-    mask_gs1010 = gs_all == 1010
+    # GS = 1010, grupelės pagal 2 pirmus skaičius po -X
+    mask_gs1010 = is_terminal & (gs_all == 1010)
     if mask_gs1010.any():
         names_1010 = df.loc[mask_gs1010, "Name"]
         subgroup_keys_1010 = names_1010.apply(_extract_x_prefix_two_digits)
@@ -303,8 +356,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- GS = 1110: tokia pati logika kaip 1010 ---
-    mask_gs1110 = gs_all == 1110
+    # GS = 1110, tokia pati logika kaip 1010
+    mask_gs1110 = is_terminal & (gs_all == 1110)
     if mask_gs1110.any():
         names_1110 = df.loc[mask_gs1110, "Name"]
         subgroup_keys_1110 = names_1110.apply(_extract_x_prefix_two_digits)
@@ -318,8 +371,12 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- Kitos grupės – dangtelis tik paskutinėje Group Sorting eilutėje ---
-    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1010 | mask_gs1110)
+    # Kitos terminalų grupės – dangtelis tik paskutinėje Group Sorting eilutėje
+    mask_other = (
+        is_terminal
+        & gs_all.notna()
+        & ~(mask_gs1030 | mask_gs1010 | mask_gs1110)
+    )
     if mask_other.any():
         grouped = df[mask_other].groupby(gs_all[mask_other])
         for _, idxs in grouped.groups.items():
@@ -330,11 +387,47 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                 df.at[last_idx, "Quantity of accessories"] = 1
 
     # -------------------------------------------------------------------------
-    # STEP 10 – PE grupių Designation: "", 1, 2, 3, ...
+    # 10.2 – Fuse Accessories logika
+    # -------------------------------------------------------------------------
+    # WAGO.2002-1611/1000-541 – paskutinė eilutė su WAGO.2002-991 ir WAGO.249-116
+    mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
+    if mask_541.any():
+        idxs_541 = df[mask_541].index
+        last_541 = idxs_541[-1]
+        df.at[last_541, "Accessories"] = "WAGO.2002-991"
+        df.at[last_541, "Quantity of accessories"] = 1
+        df.at[last_541, "Accessories2"] = "WAGO.249-116"
+        df.at[last_541, "Quantity of accessories2"] = 1
+
+    # WAGO.2002-1611/1000-836 – dalinam į F9** ir kitus
+    mask_836 = df["Type"] == "WAGO.2002-1611/1000-836"
+    if mask_836.any():
+        names_836 = df.loc[mask_836, "Name"].astype(str)
+        f9_mask_sub = names_836.str.contains(r"-F9\d*", regex=True)
+
+        idxs_all = df[mask_836].index
+        idxs_f9 = idxs_all[f9_mask_sub.values]
+        idxs_other = idxs_all[~f9_mask_sub.values]
+
+        # F9** grupė – tik WAGO.2002-991
+        if len(idxs_f9) > 0:
+            last_f9 = idxs_f9[-1]
+            df.at[last_f9, "Accessories"] = "WAGO.2002-991"
+            df.at[last_f9, "Quantity of accessories"] = 1
+
+        # Kiti 836 – WAGO.2002-991 + WAGO.249-116
+        if len(idxs_other) > 0:
+            last_other = idxs_other[-1]
+            df.at[last_other, "Accessories"] = "WAGO.2002-991"
+            df.at[last_other, "Quantity of accessories"] = 1
+            df.at[last_other, "Accessories2"] = "WAGO.249-116"
+            df.at[last_other, "Quantity of accessories2"] = 1
+
+    # -------------------------------------------------------------------------
+    # STEP 11 – PE grupių Designation: "", 1, 2, 3, ...
     # -------------------------------------------------------------------------
     mask_pe_type = df["Type"] == "WAGO.2002-3207"
     if mask_pe_type.any():
-        # grupuojam pagal galutinį Name (pvz. +1025-PE1)
         grouped_pe = df[mask_pe_type].groupby(df.loc[mask_pe_type, "Name"])
         for _, idxs in grouped_pe.groups.items():
             idxs = list(idxs)
@@ -357,7 +450,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
     # -------------------------------------------------------------------------
     # STULPELIŲ TVARKA:
-    # Group Sorting | Accessories | Quantity of accessories | ... | Designation (paskutinis)
+    # Group Sorting | Accessories | Quantity of accessories |
+    # Accessories2 | Quantity of accessories2 | ... | Designation (paskutinis)
     # -------------------------------------------------------------------------
     cols = list(cleaned_df.columns)
 
@@ -366,15 +460,22 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     cols_no_design.append("Designation")
     cols = cols_no_design
 
-    if "Accessories" in cols and "Quantity of accessories" in cols:
-        base_cols = [c for c in cols if c not in ("Accessories", "Quantity of accessories")]
+    accessory_cols = [
+        "Accessories",
+        "Quantity of accessories",
+        "Accessories2",
+        "Quantity of accessories2",
+    ]
+
+    if all(c in cols for c in accessory_cols):
+        base_cols = [c for c in cols if c not in accessory_cols]
         if "Group Sorting" in base_cols:
             pos = base_cols.index("Group Sorting") + 1
         else:
             pos = len(base_cols)
         new_order = (
             base_cols[:pos]
-            + ["Accessories", "Quantity of accessories"]
+            + accessory_cols
             + base_cols[pos:]
         )
         cleaned_df = cleaned_df[new_order]
