@@ -52,6 +52,28 @@ def _is_valid_name_prefix(name: object) -> bool:
     return prefix2 in ("-F", "-K", "-X")
 
 
+def _extract_x_prefix_two_digits(name: object) -> str | None:
+    """
+    Iš pavadinimo tipo '+1010-X118' arba '+1030-X1113' ištraukia
+    pirmus du skaitmenis po '-X'.
+
+    Pvz:
+    '+1010-X118'  -> '11'
+    '+1030-X1113' -> '11'
+    Jei nepavyksta – grąžina None.
+    """
+    if pd.isna(name):
+        return None
+    s = str(name)
+    m = re.search(r"-X(\d+)", s)
+    if not m:
+        return None
+    digits = m.group(1)
+    if len(digits) < 2:
+        return None
+    return digits[:2]
+
+
 # ----- Pagrindinė funkcija -----
 
 
@@ -94,7 +116,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     # STEP 2 – tik highlight logika (nieko neišmetam)
     # -------------------------------------------------------------------------
-    # validumą tikrinsim pildydami Excel (pagal galutinį Name)
 
     # -------------------------------------------------------------------------
     # STEP 3 – Filter by Type values
@@ -255,50 +276,50 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # --- GS = 1030, grupelės pagal -Xdddd pirmus 2 skaitmenis ---
     mask_gs1030 = gs_all == 1030
     if mask_gs1030.any():
-        df_1030 = df[mask_gs1030].copy()
+        names_1030 = df.loc[mask_gs1030, "Name"]
+        subgroup_keys_1030 = names_1030.apply(_extract_x_prefix_two_digits)
 
-        def extract_subgroup_key(name: object) -> str | None:
-            """
-            Iš '+1030-X1113' ištraukia '11' (pirmi 2 skaitmenys iš -Xdddd).
-            """
-            if pd.isna(name):
-                return None
-            s = str(name)
-            m = re.search(r"-X(\d{4})", s)
-            if not m:
-                return None
-            digits = m.group(1)
-            if len(digits) < 2:
-                return None
-            return digits[:2]
-
-        subgroup_keys = df_1030["Name"].apply(extract_subgroup_key)
-
-        valid_keys = sorted(k for k in subgroup_keys.dropna().unique())
+        valid_keys = sorted(k for k in subgroup_keys_1030.dropna().unique())
         for key in valid_keys:
-            mask_sub = mask_gs1030 & (subgroup_keys == key)
-            if mask_sub.any():
-                last_idx = df[mask_sub].index[-1]
+            idxs = subgroup_keys_1030[subgroup_keys_1030 == key].index
+            if len(idxs) > 0:
+                last_idx = idxs[-1]
                 if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- GS = 1110 – kiekvienai eilei dangtelis ---
-    mask_gs1110 = gs_all == 1110
-    if mask_gs1110.any():
-        for idx in df[mask_gs1110].index:
-            df.at[idx, "Accessories"] = "WAGO.2002-3292"
-            df.at[idx, "Quantity of accessories"] = 1
-
-    # --- GS = 1010 – tokia pati logika kaip 1110 ---
+    # --- GS = 1010: grupelės pagal 2 pirmus skaičius po -X ---
     mask_gs1010 = gs_all == 1010
     if mask_gs1010.any():
-        for idx in df[mask_gs1010].index:
-            df.at[idx, "Accessories"] = "WAGO.2002-3292"
-            df.at[idx, "Quantity of accessories"] = 1
+        names_1010 = df.loc[mask_gs1010, "Name"]
+        subgroup_keys_1010 = names_1010.apply(_extract_x_prefix_two_digits)
 
-    # --- Kitos grupės – dangtelis tik paskutinėje eilutėje ---
-    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1110 | mask_gs1010)
+        valid_keys = sorted(k for k in subgroup_keys_1010.dropna().unique())
+        for key in valid_keys:
+            idxs = subgroup_keys_1010[subgroup_keys_1010 == key].index
+            if len(idxs) > 0:
+                last_idx = idxs[-1]
+                if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
+                    df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
+                    df.at[last_idx, "Quantity of accessories"] = 1
+
+    # --- GS = 1110: tokia pati logika kaip 1010 ---
+    mask_gs1110 = gs_all == 1110
+    if mask_gs1110.any():
+        names_1110 = df.loc[mask_gs1110, "Name"]
+        subgroup_keys_1110 = names_1110.apply(_extract_x_prefix_two_digits)
+
+        valid_keys = sorted(k for k in subgroup_keys_1110.dropna().unique())
+        for key in valid_keys:
+            idxs = subgroup_keys_1110[subgroup_keys_1110 == key].index
+            if len(idxs) > 0:
+                last_idx = idxs[-1]
+                if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
+                    df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
+                    df.at[last_idx, "Quantity of accessories"] = 1
+
+    # --- Kitos grupės – dangtelis tik paskutinėje Group Sorting eilutėje ---
+    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1010 | mask_gs1110)
     if mask_other.any():
         grouped = df[mask_other].groupby(gs_all[mask_other])
         for _, idxs in grouped.groups.items():
@@ -307,6 +328,21 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
                 df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                 df.at[last_idx, "Quantity of accessories"] = 1
+
+    # -------------------------------------------------------------------------
+    # STEP 10 – PE grupių Designation: "", 1, 2, 3, ...
+    # -------------------------------------------------------------------------
+    mask_pe_type = df["Type"] == "WAGO.2002-3207"
+    if mask_pe_type.any():
+        # grupuojam pagal galutinį Name (pvz. +1025-PE1)
+        grouped_pe = df[mask_pe_type].groupby(df.loc[mask_pe_type, "Name"])
+        for _, idxs in grouped_pe.groups.items():
+            idxs = list(idxs)
+            for j, idx in enumerate(idxs):
+                if j == 0:
+                    df.at[idx, "Designation"] = ""
+                else:
+                    df.at[idx, "Designation"] = str(j)
 
     # -------------------------------------------------------------------------
     # BUILD REMOVED DF
