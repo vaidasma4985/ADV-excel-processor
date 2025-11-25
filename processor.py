@@ -16,7 +16,6 @@ def _check_required_columns(df: DataFrame, required: list[str]) -> None:
     """Raise ValueError if any required columns are missing."""
     missing = [col for col in required if col not in df.columns]
     if missing:
-        # The app will show this nicely in Lithuanian
         raise ValueError(", ".join(missing))
 
 
@@ -29,14 +28,9 @@ def _is_valid_name_prefix(name: object) -> bool:
     """
     Check if Name has a valid terminal prefix (-F, -K, -X).
 
-    Logic:
-    - Find the first '-' character in the string.
-    - Take the two characters starting at that '-'.
-    - Valid if they are '-F', '-K' or '-X'.
-
-    This works for:
+    Works for:
     - "-X7037"
-    - "+6010-X7037"  -> first '-' is before 'X', so prefix2 = '-X'
+    - "+6010-X7037"  -> first '-' before 'X', so prefix2 = '-X'
     """
     if pd.isna(name):
         return False
@@ -58,24 +52,8 @@ def _is_valid_name_prefix(name: object) -> bool:
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     """
-    Main processing function.
-
-    Parameters
-    ----------
-    file_bytes : bytes
-        Raw bytes of the uploaded Excel file.
-
-    Returns
-    -------
-    cleaned_df : DataFrame
-        Data for the "Cleaned" sheet.
-
-    removed_df : DataFrame
-        Data for the "Removed" sheet, with extra column "Removed Reason".
-
-    output_workbook_bytes : bytes
-        Bytes of the final Excel workbook with two sheets ("Cleaned" and "Removed"),
-        with yellow-highlighted rows in "Cleaned" where Name prefix is invalid.
+    Process uploaded Excel according to business rules.
+    Returns cleaned_df, removed_df and final .xlsx bytes.
     """
     # Read Excel into DataFrame from the first sheet
     buffer = io.BytesIO(file_bytes)
@@ -84,9 +62,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     required_columns = ["Name", "Type", "Quantity", "Group Sorting"]
     _check_required_columns(df, required_columns)
 
-    # Keep original columns order for the Removed sheet
     original_columns = list(df.columns)
-
     removed_chunks: List[DataFrame] = []
 
     # -------------------------------------------------------------------------
@@ -107,9 +83,9 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df = df[~mask_remove_step1].copy()
 
     # -------------------------------------------------------------------------
-    # STEP 2 – VALIDATE REMAINING NAME PREFIXES (for highlighting later)
-    # (nothing removed here)
+    # STEP 2 – VALIDATE NAME PREFIXES (only for yellow highlight later)
     # -------------------------------------------------------------------------
+    # nothing to do here in df; we check final Name when styling the Excel file
 
     # -------------------------------------------------------------------------
     # STEP 3 – FILTER BY TYPE VALUES
@@ -157,20 +133,18 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         "249-116",
     }
 
-    # WAGO mapping
     mask_wago = df["Type"].isin(wago_types)
     if mask_wago.any():
         df.loc[mask_wago, "Type"] = (
             "WAGO." + df.loc[mask_wago, "Type"].astype(str)
         )
 
-    # Schneider relay base mapping
     mask_rgze = df["Type"] == "RGZE1S48M"
     if mask_rgze.any():
         df.loc[mask_rgze, "Type"] = "SE.RGZE1S48M"
 
     # -------------------------------------------------------------------------
-    # STEP 5 – UPDATE NAME USING GROUP SORTING (FOR NON-EMPTY GROUP SORTING)
+    # STEP 5 – UPDATE NAME USING GROUP SORTING (WHEN NOT EMPTY)
     # -------------------------------------------------------------------------
     gs_numeric = _to_numeric_series(df["Group Sorting"])
     mask_has_gs = gs_numeric.notna()
@@ -182,61 +156,57 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         )
 
     # -------------------------------------------------------------------------
-    # STEP 6 – SPECIAL HANDLING FOR PE TERMINALS (TYPE = WAGO.2002-3207)
+    # STEP 6 – PE TERMINALS: WAGO.2002-3207 RENUMBERING
     # -------------------------------------------------------------------------
     mask_pe_all = df["Type"] == "WAGO.2002-3207"
     if mask_pe_all.any():
         pe_df = df.loc[mask_pe_all].copy()
         pe_df["GroupSortingNum"] = _to_numeric_series(pe_df["Group Sorting"])
 
-        # Tik PE su normaliu skaičiumi Group Sorting dalyvauja numeracijoje
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
 
         if not pe_df_valid.empty:
-            # Unikalios GS reikšmės, surūšiuotos didėjimo tvarka
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
-
-            # 1-a GS reikšmė -> PE1, 2-a -> PE2, t.t.
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
 
             pe_df_valid["PE_Index"] = pe_df_valid["GroupSortingNum"].map(gs_to_index)
 
-            # Galutinis pavadinimas: "+<GroupSorting>-PE<index>"
             gs_str_pe = pe_df_valid["GroupSortingNum"].astype(int).astype(str)
             pe_df_valid["Name"] = (
                 "+" + gs_str_pe + "-PE" + pe_df_valid["PE_Index"].astype(str)
             )
 
-            # Grąžinam atnaujintus Name į pagrindinį df
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
-        # PE eilutės su ne-skaitine Group Sorting palieka jau esamą Name
-
     # -------------------------------------------------------------------------
-    # STEP 7 – ACCESSORIES (WAGO.2002-3292) LOGIKA
+    # STEP 7 – ACCESSORIES (WAGO.2002-3292) LOGIC
     # -------------------------------------------------------------------------
-    # Nauji stulpeliai
+    # New columns
     df["Accessories"] = ""
     df["Quantity of accessories"] = 0
 
     gs_all = _to_numeric_series(df["Group Sorting"])
 
-    # --- Speciali logika GS = 1030 ---
+    # --- Special logic for Group Sorting = 1030 ---
     mask_gs1030 = gs_all == 1030
     if mask_gs1030.any():
         df_1030 = df[mask_gs1030].copy()
 
         def extract_subgroup_key(name: object) -> str | None:
+            """
+            From Name like '+1030-X1113' extract subgroup '11'
+            (first two digits from pattern -Xdddd).
+            """
             if pd.isna(name):
                 return None
             s = str(name)
             m = re.search(r"-X(\d{4})", s)
             if not m:
                 return None
-            digits = m.group(1)  # pvz. "1113"
+            digits = m.group(1)  # e.g. "1113"
             if len(digits) < 2:
                 return None
-            return digits[:2]  # pvz. "11"
+            return digits[:2]    # e.g. "11"
 
         subgroup_keys = df_1030["Name"].apply(extract_subgroup_key)
 
@@ -244,24 +214,21 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         for key in valid_keys:
             mask_sub = mask_gs1030 & (subgroup_keys == key)
             if mask_sub.any():
-                # paskutinė tos grupelės eilutė
-                idx = df[mask_sub].index[-1]
-                if df.at[idx, "Accessories"] != "WAGO.2002-3292":
-                    df.at[idx, "Accessories"] = "WAGO.2002-3292"
-                    df.at[idx, "Quantity of accessories"] = 1
+                last_idx = df[mask_sub].index[-1]
+                if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
+                    df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
+                    df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- Speciali logika GS = 1110 ---
+    # --- Special logic for Group Sorting = 1110 ---
     mask_gs1110 = gs_all == 1110
     if mask_gs1110.any():
         for idx in df[mask_gs1110].index:
-            # kiekviena eilutė turi po vieną priedą
             df.at[idx, "Accessories"] = "WAGO.2002-3292"
             df.at[idx, "Quantity of accessories"] = 1
 
-    # --- Bendra logika kitoms grupėms (išskyrus 1030 ir 1110) ---
+    # --- Generic rule for all other Group Sorting values ---
     mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1110)
     if mask_other.any():
-        # GroupBy ant gs_all (skaitinių reikšmių), bet tik ten, kur mask_other = True
         grouped = df[mask_other].groupby(gs_all[mask_other])
         for _, idxs in grouped.groups.items():
             idxs = list(idxs)
@@ -276,11 +243,21 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     if removed_chunks:
         removed_df = pd.concat(removed_chunks, ignore_index=True)
     else:
-        # Empty but with consistent columns
         removed_df = pd.DataFrame(columns=original_columns + ["Removed Reason"])
 
     cleaned_df = df.reset_index(drop=True)
     removed_df = removed_df.reset_index(drop=True)
+
+    # Reorder columns so Accessories ir Quantity of accessories būtų po Group Sorting
+    cols = list(cleaned_df.columns)
+    if "Accessories" in cols and "Quantity of accessories" in cols:
+        base_cols = [c for c in cols if c not in ("Accessories", "Quantity of accessories")]
+        if "Group Sorting" in base_cols:
+            pos = base_cols.index("Group Sorting") + 1
+        else:
+            pos = len(base_cols)
+        new_order = base_cols[:pos] + ["Accessories", "Quantity of accessories"] + base_cols[pos:]
+        cleaned_df = cleaned_df[new_order]
 
     # -------------------------------------------------------------------------
     # BUILD FINAL EXCEL WORKBOOK IN MEMORY
@@ -288,19 +265,16 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Write both sheets without index columns
         cleaned_df.to_excel(writer, sheet_name="Cleaned", index=False)
         removed_df.to_excel(writer, sheet_name="Removed", index=False)
 
         workbook = writer.book
         ws_cleaned = workbook["Cleaned"]
 
-        # Yellow fill for invalid Name prefixes
         yellow_fill = PatternFill(
             start_color="FFFF00", end_color="FFFF00", fill_type="solid"
         )
 
-        # Header row is 1; data starts at row 2
         max_col = ws_cleaned.max_column
 
         for excel_row_idx, row in enumerate(
