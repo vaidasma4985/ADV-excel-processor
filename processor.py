@@ -9,7 +9,7 @@ from pandas import DataFrame
 from openpyxl.styles import PatternFill
 
 
-# ----- Pagalbinės funkcijos -----
+# ======================= Pagalbinės funkcijos =======================
 
 
 def _check_required_columns(df: DataFrame, required: list[str]) -> None:
@@ -77,6 +77,7 @@ def _extract_x_prefix_two_digits(name: object) -> str | None:
 def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
     """
     Parenka naują Group Sorting reikšmę, kurios dar nėra `existing` rinkinyje.
+
     Labai svarbu: šis GS turi NESIKARTOTI su kitomis logikomis (1010, 1030 ir pan.),
     todėl imame mažiausią laisvą skaičių nuo `start` ir jį rezervuojame.
     """
@@ -87,7 +88,7 @@ def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
     return new
 
 
-# ----- Pagrindinė funkcija -----
+# ======================= Pagrindinė funkcija =======================
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
@@ -129,7 +130,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     # STEP 2 – tik highlight logika (nieko neišmetam)
     # -------------------------------------------------------------------------
-    # validumą tikrinsim pildydami Excel (pagal galutinį Name)
 
     # -------------------------------------------------------------------------
     # STEP 3 – Filter by Type values
@@ -204,7 +204,9 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # STEP 5 – FUSE Group Sorting logika (WAGO.2002-1611/1000-541 ir ...836)
     # -------------------------------------------------------------------------
     gs_all_raw = _to_numeric_series(df["Group Sorting"])
-    existing_gs: set[int] = set(int(v) for v in gs_all_raw.dropna().astype(int).unique())
+    existing_gs: set[int] = set(
+        int(v) for v in gs_all_raw.dropna().astype(int).unique()
+    )
 
     # 5.1. WAGO.2002-1611/1000-541 – visi gauna vieną naują GS, nenaudotą kitur
     mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
@@ -221,6 +223,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         idx_all = df[mask_836].index
         mask_836_f9 = pd.Series(False, index=df.index)
         mask_836_f9.loc[idx_all] = f9_mask_sub
+
         mask_836_other = mask_836 & ~mask_836_f9
 
         if mask_836_f9.any():
@@ -253,7 +256,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
 
-        if not pe_df_valid.empty:
+        if not pe_df_valid.empty():
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
 
@@ -267,7 +270,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
     # -------------------------------------------------------------------------
-    # STEP 8 – Nauji stulpeliai: Accessories, Quantity..., Accessories2, ..., Designation
+    # STEP 8 – Nauji stulpeliai
     # -------------------------------------------------------------------------
     df["Accessories"] = ""
     df["Quantity of accessories"] = 0
@@ -456,9 +459,9 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     cols = list(cleaned_df.columns)
 
     # užtikrinam, kad Designation būtų paskutinis
-    cols_no_design = [c for c in cols if c != "Designation"]
-    cols_no_design.append("Designation")
-    cols = cols_no_design
+    if "Designation" in cols:
+        cols.remove("Designation")
+        cols.append("Designation")
 
     accessory_cols = [
         "Accessories",
