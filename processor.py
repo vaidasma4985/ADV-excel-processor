@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 from typing import Tuple, List
 
 import pandas as pd
@@ -107,7 +108,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
     # -------------------------------------------------------------------------
     # STEP 2 – VALIDATE REMAINING NAME PREFIXES (for highlighting later)
-    # (Nothing removed here – tik žymėjimas geltona vėliau.)
+    # (nothing removed here)
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
@@ -210,6 +211,64 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
         # PE eilutės su ne-skaitine Group Sorting palieka jau esamą Name
+
+    # -------------------------------------------------------------------------
+    # STEP 7 – ACCESSORIES (WAGO.2002-3292) LOGIKA
+    # -------------------------------------------------------------------------
+    # Nauji stulpeliai
+    df["Accessories"] = ""
+    df["Quantity of accessories"] = 0
+
+    gs_all = _to_numeric_series(df["Group Sorting"])
+
+    # --- Speciali logika GS = 1030 ---
+    mask_gs1030 = gs_all == 1030
+    if mask_gs1030.any():
+        df_1030 = df[mask_gs1030].copy()
+
+        def extract_subgroup_key(name: object) -> str | None:
+            if pd.isna(name):
+                return None
+            s = str(name)
+            m = re.search(r"-X(\d{4})", s)
+            if not m:
+                return None
+            digits = m.group(1)  # pvz. "1113"
+            if len(digits) < 2:
+                return None
+            return digits[:2]  # pvz. "11"
+
+        subgroup_keys = df_1030["Name"].apply(extract_subgroup_key)
+
+        valid_keys = sorted(k for k in subgroup_keys.dropna().unique())
+        for key in valid_keys:
+            mask_sub = mask_gs1030 & (subgroup_keys == key)
+            if mask_sub.any():
+                # paskutinė tos grupelės eilutė
+                idx = df[mask_sub].index[-1]
+                if df.at[idx, "Accessories"] != "WAGO.2002-3292":
+                    df.at[idx, "Accessories"] = "WAGO.2002-3292"
+                    df.at[idx, "Quantity of accessories"] = 1
+
+    # --- Speciali logika GS = 1110 ---
+    mask_gs1110 = gs_all == 1110
+    if mask_gs1110.any():
+        for idx in df[mask_gs1110].index:
+            # kiekviena eilutė turi po vieną priedą
+            df.at[idx, "Accessories"] = "WAGO.2002-3292"
+            df.at[idx, "Quantity of accessories"] = 1
+
+    # --- Bendra logika kitoms grupėms (išskyrus 1030 ir 1110) ---
+    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1110)
+    if mask_other.any():
+        # GroupBy ant gs_all (skaitinių reikšmių), bet tik ten, kur mask_other = True
+        grouped = df[mask_other].groupby(gs_all[mask_other])
+        for _, idxs in grouped.groups.items():
+            idxs = list(idxs)
+            last_idx = idxs[-1]
+            if df.at[last_idx, "Accessories"] != "WAGO.2002-3292":
+                df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
+                df.at[last_idx, "Quantity of accessories"] = 1
 
     # -------------------------------------------------------------------------
     # BUILD REMOVED DF
