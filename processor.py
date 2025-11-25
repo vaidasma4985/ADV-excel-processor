@@ -56,11 +56,6 @@ def _extract_x_prefix_two_digits(name: object) -> str | None:
     """
     Iš pavadinimo tipo '+1010-X118' arba '+1030-X1113' ištraukia
     pirmus du skaitmenis po '-X'.
-
-    Pvz:
-    '+1010-X118'  -> '11'
-    '+1030-X1113' -> '11'
-    Jei nepavyksta – grąžina None.
     """
     if pd.isna(name):
         return None
@@ -77,9 +72,6 @@ def _extract_x_prefix_two_digits(name: object) -> str | None:
 def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
     """
     Parenka naują Group Sorting reikšmę, kurios dar nėra `existing` rinkinyje.
-
-    Labai svarbu: šis GS turi NESIKARTOTI su kitomis logikomis (1010, 1030 ir pan.),
-    todėl imame mažiausią laisvą skaičių nuo `start` ir jį rezervuojame.
     """
     new = start
     while new in existing:
@@ -94,11 +86,6 @@ def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     """
     Apdoroja įkeltą Excel failą pagal aprašytas taisykles.
-
-    Grąžina:
-    - cleaned_df: galutiniai duomenys "Cleaned" lapui
-    - removed_df: pašalintos eilutės su "Removed Reason"
-    - output_workbook_bytes: galutinio .xlsx failo baitai
     """
     # Nuskaitom pirmą lapą
     buffer = io.BytesIO(file_bytes)
@@ -256,7 +243,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
 
-        if not pe_df_valid.empty():
+        # <<< ČIA BUVO BUGAS: empty() vietoje empty >>>
+        if not pe_df_valid.empty:
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
 
@@ -452,13 +440,10 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     removed_df = removed_df.reset_index(drop=True)
 
     # -------------------------------------------------------------------------
-    # STULPELIŲ TVARKA:
-    # Group Sorting | Accessories | Quantity of accessories |
-    # Accessories2 | Quantity of accessories2 | ... | Designation (paskutinis)
+    # STULPELIŲ TVARKA
     # -------------------------------------------------------------------------
     cols = list(cleaned_df.columns)
 
-    # užtikrinam, kad Designation būtų paskutinis
     if "Designation" in cols:
         cols.remove("Designation")
         cols.append("Designation")
