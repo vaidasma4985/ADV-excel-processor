@@ -28,9 +28,14 @@ def _is_valid_name_prefix(name: object) -> bool:
     """
     Check if Name has a valid terminal prefix (-F, -K, -X).
 
-    Works for:
+    Logic:
+    - Find the first '-' character in the string.
+    - Take the two characters starting at that '-'.
+    - Valid if they are '-F', '-K' or '-X'.
+
+    This works for:
     - "-X7037"
-    - "+6010-X7037"  -> first '-' before 'X', so prefix2 = '-X'
+    - "+6010-X7037"  -> first '-' is before 'X', so prefix2 = '-X'
     """
     if pd.isna(name):
         return False
@@ -52,8 +57,24 @@ def _is_valid_name_prefix(name: object) -> bool:
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     """
-    Process uploaded Excel according to business rules.
-    Returns cleaned_df, removed_df and final .xlsx bytes.
+    Main processing function.
+
+    Parameters
+    ----------
+    file_bytes : bytes
+        Raw bytes of the uploaded Excel file.
+
+    Returns
+    -------
+    cleaned_df : DataFrame
+        Data for the "Cleaned" sheet.
+
+    removed_df : DataFrame
+        Data for the "Removed" sheet, with extra column "Removed Reason".
+
+    output_workbook_bytes : bytes
+        Bytes of the final Excel workbook with two sheets ("Cleaned" and "Removed"),
+        with yellow-highlighted rows in "Cleaned" where Name prefix is invalid.
     """
     # Read Excel into DataFrame from the first sheet
     buffer = io.BytesIO(file_bytes)
@@ -85,7 +106,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     # STEP 2 – VALIDATE NAME PREFIXES (only for yellow highlight later)
     # -------------------------------------------------------------------------
-    # nothing to do here in df; we check final Name when styling the Excel file
+    # nothing to change in df here – we use final Name when styling Excel
 
     # -------------------------------------------------------------------------
     # STEP 3 – FILTER BY TYPE VALUES
@@ -133,15 +154,30 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         "249-116",
     }
 
+    # WAGO mapping
     mask_wago = df["Type"].isin(wago_types)
     if mask_wago.any():
         df.loc[mask_wago, "Type"] = (
             "WAGO." + df.loc[mask_wago, "Type"].astype(str)
         )
 
+    # Schneider relay base RGZE1S48M
     mask_rgze = df["Type"] == "RGZE1S48M"
     if mask_rgze.any():
         df.loc[mask_rgze, "Type"] = "SE.RGZE1S48M"
+
+    # Extra Schneider mappings
+    schneider_map = {
+        "A9F04604": "SE.A9F04604",
+        "RXG22P7": "SE.RXG22P7",
+        "RXG22BD": "SE.RXG22BD",
+        "RXM4GB2BD": "SE.RXM4GB2BD",
+        "RXZE2S114M": "SE.RXZE2S114M",
+    }
+    for old, new in schneider_map.items():
+        m = df["Type"] == old
+        if m.any():
+            df.loc[m, "Type"] = new
 
     # -------------------------------------------------------------------------
     # STEP 5 – UPDATE NAME USING GROUP SORTING (WHEN NOT EMPTY)
@@ -179,12 +215,53 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
     # -------------------------------------------------------------------------
-    # STEP 7 – ACCESSORIES (WAGO.2002-3292) LOGIC
+    # STEP 7 – ADD NEW COLUMNS: Accessories, Quantity of accessories, Designation
     # -------------------------------------------------------------------------
-    # New columns
     df["Accessories"] = ""
     df["Quantity of accessories"] = 0
+    df["Designation"] = ""
 
+    # -------------------------------------------------------------------------
+    # STEP 8 – SPLIT WAGO.2002-3201 / WAGO.2002-3207 BY QUANTITY
+    # -------------------------------------------------------------------------
+    rows: List[dict] = []
+    for _, row in df.iterrows():
+        row_dict = row.to_dict()
+        t = row_dict.get("Type")
+        qty_raw = row_dict.get("Quantity", 0)
+        qty = pd.to_numeric(qty_raw, errors="coerce")
+        if (
+            t in ("WAGO.2002-3201", "WAGO.2002-3207")
+            and pd.notna(qty)
+            and qty > 1
+        ):
+            n = int(qty)
+            # First row – empty Designation
+            base = row_dict.copy()
+            base["Quantity"] = 1
+            base["Designation"] = ""
+            base["Accessories"] = ""  # accessories priskirsime vėliau
+            base["Quantity of accessories"] = 0
+            rows.append(base)
+
+            # Additional rows – Designation 1..(n-1)
+            for i in range(1, n):
+                r = row_dict.copy()
+                r["Quantity"] = 1
+                r["Designation"] = str(i)
+                r["Accessories"] = ""
+                r["Quantity of accessories"] = 0
+                rows.append(r)
+        else:
+            # No splitting
+            row_dict["Designation"] = row_dict.get("Designation", "")
+            rows.append(row_dict)
+
+    df = pd.DataFrame(rows)
+
+    # -------------------------------------------------------------------------
+    # STEP 9 – ACCESSORIES (WAGO.2002-3292) LOGIC
+    # -------------------------------------------------------------------------
     gs_all = _to_numeric_series(df["Group Sorting"])
 
     # --- Special logic for Group Sorting = 1030 ---
@@ -219,15 +296,22 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # --- Special logic for Group Sorting = 1110 ---
+    # --- Special logic for Group Sorting = 1110 (every row) ---
     mask_gs1110 = gs_all == 1110
     if mask_gs1110.any():
         for idx in df[mask_gs1110].index:
             df.at[idx, "Accessories"] = "WAGO.2002-3292"
             df.at[idx, "Quantity of accessories"] = 1
 
+    # --- Special logic for Group Sorting = 1010 (identical to 1110) ---
+    mask_gs1010 = gs_all == 1010
+    if mask_gs1010.any():
+        for idx in df[mask_gs1010].index:
+            df.at[idx, "Accessories"] = "WAGO.2002-3292"
+            df.at[idx, "Quantity of accessories"] = 1
+
     # --- Generic rule for all other Group Sorting values ---
-    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1110)
+    mask_other = gs_all.notna() & ~(mask_gs1030 | mask_gs1110 | mask_gs1010)
     if mask_other.any():
         grouped = df[mask_other].groupby(gs_all[mask_other])
         for _, idxs in grouped.groups.items():
@@ -248,16 +332,31 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     cleaned_df = df.reset_index(drop=True)
     removed_df = removed_df.reset_index(drop=True)
 
-    # Reorder columns so Accessories ir Quantity of accessories būtų po Group Sorting
+    # -------------------------------------------------------------------------
+    # REORDER COLUMNS:
+    # Group Sorting | Accessories | Quantity of accessories | ... | Designation (last)
+    # -------------------------------------------------------------------------
     cols = list(cleaned_df.columns)
+    # Ensure Designation is last
+    cols_no_design = [c for c in cols if c != "Designation"]
+    cols_no_design.append("Designation")
+
+    cols = cols_no_design
+
     if "Accessories" in cols and "Quantity of accessories" in cols:
         base_cols = [c for c in cols if c not in ("Accessories", "Quantity of accessories")]
         if "Group Sorting" in base_cols:
             pos = base_cols.index("Group Sorting") + 1
         else:
             pos = len(base_cols)
-        new_order = base_cols[:pos] + ["Accessories", "Quantity of accessories"] + base_cols[pos:]
+        new_order = (
+            base_cols[:pos]
+            + ["Accessories", "Quantity of accessories"]
+            + base_cols[pos:]
+        )
         cleaned_df = cleaned_df[new_order]
+    else:
+        cleaned_df = cleaned_df[cols]
 
     # -------------------------------------------------------------------------
     # BUILD FINAL EXCEL WORKBOOK IN MEMORY
