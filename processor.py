@@ -76,56 +76,63 @@ def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
     return new
 
 
-def _merge_relays(df: DataFrame) -> DataFrame:
+def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[int]]:
     """
-    Sujungia rėlių eiles pagal Name:
+    Sujungia rėlių eiles pagal Name ir priskiria naujus, unikalius Group Sorting.
 
-    - SE.RGZE1S48M + (SE.RXG22P7 arba SE.RXG22BD) ->
-      Type: 'SE.RGZE1S48M + SE.RXG22P7', Group Sorting = 11
+    Prioritetas:
+    1) SE.RGZE1S48M (2 poliai) -> pirmi GS numeriai
+    2) SE.RXZE2S114M (4 poliai) -> eina po jų
 
-    - SE.RXZE2S114M + SE.RXM4GB2BD ->
-      Type: 'SE.RXZE2S114M + SE.RXM4GB2BD', Group Sorting = 10
-
-    Laikome bazinį elementą (RGZE1S48M arba RXZE2S114M),
-    o antrą eilutę su tuo pačiu Name išmetame (nekeliam į Removed).
+    Antros eilutės tipas nesvarbus – svarbu, kad tam pačiam Name būtų >= 2 eilutės.
     """
-    to_drop: List[int] = []
-
     if "Name" not in df.columns or "Type" not in df.columns:
-        return df
+        return df, existing_gs
+
+    to_drop: list[int] = []
+    processed_names: set[str] = set()
 
     grouped = df.groupby("Name")
+
+    # 1) Pirmiausia 2 polių rėlės – SE.RGZE1S48M
     for name, idxs in grouped.groups.items():
         sub = df.loc[idxs]
+        mask_rgze = sub["Type"] == "SE.RGZE1S48M"
 
-        # 1) SE.RGZE1S48M + SE.RXG22P7 / SE.RXG22BD
-        mask_base1 = sub["Type"] == "SE.RGZE1S48M"
-        mask_coil1 = sub["Type"].isin(["SE.RXG22P7", "SE.RXG22BD"])
+        if mask_rgze.any() and len(sub) >= 2:
+            base_idx = sub[mask_rgze].index[0]
+            coil_idxs = [i for i in idxs if i != base_idx]
 
-        if mask_base1.any() and mask_coil1.any():
-            base_idx = sub[mask_base1].index[0]
-            coil_idxs = list(sub[mask_coil1].index)
-
+            # naujas unikalus GS šiai rėlei
+            new_gs = _allocate_new_gs(existing_gs, start=1)
             df.at[base_idx, "Type"] = "SE.RGZE1S48M + SE.RXG22P7"
-            df.at[base_idx, "Group Sorting"] = 11
+            df.at[base_idx, "Group Sorting"] = new_gs
+
             to_drop.extend(coil_idxs)
+            processed_names.add(name)
 
-        # 2) SE.RXZE2S114M + SE.RXM4GB2BD
-        mask_base2 = sub["Type"] == "SE.RXZE2S114M"
-        mask_coil2 = sub["Type"] == "SE.RXM4GB2BD"
+    # 2) Tada 4 polių rėlės – SE.RXZE2S114M (tik ten, kur neapdoroti Name)
+    for name, idxs in grouped.groups.items():
+        if name in processed_names:
+            continue
 
-        if mask_base2.any() and mask_coil2.any():
-            base_idx = sub[mask_base2].index[0]
-            coil_idxs = list(sub[mask_coil2].index)
+        sub = df.loc[idxs]
+        mask_rxze = sub["Type"] == "SE.RXZE2S114M"
 
+        if mask_rxze.any() and len(sub) >= 2:
+            base_idx = sub[mask_rxze].index[0]
+            coil_idxs = [i for i in idxs if i != base_idx]
+
+            new_gs = _allocate_new_gs(existing_gs, start=1)
             df.at[base_idx, "Type"] = "SE.RXZE2S114M + SE.RXM4GB2BD"
-            df.at[base_idx, "Group Sorting"] = 10
+            df.at[base_idx, "Group Sorting"] = new_gs
+
             to_drop.extend(coil_idxs)
 
     if to_drop:
         df = df.drop(index=to_drop).copy()
 
-    return df
+    return df, existing_gs
 
 
 # ======================= Pagrindinė funkcija =======================
