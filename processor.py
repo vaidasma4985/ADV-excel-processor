@@ -25,7 +25,7 @@ def _to_numeric_series(series: pd.Series) -> pd.Series:
 def _is_valid_name_prefix(name: object) -> bool:
     """
     Turi būti -F / -K / -X (pirmas '-' simbolis žiūrimas nuo kairės).
-    Veikia ir su +GS prefixais, pvz. "+1010-X228".
+    Veikia ir su +GS prefiksais, pvz. '+1010-X228'.
     """
     if pd.isna(name):
         return False
@@ -89,7 +89,7 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     to_drop: List[int] = []
     grouped = df.groupby("Name")
 
-    # --- Paruošiam PO VIENĄ GS kiekvienai rėlių grupei ---
+    # --- paruošiam PO VIENĄ GS kiekvienai rėlių grupei ---
 
     has_rgze = (df["Type"] == "SE.RGZE1S48M").any()
     has_rxze = (df["Type"] == "SE.RXZE2S114M").any()
@@ -102,7 +102,7 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     if has_rxze:
         gs_rxze = _allocate_new_gs(existing_gs, start=1)
 
-    # --- Pirmiausia 2 polių rėlės (SE.RGZE1S48M) ---
+    # --- 2 polių rėlės (SE.RGZE1S48M) ---
 
     if gs_rgze is not None:
         for name, idxs in grouped.groups.items():
@@ -118,12 +118,12 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
 
                 to_drop.extend(coil_idxs)
 
-    # --- Tada 4 polių rėlės (SE.RXZE2S114M) ---
+    # --- 4 polių rėlės (SE.RXZE2S114M) ---
 
     if gs_rxze is not None:
         for name, idxs in grouped.groups.items():
             sub = df.loc[idxs]
-            # jei jau pakeista į SE.RGZE1S48M + SE.RXG22P7, šokam toliau
+            # jei jau pakeista į 2-polių rėlę, praleidžiam
             if (sub["Type"] == "SE.RGZE1S48M + SE.RXG22P7").any():
                 continue
 
@@ -143,9 +143,9 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     return df, existing_gs
 
 
+# ======================= FUNCTION DESIGNATION MAP =======================
 
-# ======================= Pagrindinė funkcija =======================
-FUNCTION_MAP = {
+FUNCTION_MAP: dict[str, str] = {
     "SE.A9F04604": "POWER",
     "WAGO.2002-1611/1000-541": "FUSES",
     "WAGO.2002-1611/1000-836": "FUSES",
@@ -154,6 +154,9 @@ FUNCTION_MAP = {
     "WAGO.2002-3201": "CONTROL",
     "WAGO.2002-3207": "CONTROL",
 }
+
+
+# ======================= Pagrindinė funkcija =======================
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
@@ -441,103 +444,4 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.at[last_f9, "Accessories"] = "WAGO.2002-991"
             df.at[last_f9, "Quantity of accessories"] = 1
 
-        if len(idxs_other) > 0:
-            last_other = idxs_other[-1]
-            df.at[last_other, "Accessories"] = "WAGO.2002-991"
-            df.at[last_other, "Quantity of accessories"] = 1
-            df.at[last_other, "Accessories2"] = "WAGO.249-116"
-            df.at[last_other, "Quantity of accessories2"] = 1
-
-    # -------------------------------------------------------------------------
-    # STEP 11 – PE DESIGNATION SEKA
-    # -------------------------------------------------------------------------
-    mask_pe_type = df["Type"] == "WAGO.2002-3207"
-    if mask_pe_type.any():
-        grouped_pe = df[mask_pe_type].groupby(df.loc[mask_pe_type, "Name"])
-        for _, idxs in grouped_pe.groups.items():
-            idxs = list(idxs)
-            for j, idx in enumerate(idxs):
-                if j == 0:
-                    df.at[idx, "Designation"] = ""
-                else:
-                    df.at[idx, "Designation"] = str(j)
-    
-       # -------------------------------------------------------------------------
-    # STEP 12 – FUNCTION DESIGNATION NAME LAUKE
-    # -------------------------------------------------------------------------
-    # Pagal Type priskiriam funkcijos kodą ir prie esamo Name pridedam =CODE
-    func_codes = df["Type"].map(FUNCTION_MAP)
-
-    mask_fd = func_codes.notna()
-    if mask_fd.any():
-        # pvz.: Name = "+1-F904" -> "=FUSES+1-F904"
-        df.loc[mask_fd, "Name"] = (
-            "=" + func_codes[mask_fd] + df.loc[mask_fd, "Name"].astype(str)
-        )
-
-
-
-    # -------------------------------------------------------------------------
-    # BUILD REMOVED DF
-    # -------------------------------------------------------------------------
-    if removed_chunks:
-        removed_df = pd.concat(removed_chunks, ignore_index=True)
-    else:
-        removed_df = pd.DataFrame(columns=original_columns + ["Removed Reason"])
-
-    cleaned_df = df.reset_index(drop=True)
-    removed_df = removed_df.reset_index(drop=True)
-
-    # -------------------------------------------------------------------------
-    # STULPELIŲ TVARKA
-    # -------------------------------------------------------------------------
-    cols = list(cleaned_df.columns)
-    if "Designation" in cols:
-        cols.remove("Designation")
-        cols.append("Designation")
-
-    accessory_cols = [
-        "Accessories",
-        "Quantity of accessories",
-        "Accessories2",
-        "Quantity of accessories2",
-    ]
-    if all(c in cols for c in accessory_cols):
-        base_cols = [c for c in cols if c not in accessory_cols]
-        if "Group Sorting" in base_cols:
-            pos = base_cols.index("Group Sorting") + 1
-        else:
-            pos = len(base_cols)
-        new_order = base_cols[:pos] + accessory_cols + base_cols[pos:]
-        cleaned_df = cleaned_df[new_order]
-    else:
-        cleaned_df = cleaned_df[cols]
-
-    # -------------------------------------------------------------------------
-    # EXCEL Į BYTES (OPENPYXL + GELTONAS HIGHLIGHT)
-    # -------------------------------------------------------------------------
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        cleaned_df.to_excel(writer, sheet_name="Cleaned", index=False)
-        removed_df.to_excel(writer, sheet_name="Removed", index=False)
-
-        workbook = writer.book
-        ws_cleaned = workbook["Cleaned"]
-
-        yellow_fill = PatternFill(
-            start_color="FFFF00", end_color="FFFF00", fill_type="solid"
-        )
-        max_col = ws_cleaned.max_column
-
-        for excel_row_idx, row in enumerate(
-            cleaned_df.itertuples(index=False), start=2
-        ):
-            name_val = getattr(row, "Name", None)
-            if not _is_valid_name_prefix(name_val):
-                for col_idx in range(1, max_col + 1):
-                    cell = ws_cleaned.cell(row=excel_row_idx, column=col_idx)
-                    cell.fill = yellow_fill
-
-    output_workbook_bytes = output.getvalue()
-
-    return cleaned_df, removed_df, output_workbook_bytes
+        if len(idx
