@@ -9,9 +9,6 @@ from pandas import DataFrame
 from openpyxl.styles import PatternFill
 
 
-# ======================= Pagalbinės funkcijos =======================
-
-
 def _check_required_columns(df: DataFrame, required: list[str]) -> None:
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -24,8 +21,8 @@ def _to_numeric_series(series: pd.Series) -> pd.Series:
 
 def _is_valid_name_prefix(name: object) -> bool:
     """
-    Turi būti -F / -K / -X (pirmas '-' simbolis žiūrimas nuo kairės).
-    Veikia ir su +GS ir =FUNCTION prefiksais, pvz. '=CONTROL+1010-X228'.
+    Tikrinam -F / -K / -X prefiksą (pirmas '-' nuo kairės).
+    Veikia su +GS prefiksais, pvz. '+1010-X228'.
     """
     if pd.isna(name):
         return False
@@ -79,8 +76,6 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     - SE.RXZE2S114M (4 poliai) + bet koks antras komponentas su tuo pačiu Name:
         Type  -> 'SE.RXZE2S114M + SE.RXM4GB2BD'
         Group Sorting -> vienas bendras GS visoms 4-polių rėlėms
-
-    Antros eilutės tipas nesvarbus – svarbu, kad tam pačiam Name būtų >= 2 eilučių.
     """
 
     if "Name" not in df.columns or "Type" not in df.columns:
@@ -89,7 +84,6 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     to_drop: List[int] = []
     grouped = df.groupby("Name")
 
-    # paruošiam po VIENĄ GS kiekvienai rėlių grupei
     has_rgze = (df["Type"] == "SE.RGZE1S48M").any()
     has_rxze = (df["Type"] == "SE.RXZE2S114M").any()
 
@@ -106,33 +100,26 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
         for name, idxs in grouped.groups.items():
             sub = df.loc[idxs]
             mask_rgze = sub["Type"] == "SE.RGZE1S48M"
-
             if mask_rgze.any() and len(sub) >= 2:
                 base_idx = sub[mask_rgze].index[0]
                 coil_idxs = [i for i in idxs if i != base_idx]
-
                 df.at[base_idx, "Type"] = "SE.RGZE1S48M + SE.RXG22P7"
                 df.at[base_idx, "Group Sorting"] = gs_rgze
-
                 to_drop.extend(coil_idxs)
 
     # 4 polių rėlės – SE.RXZE2S114M
     if gs_rxze is not None:
         for name, idxs in grouped.groups.items():
             sub = df.loc[idxs]
-
             # jei jau paversta į 2 polių rėlę, praleidžiam
             if (sub["Type"] == "SE.RGZE1S48M + SE.RXG22P7").any():
                 continue
-
             mask_rxze = sub["Type"] == "SE.RXZE2S114M"
             if mask_rxze.any() and len(sub) >= 2:
                 base_idx = sub[mask_rxze].index[0]
                 coil_idxs = [i for i in idxs if i != base_idx]
-
                 df.at[base_idx, "Type"] = "SE.RXZE2S114M + SE.RXM4GB2BD"
                 df.at[base_idx, "Group Sorting"] = gs_rxze
-
                 to_drop.extend(coil_idxs)
 
     if to_drop:
@@ -141,7 +128,7 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     return df, existing_gs
 
 
-# ======================= FUNCTION DESIGNATION MAP =======================
+# -------- FUNCTION DESIGNATION MAP --------
 
 FUNCTION_MAP: dict[str, str] = {
     "SE.A9F04604": "POWER",
@@ -152,9 +139,6 @@ FUNCTION_MAP: dict[str, str] = {
     "WAGO.2002-3201": "CONTROL",
     "WAGO.2002-3207": "CONTROL",
 }
-
-
-# ======================= Pagrindinė funkcija =======================
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
@@ -179,11 +163,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         removed_chunks.append(rem1)
     df = df[~mask_remove_step1].copy()
 
-    # -------------------------------------------------------------------------
-    # STEP 2 – (tik highlighting, realiai vėliau, EXCEL rašyme)
-    # -------------------------------------------------------------------------
-    # Čia nieko DF nenaikinam, tik vėliau naudodami _is_valid_name_prefix
-    # nuspalvinsim neteisingus prefix'us geltonai.
+    # STEP 2 – prefix validation tik formatavimui (darysim gale, EXCEL dalyje)
 
     # -------------------------------------------------------------------------
     # STEP 3 – FILTER BY TYPE VALUES
@@ -320,6 +300,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df["Accessories2"] = ""
     df["Quantity of accessories2"] = 0
     df["Designation"] = ""
+    df["Function"] = ""  # čia rašysim =CONTROL+... ir pan.
 
     # -------------------------------------------------------------------------
     # STEP 9 – TERMINALŲ SPLITINIMAS PAGAL QUANTITY
@@ -470,14 +451,14 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[idx, "Designation"] = str(j)
 
     # -------------------------------------------------------------------------
-    # STEP 12 – FUNCTION DESIGNATION NAME LAUKE
+    # STEP 12 – FUNCTION DESIGNATION (NAUJAS STULPELIS Function)
     # -------------------------------------------------------------------------
     func_codes = df["Type"].map(FUNCTION_MAP)
     mask_fd = func_codes.notna()
     if mask_fd.any():
-        # pvz.: Name = "+1-F904" -> "=FUSES+1-F904"
-        df.loc[mask_fd, "Name"] = (
-            "=" + func_codes[mask_fd] + df.loc[mask_fd, "Name"].astype(str)
+        # kaip tekstą: ' =CONTROL+1010-X118' (apostrofas paslepiamas, Excel rodo =...)
+        df.loc[mask_fd, "Function"] = (
+            "'" + "=" + func_codes[mask_fd] + df.loc[mask_fd, "Name"].astype(str)
         )
 
     # -------------------------------------------------------------------------
@@ -495,6 +476,13 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # STULPELIŲ TVARKA
     # -------------------------------------------------------------------------
     cols = list(cleaned_df.columns)
+    # Norim, kad pirmi būtų Name ir Function (jei yra)
+    ordered = []
+    for key in ("Name", "Function"):
+        if key in cols:
+            ordered.append(key)
+            cols.remove(key)
+
     if "Designation" in cols:
         cols.remove("Designation")
         cols.append("Designation")
@@ -511,10 +499,12 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             pos = base_cols.index("Group Sorting") + 1
         else:
             pos = len(base_cols)
-        new_order = base_cols[:pos] + accessory_cols + base_cols[pos:]
-        cleaned_df = cleaned_df[new_order]
+        mid = base_cols[:pos] + accessory_cols + base_cols[pos:]
     else:
-        cleaned_df = cleaned_df[cols]
+        mid = cols
+
+    final_cols = ordered + [c for c in mid if c not in ordered]
+    cleaned_df = cleaned_df[final_cols]
 
     # -------------------------------------------------------------------------
     # EXCEL Į BYTES (OPENPYXL + GELTONAS HIGHLIGHT)
