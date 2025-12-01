@@ -13,37 +13,28 @@ from openpyxl.styles import PatternFill
 
 
 def _check_required_columns(df: DataFrame, required: list[str]) -> None:
-    """Išmeta ValueError, jei trūksta bent vieno privalomo stulpelio."""
-    missing = [col for col in required if col not in df.columns]
+    missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(", ".join(missing))
 
 
 def _to_numeric_series(series: pd.Series) -> pd.Series:
-    """Konvertuoja į skaičius, klaidas paversdama į NaN."""
     return pd.to_numeric(series, errors="coerce")
 
 
 def _is_valid_name_prefix(name: object) -> bool:
     """
-    Patikrina, ar Name turi galiojantį prefiksą (-F, -K, -X).
-
-    Logika:
-    - surandam pirmą '-' simbolį
-    - paimam 2 simbolius nuo jo
-    - validu, jei '-F', '-K' arba '-X'.
+    Turi būti -F / -K / -X (pirmas '-' simbolis žiūrimas nuo kairės).
+    Veikia ir su +GS prefixais, pvz. "+1010-X228".
     """
     if pd.isna(name):
         return False
-
     s = str(name).strip()
     if not s:
         return False
-
     dash_idx = s.find("-")
     if dash_idx == -1 or dash_idx >= len(s) - 1:
         return False
-
     prefix2 = s[dash_idx:dash_idx + 2]
     return prefix2 in ("-F", "-K", "-X")
 
@@ -78,23 +69,22 @@ def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
 
 def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[int]]:
     """
-    Sujungia rėlių eiles pagal Name ir priskiria naujus, unikalius Group Sorting.
+    Sujungia rėlių eiles pagal Name.
 
     Prioritetas:
-    1) SE.RGZE1S48M (2 poliai) -> pirmi GS numeriai
-    2) SE.RXZE2S114M (4 poliai) -> eina po jų
+    1) SE.RGZE1S48M (2 poliai) – gauna mažiausius naujus GS
+    2) SE.RXZE2S114M (4 poliai) – eina po jų
 
-    Antros eilutės tipas nesvarbus – svarbu, kad tam pačiam Name būtų >= 2 eilutės.
+    Antros eilutės tipas nesvarbus – svarbu, kad tam pačiam Name būtų >= 2 eilučių.
     """
     if "Name" not in df.columns or "Type" not in df.columns:
         return df, existing_gs
 
-    to_drop: list[int] = []
+    to_drop: List[int] = []
     processed_names: set[str] = set()
-
     grouped = df.groupby("Name")
 
-    # 1) Pirmiausia 2 polių rėlės – SE.RGZE1S48M
+    # 1) 2 polių rėlės – SE.RGZE1S48M
     for name, idxs in grouped.groups.items():
         sub = df.loc[idxs]
         mask_rgze = sub["Type"] == "SE.RGZE1S48M"
@@ -103,7 +93,6 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
             base_idx = sub[mask_rgze].index[0]
             coil_idxs = [i for i in idxs if i != base_idx]
 
-            # naujas unikalus GS šiai rėlei
             new_gs = _allocate_new_gs(existing_gs, start=1)
             df.at[base_idx, "Type"] = "SE.RGZE1S48M + SE.RXG22P7"
             df.at[base_idx, "Group Sorting"] = new_gs
@@ -111,11 +100,10 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
             to_drop.extend(coil_idxs)
             processed_names.add(name)
 
-    # 2) Tada 4 polių rėlės – SE.RXZE2S114M (tik ten, kur neapdoroti Name)
+    # 2) 4 polių rėlės – SE.RXZE2S114M (tik neapdoroti Name)
     for name, idxs in grouped.groups.items():
         if name in processed_names:
             continue
-
         sub = df.loc[idxs]
         mask_rxze = sub["Type"] == "SE.RXZE2S114M"
 
@@ -139,10 +127,6 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
-    """
-    Apdoroja įkeltą Excel failą pagal aprašytas taisykles.
-    """
-    # Nuskaitom pirmą lapą
     buffer = io.BytesIO(file_bytes)
     df = pd.read_excel(buffer, sheet_name=0)
 
@@ -153,28 +137,19 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     removed_chunks: List[DataFrame] = []
 
     # -------------------------------------------------------------------------
-    # STEP 1 – Remove rows by Name prefix
+    # STEP 1 – REMOVE ROWS BY NAME PREFIX
     # -------------------------------------------------------------------------
     remove_prefixes = ("-B", "-C", "-R", "-M", "-P", "-Q", "-S", "-W", "-T")
     name_str = df["Name"].astype(str)
-
     mask_remove_step1 = name_str.str.startswith(remove_prefixes, na=False)
-
     if mask_remove_step1.any():
-        removed_step1 = df[mask_remove_step1].copy()
-        removed_step1["Removed Reason"] = (
-            "Removed by Name prefix (-B/-C/-R/-M/-P/-Q/-S/-W/-T)"
-        )
-        removed_chunks.append(removed_step1)
-
+        rem1 = df[mask_remove_step1].copy()
+        rem1["Removed Reason"] = "Removed by Name prefix (-B/-C/-R/-M/-P/-Q/-S/-W/-T)"
+        removed_chunks.append(rem1)
     df = df[~mask_remove_step1].copy()
 
     # -------------------------------------------------------------------------
-    # STEP 2 – tik highlight logika (nieko neišmetam)
-    # -------------------------------------------------------------------------
-
-    # -------------------------------------------------------------------------
-    # STEP 3 – Filter by Type values
+    # STEP 3 – FILTER BY TYPE VALUES
     # -------------------------------------------------------------------------
     allowed_types = {
         "2002-1611/1000-541",
@@ -189,21 +164,16 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         "RGZE1S48M",
         "A9F04604",
     }
-
     mask_keep_type = df["Type"].isin(allowed_types)
-    mask_removed_step3 = ~mask_keep_type
-
-    if mask_removed_step3.any():
-        removed_step3 = df[mask_removed_step3].copy()
-        removed_step3["Removed Reason"] = (
-            "Removed by Type filter (not in allowed list)"
-        )
-        removed_chunks.append(removed_step3)
-
+    mask_remove_step3 = ~mask_keep_type
+    if mask_remove_step3.any():
+        rem3 = df[mask_remove_step3].copy()
+        rem3["Removed Reason"] = "Removed by Type filter (not in allowed list)"
+        removed_chunks.append(rem3)
     df = df[mask_keep_type].copy()
 
     # -------------------------------------------------------------------------
-    # STEP 4 – Map component types (WAGO / Schneider)
+    # STEP 4 – MAP WAGO / SCHNEIDER TIPUS
     # -------------------------------------------------------------------------
     wago_types = {
         "2002-1301",
@@ -218,18 +188,16 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         "2006-8034",
         "249-116",
     }
-
-    # WAGO.*
     mask_wago = df["Type"].isin(wago_types)
     if mask_wago.any():
         df.loc[mask_wago, "Type"] = "WAGO." + df.loc[mask_wago, "Type"].astype(str)
 
-    # SE.RGZE1S48M
+    # RGZE bazė -> SE.RGZE1S48M
     mask_rgze = df["Type"] == "RGZE1S48M"
     if mask_rgze.any():
         df.loc[mask_rgze, "Type"] = "SE.RGZE1S48M"
 
-    # Kiti Schneider map'ai
+    # Kiti Schneider
     schneider_map = {
         "A9F04604": "SE.A9F04604",
         "RXG22P7": "SE.RXG22P7",
@@ -243,51 +211,46 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[m, "Type"] = new
 
     # -------------------------------------------------------------------------
-    # STEP 5 – FUSE Group Sorting logika (WAGO.2002-1611/1000-541 ir ...836)
+    # STEP 5 – FUSE GROUP SORTING
     # -------------------------------------------------------------------------
     gs_all_raw = _to_numeric_series(df["Group Sorting"])
     existing_gs: set[int] = set(
         int(v) for v in gs_all_raw.dropna().astype(int).unique()
     )
 
-    # 5.1. WAGO.2002-1611/1000-541 – visi gauna vieną naują GS, nenaudotą kitur
+    # WAGO.2002-1611/1000-541 – visi į vieną naują GS
     mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
     if mask_541.any():
         new_gs_541 = _allocate_new_gs(existing_gs, start=1)
         df.loc[mask_541, "Group Sorting"] = new_gs_541
 
-    # 5.2. WAGO.2002-1611/1000-836 – atskiras GS F9** ir atskiras kitiems
+    # WAGO.2002-1611/1000-836 – F9** atskirai, kiti atskirai
     mask_836 = df["Type"] == "WAGO.2002-1611/1000-836"
     if mask_836.any():
         names_836 = df.loc[mask_836, "Name"].astype(str)
         f9_mask_sub = names_836.str.contains(r"-F9\d*", regex=True)
-
         idx_all = df[mask_836].index
         mask_836_f9 = pd.Series(False, index=df.index)
         mask_836_f9.loc[idx_all] = f9_mask_sub
-
         mask_836_other = mask_836 & ~mask_836_f9
 
         if mask_836_f9.any():
             new_gs_f9 = _allocate_new_gs(existing_gs, start=1)
             df.loc[mask_836_f9, "Group Sorting"] = new_gs_f9
-
         if mask_836_other.any():
             new_gs_other = _allocate_new_gs(existing_gs, start=1)
             df.loc[mask_836_other, "Group Sorting"] = new_gs_other
 
-# -------------------------------------------------------------------------
-# STEP 5b – RELAY MERGE (RGZE / RXZE poros)
-# -------------------------------------------------------------------------
-df, existing_gs = _merge_relays(df, existing_gs)
-
+    # -------------------------------------------------------------------------
+    # STEP 5b – RELAY MERGE (RGZE / RXZE POROS)
+    # -------------------------------------------------------------------------
+    df, existing_gs = _merge_relays(df, existing_gs)
 
     # -------------------------------------------------------------------------
-    # STEP 6 – Name prefix iš Group Sorting
+    # STEP 6 – NAME = +GS-NAME
     # -------------------------------------------------------------------------
     gs_numeric = _to_numeric_series(df["Group Sorting"])
     mask_has_gs = gs_numeric.notna()
-
     if mask_has_gs.any():
         gs_str = gs_numeric[mask_has_gs].astype(int).astype(str)
         df.loc[mask_has_gs, "Name"] = (
@@ -295,30 +258,25 @@ df, existing_gs = _merge_relays(df, existing_gs)
         )
 
     # -------------------------------------------------------------------------
-    # STEP 7 – PE renumeravimas (WAGO.2002-3207)
+    # STEP 7 – PE RENAMING (WAGO.2002-3207)
     # -------------------------------------------------------------------------
     mask_pe_all = df["Type"] == "WAGO.2002-3207"
     if mask_pe_all.any():
         pe_df = df.loc[mask_pe_all].copy()
         pe_df["GroupSortingNum"] = _to_numeric_series(pe_df["Group Sorting"])
-
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
-
         if not pe_df_valid.empty:
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
-
             pe_df_valid["PE_Index"] = pe_df_valid["GroupSortingNum"].map(gs_to_index)
-
             gs_str_pe = pe_df_valid["GroupSortingNum"].astype(int).astype(str)
             pe_df_valid["Name"] = (
                 "+" + gs_str_pe + "-PE" + pe_df_valid["PE_Index"].astype(str)
             )
-
             df.loc[pe_df_valid.index, "Name"] = pe_df_valid["Name"]
 
     # -------------------------------------------------------------------------
-    # STEP 8 – Nauji stulpeliai
+    # STEP 8 – NAUJI STULPELIAI
     # -------------------------------------------------------------------------
     df["Accessories"] = ""
     df["Quantity of accessories"] = 0
@@ -327,7 +285,7 @@ df, existing_gs = _merge_relays(df, existing_gs)
     df["Designation"] = ""
 
     # -------------------------------------------------------------------------
-    # STEP 9 – Split WAGO.2002-3201 / WAGO.2002-3207 pagal Quantity
+    # STEP 9 – TERMINALŲ SPLITINIMAS PAGAL QUANTITY
     # -------------------------------------------------------------------------
     rows: List[dict] = []
     for _, row in df.iterrows():
@@ -343,7 +301,6 @@ df, existing_gs = _merge_relays(df, existing_gs)
         ):
             n = int(qty)
 
-            # 1 eilutė – tuščias Designation
             base = row_dict.copy()
             base["Quantity"] = 1
             base["Designation"] = ""
@@ -353,7 +310,6 @@ df, existing_gs = _merge_relays(df, existing_gs)
             base["Quantity of accessories2"] = 0
             rows.append(base)
 
-            # Kitos eilutės – Designation 1..(n-1)
             for i in range(1, n):
                 r = row_dict.copy()
                 r["Quantity"] = 1
@@ -364,24 +320,22 @@ df, existing_gs = _merge_relays(df, existing_gs)
                 r["Quantity of accessories2"] = 0
                 rows.append(r)
         else:
-            # Nieko neskaidom
             row_dict["Designation"] = row_dict.get("Designation", "")
             rows.append(row_dict)
 
     df = pd.DataFrame(rows)
 
     # -------------------------------------------------------------------------
-    # STEP 10 – Accessories logika (terminalai + fuse)
+    # STEP 10 – ACCESSORIES (TERMINALAI + FUSE)
     # -------------------------------------------------------------------------
     gs_all = _to_numeric_series(df["Group Sorting"])
     is_terminal = df["Type"].isin(["WAGO.2002-3201", "WAGO.2002-3207"])
 
-    # GS = 1030, grupelės pagal -X pirmus 2 skaitmenis
+    # GS = 1030, grupelės pagal -X** pirmus du skaitmenis
     mask_gs1030 = is_terminal & (gs_all == 1030)
     if mask_gs1030.any():
         names_1030 = df.loc[mask_gs1030, "Name"]
         subgroup_keys_1030 = names_1030.apply(_extract_x_prefix_two_digits)
-
         valid_keys = sorted(k for k in subgroup_keys_1030.dropna().unique())
         for key in valid_keys:
             idxs = subgroup_keys_1030[subgroup_keys_1030 == key].index
@@ -391,12 +345,11 @@ df, existing_gs = _merge_relays(df, existing_gs)
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # GS = 1010, grupelės pagal 2 pirmus skaičius po -X
+    # GS = 1010, grupelės pagal 2 pirmus skaitmenis po -X
     mask_gs1010 = is_terminal & (gs_all == 1010)
     if mask_gs1010.any():
         names_1010 = df.loc[mask_gs1010, "Name"]
         subgroup_keys_1010 = names_1010.apply(_extract_x_prefix_two_digits)
-
         valid_keys = sorted(k for k in subgroup_keys_1010.dropna().unique())
         for key in valid_keys:
             idxs = subgroup_keys_1010[subgroup_keys_1010 == key].index
@@ -406,12 +359,11 @@ df, existing_gs = _merge_relays(df, existing_gs)
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # GS = 1110, tokia pati logika kaip 1010
+    # GS = 1110 – tokia pati logika kaip 1010
     mask_gs1110 = is_terminal & (gs_all == 1110)
     if mask_gs1110.any():
         names_1110 = df.loc[mask_gs1110, "Name"]
         subgroup_keys_1110 = names_1110.apply(_extract_x_prefix_two_digits)
-
         valid_keys = sorted(k for k in subgroup_keys_1110.dropna().unique())
         for key in valid_keys:
             idxs = subgroup_keys_1110[subgroup_keys_1110 == key].index
@@ -421,7 +373,7 @@ df, existing_gs = _merge_relays(df, existing_gs)
                     df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                     df.at[last_idx, "Quantity of accessories"] = 1
 
-    # Kitos terminalų grupės – dangtelis tik paskutinėje Group Sorting eilutėje
+    # Kitos terminalų grupės – dangtelis tik paskutinėje GS eilutėje
     mask_other = (
         is_terminal
         & gs_all.notna()
@@ -436,7 +388,7 @@ df, existing_gs = _merge_relays(df, existing_gs)
                 df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                 df.at[last_idx, "Quantity of accessories"] = 1
 
-    # Fuse accessories:
+    # Fuse accessories
     mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
     if mask_541.any():
         idxs_541 = df[mask_541].index
@@ -450,7 +402,6 @@ df, existing_gs = _merge_relays(df, existing_gs)
     if mask_836.any():
         names_836 = df.loc[mask_836, "Name"].astype(str)
         f9_mask_sub = names_836.str.contains(r"-F9\d*", regex=True)
-
         idxs_all = df[mask_836].index
         idxs_f9 = idxs_all[f9_mask_sub.values]
         idxs_other = idxs_all[~f9_mask_sub.values]
@@ -468,13 +419,13 @@ df, existing_gs = _merge_relays(df, existing_gs)
             df.at[last_other, "Quantity of accessories2"] = 1
 
     # -------------------------------------------------------------------------
-    # STEP 11 – PE grupių Designation: "", 1, 2, 3, ...
+    # STEP 11 – PE DESIGNATION SEKA
     # -------------------------------------------------------------------------
     mask_pe_type = df["Type"] == "WAGO.2002-3207"
     if mask_pe_type.any():
         grouped_pe = df[mask_pe_type].groupby(df.loc[mask_pe_type, "Name"])
         for _, idxs in grouped_pe.groups.items():
-            idxs = list(idxsdxs)
+            idxs = list(idxs)
             for j, idx in enumerate(idxs):
                 if j == 0:
                     df.at[idx, "Designation"] = ""
@@ -496,7 +447,6 @@ df, existing_gs = _merge_relays(df, existing_gs)
     # STULPELIŲ TVARKA
     # -------------------------------------------------------------------------
     cols = list(cleaned_df.columns)
-
     if "Designation" in cols:
         cols.remove("Designation")
         cols.append("Designation")
@@ -507,27 +457,21 @@ df, existing_gs = _merge_relays(df, existing_gs)
         "Accessories2",
         "Quantity of accessories2",
     ]
-
     if all(c in cols for c in accessory_cols):
         base_cols = [c for c in cols if c not in accessory_cols]
         if "Group Sorting" in base_cols:
             pos = base_cols.index("Group Sorting") + 1
         else:
             pos = len(base_cols)
-        new_order = (
-            base_cols[:pos]
-            + accessory_cols
-            + base_cols[pos:]
-        )
+        new_order = base_cols[:pos] + accessory_cols + base_cols[pos:]
         cleaned_df = cleaned_df[new_order]
     else:
         cleaned_df = cleaned_df[cols]
 
     # -------------------------------------------------------------------------
-    # EXCEL generavimas į atmintį
+    # EXCEL Į BYTES (OPENPYXL + GELTONAS HIGHLIGHT)
     # -------------------------------------------------------------------------
     output = io.BytesIO()
-
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         cleaned_df.to_excel(writer, sheet_name="Cleaned", index=False)
         removed_df.to_excel(writer, sheet_name="Removed", index=False)
@@ -538,10 +482,8 @@ df, existing_gs = _merge_relays(df, existing_gs)
         yellow_fill = PatternFill(
             start_color="FFFF00", end_color="FFFF00", fill_type="solid"
         )
-
         max_col = ws_cleaned.max_column
 
-        # Geltona spalva eilutėms su neteisingu prefiksu (ne -F/-K/-X)
         for excel_row_idx, row in enumerate(
             cleaned_df.itertuples(index=False), start=2
         ):
