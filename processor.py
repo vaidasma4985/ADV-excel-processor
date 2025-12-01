@@ -145,6 +145,15 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
 
 
 # ======================= Pagrindinė funkcija =======================
+FUNCTION_MAP = {
+    "SE.A9F04604": "POWER",
+    "WAGO.2002-1611/1000-541": "FUSES",
+    "WAGO.2002-1611/1000-836": "FUSES",
+    "SE.RGZE1S48M + SE.RXG22P7": "2POLE",
+    "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
+    "WAGO.2002-3201": "CONTROL",
+    "WAGO.2002-3207": "CONTROL",
+}
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
@@ -452,6 +461,21 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[idx, "Designation"] = ""
                 else:
                     df.at[idx, "Designation"] = str(j)
+    
+       # -------------------------------------------------------------------------
+    # STEP 12 – FUNCTION DESIGNATION NAME LAUKE
+    # -------------------------------------------------------------------------
+    # Pagal Type priskiriam funkcijos kodą ir prie esamo Name pridedam =CODE
+    func_codes = df["Type"].map(FUNCTION_MAP)
+
+    mask_fd = func_codes.notna()
+    if mask_fd.any():
+        # pvz.: Name = "+1-F904" -> "=FUSES+1-F904"
+        df.loc[mask_fd, "Name"] = (
+            "=" + func_codes[mask_fd] + df.loc[mask_fd, "Name"].astype(str)
+        )
+
+
 
     # -------------------------------------------------------------------------
     # BUILD REMOVED DF
