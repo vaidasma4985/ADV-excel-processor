@@ -276,10 +276,11 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             new_gs_other = _allocate_new_gs(existing_gs, start=1)
             df.loc[mask_836_other, "Group Sorting"] = new_gs_other
 
-    # -------------------------------------------------------------------------
-    # STEP 5b – RELAY MERGE (RGZE/RXG22 ir RXZE/RXM4)
-    # -------------------------------------------------------------------------
-    df = _merge_relays(df)
+# -------------------------------------------------------------------------
+# STEP 5b – RELAY MERGE (RGZE / RXZE poros)
+# -------------------------------------------------------------------------
+df, existing_gs = _merge_relays(df, existing_gs)
+
 
     # -------------------------------------------------------------------------
     # STEP 6 – Name prefix iš Group Sorting
