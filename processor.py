@@ -32,10 +32,6 @@ def _is_valid_name_prefix(name: object) -> bool:
     - surandam pirmą '-' simbolį
     - paimam 2 simbolius nuo jo
     - validu, jei '-F', '-K' arba '-X'.
-
-    Veikia tiek:
-    - "-X7037"
-    - "+6010-X7037"  -> pirmas '-' prieš 'X', prefix2 = '-X'
     """
     if pd.isna(name):
         return False
@@ -78,6 +74,58 @@ def _allocate_new_gs(existing: set[int], start: int = 1) -> int:
         new += 1
     existing.add(new)
     return new
+
+
+def _merge_relays(df: DataFrame) -> DataFrame:
+    """
+    Sujungia rėlių eiles pagal Name:
+
+    - SE.RGZE1S48M + (SE.RXG22P7 arba SE.RXG22BD) ->
+      Type: 'SE.RGZE1S48M + SE.RXG22P7', Group Sorting = 11
+
+    - SE.RXZE2S114M + SE.RXM4GB2BD ->
+      Type: 'SE.RXZE2S114M + SE.RXM4GB2BD', Group Sorting = 10
+
+    Laikome bazinį elementą (RGZE1S48M arba RXZE2S114M),
+    o antrą eilutę su tuo pačiu Name išmetame (nekeliam į Removed).
+    """
+    to_drop: List[int] = []
+
+    if "Name" not in df.columns or "Type" not in df.columns:
+        return df
+
+    grouped = df.groupby("Name")
+    for name, idxs in grouped.groups.items():
+        sub = df.loc[idxs]
+
+        # 1) SE.RGZE1S48M + SE.RXG22P7 / SE.RXG22BD
+        mask_base1 = sub["Type"] == "SE.RGZE1S48M"
+        mask_coil1 = sub["Type"].isin(["SE.RXG22P7", "SE.RXG22BD"])
+
+        if mask_base1.any() and mask_coil1.any():
+            base_idx = sub[mask_base1].index[0]
+            coil_idxs = list(sub[mask_coil1].index)
+
+            df.at[base_idx, "Type"] = "SE.RGZE1S48M + SE.RXG22P7"
+            df.at[base_idx, "Group Sorting"] = 11
+            to_drop.extend(coil_idxs)
+
+        # 2) SE.RXZE2S114M + SE.RXM4GB2BD
+        mask_base2 = sub["Type"] == "SE.RXZE2S114M"
+        mask_coil2 = sub["Type"] == "SE.RXM4GB2BD"
+
+        if mask_base2.any() and mask_coil2.any():
+            base_idx = sub[mask_base2].index[0]
+            coil_idxs = list(sub[mask_coil2].index)
+
+            df.at[base_idx, "Type"] = "SE.RXZE2S114M + SE.RXM4GB2BD"
+            df.at[base_idx, "Group Sorting"] = 10
+            to_drop.extend(coil_idxs)
+
+    if to_drop:
+        df = df.drop(index=to_drop).copy()
+
+    return df
 
 
 # ======================= Pagrindinė funkcija =======================
@@ -222,6 +270,11 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.loc[mask_836_other, "Group Sorting"] = new_gs_other
 
     # -------------------------------------------------------------------------
+    # STEP 5b – RELAY MERGE (RGZE/RXG22 ir RXZE/RXM4)
+    # -------------------------------------------------------------------------
+    df = _merge_relays(df)
+
+    # -------------------------------------------------------------------------
     # STEP 6 – Name prefix iš Group Sorting
     # -------------------------------------------------------------------------
     gs_numeric = _to_numeric_series(df["Group Sorting"])
@@ -243,7 +296,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
 
-        # <<< ČIA BUVO BUGAS: empty() vietoje empty >>>
         if not pe_df_valid.empty:
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
@@ -311,8 +363,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df = pd.DataFrame(rows)
 
     # -------------------------------------------------------------------------
-    # STEP 10 – Accessories logika
-    # 10.1 – Terminalai (WAGO.2002-3201/3207, WAGO.2002-3292 dangteliai)
+    # STEP 10 – Accessories logika (terminalai + fuse)
     # -------------------------------------------------------------------------
     gs_all = _to_numeric_series(df["Group Sorting"])
     is_terminal = df["Type"].isin(["WAGO.2002-3201", "WAGO.2002-3207"])
@@ -377,10 +428,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                 df.at[last_idx, "Accessories"] = "WAGO.2002-3292"
                 df.at[last_idx, "Quantity of accessories"] = 1
 
-    # -------------------------------------------------------------------------
-    # 10.2 – Fuse Accessories logika
-    # -------------------------------------------------------------------------
-    # WAGO.2002-1611/1000-541 – paskutinė eilutė su WAGO.2002-991 ir WAGO.249-116
+    # Fuse accessories:
     mask_541 = df["Type"] == "WAGO.2002-1611/1000-541"
     if mask_541.any():
         idxs_541 = df[mask_541].index
@@ -390,7 +438,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         df.at[last_541, "Accessories2"] = "WAGO.249-116"
         df.at[last_541, "Quantity of accessories2"] = 1
 
-    # WAGO.2002-1611/1000-836 – dalinam į F9** ir kitus
     mask_836 = df["Type"] == "WAGO.2002-1611/1000-836"
     if mask_836.any():
         names_836 = df.loc[mask_836, "Name"].astype(str)
@@ -400,13 +447,11 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         idxs_f9 = idxs_all[f9_mask_sub.values]
         idxs_other = idxs_all[~f9_mask_sub.values]
 
-        # F9** grupė – tik WAGO.2002-991
         if len(idxs_f9) > 0:
             last_f9 = idxs_f9[-1]
             df.at[last_f9, "Accessories"] = "WAGO.2002-991"
             df.at[last_f9, "Quantity of accessories"] = 1
 
-        # Kiti 836 – WAGO.2002-991 + WAGO.249-116
         if len(idxs_other) > 0:
             last_other = idxs_other[-1]
             df.at[last_other, "Accessories"] = "WAGO.2002-991"
@@ -421,7 +466,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     if mask_pe_type.any():
         grouped_pe = df[mask_pe_type].groupby(df.loc[mask_pe_type, "Name"])
         for _, idxs in grouped_pe.groups.items():
-            idxs = list(idxs)
+            idxs = list(idxsdxs)
             for j, idx in enumerate(idxs):
                 if j == 0:
                     df.at[idx, "Designation"] = ""
