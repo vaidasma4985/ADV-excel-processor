@@ -9,6 +9,9 @@ from pandas import DataFrame
 from openpyxl.styles import PatternFill
 
 
+# ======================= Pagalbinės funkcijos =======================
+
+
 def _check_required_columns(df: DataFrame, required: list[str]) -> None:
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -22,7 +25,7 @@ def _to_numeric_series(series: pd.Series) -> pd.Series:
 def _is_valid_name_prefix(name: object) -> bool:
     """
     Tikrinam -F / -K / -X prefiksą (pirmas '-' nuo kairės).
-    Veikia su +GS prefiksais, pvz. '+1010-X228'.
+    Veikia ir su +GS prefiksais, pvz. '+1010-X228'.
     """
     if pd.isna(name):
         return False
@@ -68,14 +71,10 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     """
     Sujungia rėlių eiles pagal Name.
 
-    Tikslas:
-    - SE.RGZE1S48M (2 poliai) + bet koks antras komponentas su tuo pačiu Name:
-        Type  -> 'SE.RGZE1S48M + SE.RXG22P7'
-        Group Sorting -> vienas bendras GS visoms 2-polių rėlėms
-
-    - SE.RXZE2S114M (4 poliai) + bet koks antras komponentas su tuo pačiu Name:
-        Type  -> 'SE.RXZE2S114M + SE.RXM4GB2BD'
-        Group Sorting -> vienas bendras GS visoms 4-polių rėlėms
+    - SE.RGZE1S48M (2 poliai) + bet koks kitas su tuo pačiu Name:
+        -> 'SE.RGZE1S48M + SE.RXG22P7', vienas bendras GS visoms 2-polių rėlėms.
+    - SE.RXZE2S114M (4 poliai) + bet koks kitas su tuo pačiu Name:
+        -> 'SE.RXZE2S114M + SE.RXM4GB2BD', vienas bendras GS visoms 4-polių rėlėms.
     """
 
     if "Name" not in df.columns or "Type" not in df.columns:
@@ -95,7 +94,7 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     if has_rxze:
         gs_rxze = _allocate_new_gs(existing_gs, start=1)
 
-    # 2 polių rėlės – SE.RGZE1S48M
+    # 2 polių rėlės
     if gs_rgze is not None:
         for name, idxs in grouped.groups.items():
             sub = df.loc[idxs]
@@ -107,11 +106,11 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
                 df.at[base_idx, "Group Sorting"] = gs_rgze
                 to_drop.extend(coil_idxs)
 
-    # 4 polių rėlės – SE.RXZE2S114M
+    # 4 polių rėlės
     if gs_rxze is not None:
         for name, idxs in grouped.groups.items():
             sub = df.loc[idxs]
-            # jei jau paversta į 2 polių rėlę, praleidžiam
+            # jei jau tapo 2 polių, praleidžiam
             if (sub["Type"] == "SE.RGZE1S48M + SE.RXG22P7").any():
                 continue
             mask_rxze = sub["Type"] == "SE.RXZE2S114M"
@@ -128,7 +127,7 @@ def _merge_relays(df: DataFrame, existing_gs: set[int]) -> tuple[DataFrame, set[
     return df, existing_gs
 
 
-# -------- FUNCTION DESIGNATION MAP --------
+# ======================= FUNCTION DESIGNATION MAP =======================
 
 FUNCTION_MAP: dict[str, str] = {
     "SE.A9F04604": "POWER",
@@ -139,6 +138,9 @@ FUNCTION_MAP: dict[str, str] = {
     "WAGO.2002-3201": "CONTROL",
     "WAGO.2002-3207": "CONTROL",
 }
+
+
+# ======================= Pagrindinė funkcija =======================
 
 
 def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
@@ -283,6 +285,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         pe_df["GroupSortingNum"] = _to_numeric_series(pe_df["Group Sorting"])
         pe_df_valid = pe_df[pe_df["GroupSortingNum"].notna()].copy()
         if not pe_df_valid.empty:
+            # globalus indeksas pagal unikalų GS
             unique_gs = sorted(pe_df_valid["GroupSortingNum"].unique())
             gs_to_index = {gs: i + 1 for i, gs in enumerate(unique_gs)}
             pe_df_valid["PE_Index"] = pe_df_valid["GroupSortingNum"].map(gs_to_index)
@@ -300,7 +303,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df["Accessories2"] = ""
     df["Quantity of accessories2"] = 0
     df["Designation"] = ""
-    df["Function"] = ""  # čia rašysim =CONTROL+... ir pan.
 
     # -------------------------------------------------------------------------
     # STEP 9 – TERMINALŲ SPLITINIMAS PAGAL QUANTITY
@@ -451,17 +453,6 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[idx, "Designation"] = str(j)
 
     # -------------------------------------------------------------------------
-    # STEP 12 – FUNCTION DESIGNATION (NAUJAS STULPELIS Function)
-    # -------------------------------------------------------------------------
-    func_codes = df["Type"].map(FUNCTION_MAP)
-    mask_fd = func_codes.notna()
-    if mask_fd.any():
-        # kaip tekstą: ' =CONTROL+1010-X118' (apostrofas paslepiamas, Excel rodo =...)
-        df.loc[mask_fd, "Function"] = (
-            "'" + "=" + func_codes[mask_fd] + df.loc[mask_fd, "Name"].astype(str)
-        )
-
-    # -------------------------------------------------------------------------
     # BUILD REMOVED DF
     # -------------------------------------------------------------------------
     if removed_chunks:
@@ -473,41 +464,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     removed_df = removed_df.reset_index(drop=True)
 
     # -------------------------------------------------------------------------
-    # STULPELIŲ TVARKA
-    # -------------------------------------------------------------------------
-    cols = list(cleaned_df.columns)
-    # Norim, kad pirmi būtų Name ir Function (jei yra)
-    ordered = []
-    for key in ("Name", "Function"):
-        if key in cols:
-            ordered.append(key)
-            cols.remove(key)
-
-    if "Designation" in cols:
-        cols.remove("Designation")
-        cols.append("Designation")
-
-    accessory_cols = [
-        "Accessories",
-        "Quantity of accessories",
-        "Accessories2",
-        "Quantity of accessories2",
-    ]
-    if all(c in cols for c in accessory_cols):
-        base_cols = [c for c in cols if c not in accessory_cols]
-        if "Group Sorting" in base_cols:
-            pos = base_cols.index("Group Sorting") + 1
-        else:
-            pos = len(base_cols)
-        mid = base_cols[:pos] + accessory_cols + base_cols[pos:]
-    else:
-        mid = cols
-
-    final_cols = ordered + [c for c in mid if c not in ordered]
-    cleaned_df = cleaned_df[final_cols]
-
-    # -------------------------------------------------------------------------
-    # EXCEL Į BYTES (OPENPYXL + GELTONAS HIGHLIGHT)
+    # EXCEL Į BYTES (OPENPYXL + FUNCTION NAME + GELTONAS HIGHLIGHT)
     # -------------------------------------------------------------------------
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -517,6 +474,34 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         workbook = writer.book
         ws_cleaned = workbook["Cleaned"]
 
+        # Surandam "Name" ir "Type" stulpelių indeksus
+        header_row = 1
+        name_col_idx = None
+        type_col_idx = None
+        for col in range(1, ws_cleaned.max_column + 1):
+            header_val = ws_cleaned.cell(row=header_row, column=col).value
+            if header_val == "Name":
+                name_col_idx = col
+            elif header_val == "Type":
+                type_col_idx = col
+
+        if name_col_idx is None or type_col_idx is None:
+            raise RuntimeError("Could not find 'Name' or 'Type' column in Cleaned sheet")
+
+        # FUNCTION DESIGNATION – įrašom kaip TEXT su '=' priekyje
+        for excel_row_idx, row in enumerate(
+            cleaned_df.itertuples(index=False), start=2
+        ):
+            type_val = getattr(row, "Type", None)
+            name_val = getattr(row, "Name", None)
+            func_code = FUNCTION_MAP.get(type_val)
+            if func_code and name_val is not None:
+                new_name = f"={func_code}{name_val}"  # pvz. =FUSES+1-F904
+                cell = ws_cleaned.cell(row=excel_row_idx, column=name_col_idx)
+                cell.value = new_name
+                cell.data_type = "s"  # priverčiam, kad būtų tekstas, ne formulė
+
+        # Geltonas highlight – pagal pradinį cleaned_df Name (be =FUSES...)
         yellow_fill = PatternFill(
             start_color="FFFF00", end_color="FFFF00", fill_type="solid"
         )
