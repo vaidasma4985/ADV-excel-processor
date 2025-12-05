@@ -137,6 +137,9 @@ FUNCTION_MAP: dict[str, str] = {
     "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
     "WAGO.2002-3201": "CONTROL",
     "WAGO.2002-3207": "CONTROL",
+    # ADV versijos turi gauti tą pačią funkciją
+    "WAGO.2002-3201_ADV": "CONTROL",
+    "WAGO.2002-3207_ADV": "CONTROL",
 }
 
 
@@ -451,6 +454,20 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
                     df.at[idx, "Designation"] = ""
                 else:
                     df.at[idx, "Designation"] = str(j)
+
+    # -------------------------------------------------------------------------
+    # STEP 12 – ADV TYPE SUFFIX
+    # -------------------------------------------------------------------------
+    adv_map = {
+        "WAGO.2002-3207": "WAGO.2002-3207_ADV",
+        "SE.A9F04601": "SE.A9F04601_ADV",
+        "WAGO.2002_1611_1000_541": "WAGO.2002_1611_1000_541_ADV",
+        "WAGO.2002-991": "WAGO.2002-991_ADV",
+        "WAGO.249-116": "WAGO.249-116_ADV",
+        "WAGO.2002-3201": "WAGO.2002-3201_ADV",
+        "WAGO.2002-3292": "WAGO.2002-3292_ADV",
+    }
+    df["Type"] = df["Type"].replace(adv_map)
 
     # -------------------------------------------------------------------------
     # BUILD REMOVED DF
