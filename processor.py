@@ -133,13 +133,16 @@ FUNCTION_MAP: dict[str, str] = {
     "SE.A9F04604": "POWER",
     "WAGO.2002-1611/1000-541": "FUSES",
     "WAGO.2002-1611/1000-836": "FUSES",
+    "WAGO.2002-1611/1000-541_ADV": "FUSES",
+    "WAGO.2002-1611/1000-836_ADV": "FUSES",
     "SE.RGZE1S48M + SE.RXG22P7": "2POLE",
     "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
     "WAGO.2002-3201": "CONTROL",
     "WAGO.2002-3207": "CONTROL",
-    # ADV versijos turi gauti tą pačią funkciją
     "WAGO.2002-3201_ADV": "CONTROL",
     "WAGO.2002-3207_ADV": "CONTROL",
+    "SE.RE17LCBM_ADV": "TIMED_RELAYS",
+    "FIN.39.00.8.230.8240_ADV": "1POLE",
 }
 
 
@@ -185,6 +188,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         "RXG22BD",
         "RGZE1S48M",
         "A9F04604",
+        "RE17LCBM",
+        "39.00.8.230.8240",
     }
     mask_keep_type = df["Type"].isin(allowed_types)
     mask_remove_step3 = ~mask_keep_type
@@ -232,6 +237,16 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         if m.any():
             df.loc[m, "Type"] = new
 
+    # RE17LCBM -> SE.RE17LCBM_ADV
+    mask_re17 = df["Type"] == "RE17LCBM"
+    if mask_re17.any():
+        df.loc[mask_re17, "Type"] = "SE.RE17LCBM_ADV"
+
+    # Finder 39.00... -> FIN.39.00.8.230.8240_ADV
+    mask_fin = df["Type"] == "39.00.8.230.8240"
+    if mask_fin.any():
+        df.loc[mask_fin, "Type"] = "FIN.39.00.8.230.8240_ADV"
+
     # -------------------------------------------------------------------------
     # STEP 5 – FUSE GROUP SORTING
     # -------------------------------------------------------------------------
@@ -267,6 +282,30 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # STEP 5b – RELAY MERGE (RGZE / RXZE POROS)
     # -------------------------------------------------------------------------
     df, existing_gs = _merge_relays(df, existing_gs)
+
+    # -------------------------------------------------------------------------
+    # STEP 5c – -K192* grupė ir Finder rėlė (GS po visų kitų rėlių)
+    # -------------------------------------------------------------------------
+    name_series = df["Name"].astype(str)
+    mask_k192 = name_series.str.contains(r"-K192", regex=True)
+
+    if existing_gs:
+        max_gs = max(existing_gs)
+    else:
+        max_gs = 0
+
+    if mask_k192.any():
+        new_gs_k192 = max_gs + 1
+        df.loc[mask_k192, "Group Sorting"] = new_gs_k192
+        existing_gs.add(new_gs_k192)
+        max_gs = new_gs_k192
+
+    # Finder rėlė – GS po -K192 grupės
+    mask_fin_adv = df["Type"] == "FIN.39.00.8.230.8240_ADV"
+    if mask_fin_adv.any():
+        new_gs_fin = max_gs + 1
+        df.loc[mask_fin_adv, "Group Sorting"] = new_gs_fin
+        existing_gs.add(new_gs_fin)
 
     # -------------------------------------------------------------------------
     # STEP 6 – NAME = +GS-NAME
@@ -349,7 +388,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     df = pd.DataFrame(rows)
 
     # -------------------------------------------------------------------------
-    # STEP 10 – ACCESSORIES (TERMINALAI + FUSE)
+    # STEP 10 – ACCESSORIES (TERMINALAI + FUSE + K192 + FINDER)
     # -------------------------------------------------------------------------
     gs_all = _to_numeric_series(df["Group Sorting"])
     is_terminal = df["Type"].isin(["WAGO.2002-3201", "WAGO.2002-3207"])
@@ -441,6 +480,20 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
             df.at[last_other, "Accessories2"] = "WAGO.249-116"
             df.at[last_other, "Quantity of accessories2"] = 1
 
+    # K192 grupės accessories – paskutinei rėlei WAGO.249-116
+    mask_k192_name = df["Name"].astype(str).str.contains(r"-K192", regex=True)
+    if mask_k192_name.any():
+        last_k192 = df[mask_k192_name].index[-1]
+        df.at[last_k192, "Accessories"] = "WAGO.249-116"
+        df.at[last_k192, "Quantity of accessories"] = 1
+
+    # Finder rėlės accessories – paskutinei WAGO.249-116
+    mask_fin_group = df["Type"] == "FIN.39.00.8.230.8240_ADV"
+    if mask_fin_group.any():
+        last_fin = df[mask_fin_group].index[-1]
+        df.at[last_fin, "Accessories"] = "WAGO.249-116"
+        df.at[last_fin, "Quantity of accessories"] = 1
+
     # -------------------------------------------------------------------------
     # STEP 11 – PE DESIGNATION SEKA (pirmas tuščias, kiti 1..n-1)
     # -------------------------------------------------------------------------
@@ -461,7 +514,8 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     adv_map = {
         "WAGO.2002-3207": "WAGO.2002-3207_ADV",
         "SE.A9F04601": "SE.A9F04601_ADV",
-        "WAGO.2002_1611_1000_541": "WAGO.2002_1611_1000_541_ADV",
+        "WAGO.2002-1611/1000-541": "WAGO.2002-1611/1000-541_ADV",
+        "WAGO.2002-1611/1000-836": "WAGO.2002-1611/1000-836_ADV",
         "WAGO.2002-991": "WAGO.2002-991_ADV",
         "WAGO.249-116": "WAGO.249-116_ADV",
         "WAGO.2002-3201": "WAGO.2002-3201_ADV",
@@ -511,7 +565,14 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
         ):
             type_val = getattr(row, "Type", None)
             name_val = getattr(row, "Name", None)
+
             func_code = FUNCTION_MAP.get(type_val)
+
+            # K192 grupė – priverstinai TIMED_RELAYS pagal Name
+            name_str_row = str(name_val) if name_val is not None else ""
+            if "-K192" in name_str_row:
+                func_code = "TIMED_RELAYS"
+
             if func_code and name_val is not None:
                 new_name = f"={func_code}{name_val}"  # pvz. =FUSES+1-F904
                 cell = ws_cleaned.cell(row=excel_row_idx, column=name_col_idx)
