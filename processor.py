@@ -283,31 +283,44 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     df, existing_gs = _merge_relays(df, existing_gs)
 
-        # -------------------------------------------------------------------------
-    # STEP 5c – -K192* grupė ir Finder rėlė (GS po visų kitų rėlių)
+    # -------------------------------------------------------------------------
+    # STEP 5c – -K192* grupė ir Finder rėlė (GS iškart po rėlių, ne po terminalų)
     # -------------------------------------------------------------------------
     name_series = df["Name"].astype(str)
     mask_k192 = name_series.str.contains(r"-K192", regex=True)
 
-    if existing_gs:
-        max_gs = max(existing_gs)
-    else:
-        max_gs = 0
+    # Maksimalus GS TIK rėlių (2POLE/4POLE), kad K192 eitų iškart po jų
+    relay_types = {
+        "SE.RGZE1S48M + SE.RXG22P7",
+        "SE.RXZE2S114M + SE.RXM4GB2BD",
+    }
+    mask_relays = df["Type"].isin(relay_types)
+    gs_relays = _to_numeric_series(df.loc[mask_relays, "Group Sorting"]).dropna()
 
-    # K192 komponentams – UNIKALŪS GS po visų kitų rėlių, iš eilės
+    if not gs_relays.empty:
+        max_gs_relays = int(gs_relays.astype(int).max())
+    else:
+        # jei kažkodėl rėlių nėra – tada fallback: imame max iš esamų GS
+        gs_all = _to_numeric_series(df["Group Sorting"]).dropna()
+        max_gs_relays = int(gs_all.astype(int).max()) if not gs_all.empty else 0
+
+    # K192 komponentams – UNIKALŪS GS iš eilės po rėlių
     if mask_k192.any():
         k192_idxs = df[mask_k192].index.sort_values()
-        start_gs_k192 = max_gs + 1
+        start_gs_k192 = max_gs_relays + 1
         for offset, idx in enumerate(k192_idxs):
             gs_val = start_gs_k192 + offset
             df.at[idx, "Group Sorting"] = gs_val
             existing_gs.add(gs_val)
-        max_gs = start_gs_k192 + len(k192_idxs) - 1
 
-    # Finder rėlė – GS po visos K192 sekos
+        last_k192_gs = start_gs_k192 + len(k192_idxs) - 1
+    else:
+        last_k192_gs = max_gs_relays
+
+    # Finder rėlė – GS po K192 sekos
     mask_fin_adv = df["Type"] == "FIN.39.00.8.230.8240_ADV"
     if mask_fin_adv.any():
-        new_gs_fin = max_gs + 1
+        new_gs_fin = last_k192_gs + 1
         df.loc[mask_fin_adv, "Group Sorting"] = new_gs_fin
         existing_gs.add(new_gs_fin)
 
