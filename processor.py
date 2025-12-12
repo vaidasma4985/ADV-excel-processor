@@ -404,32 +404,45 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
     df = pd.DataFrame(rows)
 
-        # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     # STEP 9b – PE terminalų kiekio korekcija (tik PE: dalinam iš 3, apvalinam į viršų)
     # -------------------------------------------------------------------------
-    # Tik PE terminalai: WAGO.2002-3207 (dar prieš _ADV map) ir/ar jau po map (jei mapintas anksčiau)
-    pe_types = {"WAGO.2002-3207", "WAGO.2002-3207_ADV"}
+    # PE identifikuojam tik pagal Name, nes Type vėliau gali būti mapinamas į _ADV.
+    # Grupės raktas: (Group Sorting, PE numeris), kad būtų stabilu.
+    name_s = df["Name"].astype(str)
 
-    mask_pe = df["Type"].isin(pe_types) & df["Name"].astype(str).str.contains(r"-PE\d+\b", regex=True)
+    # Surandam PE numerį (pvz. ...-PE1 -> "1")
+    pe_num = name_s.str.extract(r"-PE(\d+)", expand=False)
+
+    # PE eilutės yra tos, kur pe_num ne NaN
+    mask_pe = pe_num.notna()
 
     if mask_pe.any():
-        # Grupė pagal pilną PE pavadinimą (pvz. "+1025-PE1")
-        pe_groups = df[mask_pe].groupby(df.loc[mask_pe, "Name"], sort=False)
+        gs_num = _to_numeric_series(df["Group Sorting"])
+
+        # Grupavimo raktas: (GS, PE#)
+        group_keys = list(zip(gs_num.where(mask_pe, other=pd.NA), pe_num.where(mask_pe, other=pd.NA)))
+
+        # Sukursim mapping index -> (GS, PE#)
+        df["_pe_gs"] = [k[0] for k in group_keys]
+        df["_pe_no"] = [k[1] for k in group_keys]
 
         keep_indices: List[int] = []
-        for pe_name, idxs in pe_groups.groups.items():
-            idxs = list(idxs)
 
+        pe_df = df[mask_pe].copy()
+        # Groupby be rūšiavimo (paliekam original order)
+        for (_, _), grp in pe_df.groupby(["_pe_gs", "_pe_no"], sort=False):
+            idxs = list(grp.index)
             count = len(idxs)
-            # ceil(count / 3) be math import:
-            needed = (count + 2) // 3
-
-            # Pasiliekam pirmas `needed` eilučių tos PE grupės
+            needed = (count + 2) // 3  # ceil(count/3)
             keep_indices.extend(idxs[:needed])
 
-        # Paliekam visas ne-PE eilutes + sumažintas PE eilutes
         keep_mask = (~mask_pe) | df.index.isin(keep_indices)
         df = df[keep_mask].copy()
+
+        # išvalom laikinus stulpelius
+        df.drop(columns=["_pe_gs", "_pe_no"], inplace=True, errors="ignore")
+
     # -------------------------------------------------------------------------
     # STEP 10 – ACCESSORIES (TERMINALAI + FUSE + K192 + FINDER)
     # -------------------------------------------------------------------------
