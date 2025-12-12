@@ -283,7 +283,7 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     # -------------------------------------------------------------------------
     df, existing_gs = _merge_relays(df, existing_gs)
 
-    # -------------------------------------------------------------------------
+        # -------------------------------------------------------------------------
     # STEP 5c – -K192* grupė ir Finder rėlė (GS po visų kitų rėlių)
     # -------------------------------------------------------------------------
     name_series = df["Name"].astype(str)
@@ -294,13 +294,17 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
     else:
         max_gs = 0
 
+    # K192 komponentams – UNIKALŪS GS po visų kitų rėlių, iš eilės
     if mask_k192.any():
-        new_gs_k192 = max_gs + 1
-        df.loc[mask_k192, "Group Sorting"] = new_gs_k192
-        existing_gs.add(new_gs_k192)
-        max_gs = new_gs_k192
+        k192_idxs = df[mask_k192].index.sort_values()
+        start_gs_k192 = max_gs + 1
+        for offset, idx in enumerate(k192_idxs):
+            gs_val = start_gs_k192 + offset
+            df.at[idx, "Group Sorting"] = gs_val
+            existing_gs.add(gs_val)
+        max_gs = start_gs_k192 + len(k192_idxs) - 1
 
-    # Finder rėlė – GS po -K192 grupės
+    # Finder rėlė – GS po visos K192 sekos
     mask_fin_adv = df["Type"] == "FIN.39.00.8.230.8240_ADV"
     if mask_fin_adv.any():
         new_gs_fin = max_gs + 1
