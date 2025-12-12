@@ -404,6 +404,32 @@ def process_excel(file_bytes: bytes) -> Tuple[DataFrame, DataFrame, bytes]:
 
     df = pd.DataFrame(rows)
 
+        # -------------------------------------------------------------------------
+    # STEP 9b – PE terminalų kiekio korekcija (tik PE: dalinam iš 3, apvalinam į viršų)
+    # -------------------------------------------------------------------------
+    # Tik PE terminalai: WAGO.2002-3207 (dar prieš _ADV map) ir/ar jau po map (jei mapintas anksčiau)
+    pe_types = {"WAGO.2002-3207", "WAGO.2002-3207_ADV"}
+
+    mask_pe = df["Type"].isin(pe_types) & df["Name"].astype(str).str.contains(r"-PE\d+\b", regex=True)
+
+    if mask_pe.any():
+        # Grupė pagal pilną PE pavadinimą (pvz. "+1025-PE1")
+        pe_groups = df[mask_pe].groupby(df.loc[mask_pe, "Name"], sort=False)
+
+        keep_indices: List[int] = []
+        for pe_name, idxs in pe_groups.groups.items():
+            idxs = list(idxs)
+
+            count = len(idxs)
+            # ceil(count / 3) be math import:
+            needed = (count + 2) // 3
+
+            # Pasiliekam pirmas `needed` eilučių tos PE grupės
+            keep_indices.extend(idxs[:needed])
+
+        # Paliekam visas ne-PE eilutes + sumažintas PE eilutes
+        keep_mask = (~mask_pe) | df.index.isin(keep_indices)
+        df = df[keep_mask].copy()
     # -------------------------------------------------------------------------
     # STEP 10 – ACCESSORIES (TERMINALAI + FUSE + K192 + FINDER)
     # -------------------------------------------------------------------------
