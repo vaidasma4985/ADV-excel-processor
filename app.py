@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import streamlit as st
-import pandas as pd
 
 from processor import process_excel
 
@@ -13,7 +12,7 @@ def main() -> None:
     uploaded_file = st.file_uploader("Įkelk Excel failą", type=["xlsx"])
 
     if uploaded_file is None:
-        st.info("Įkelk Excel (.xlsx) failą ir paspausk „Apdoroti failą“.")
+        st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
 
     if st.button("Apdoroti failą"):
@@ -21,10 +20,10 @@ def main() -> None:
             file_bytes = uploaded_file.getvalue()
             cleaned_df, removed_df, out_bytes, stats = process_excel(file_bytes)
 
-            st.subheader("Santrauka")
-            st.write(f"**Įkelta eilučių:** {stats['input_rows']}")
-            st.write(f"**Cleaned:** {stats['cleaned_rows']}")
-            st.write(f"**Removed:** {stats['removed_rows']}")
+            st.subheader("Statistika")
+            st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
+            st.write(f"Cleaned eilučių: **{stats['cleaned_rows']}**")
+            st.write(f"Removed eilučių: **{stats['removed_rows']}**")
 
             st.subheader("Apdoroti duomenys (Cleaned)")
             st.dataframe(cleaned_df, use_container_width=True)
@@ -45,7 +44,7 @@ def main() -> None:
         except ValueError as e:
             st.error(f"Klaida: {e}")
         except Exception as e:
-            st.error(f"Įvyko netikėta klaida apdorojant failą. Detalės: {e}")
+            st.error(f"Įvyko netikėta klaida apdorojant failą. Detalės (techninė informacija): {e}")
 
 
 if __name__ == "__main__":
