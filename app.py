@@ -9,16 +9,15 @@ def main() -> None:
     st.set_page_config(page_title="Excel komponentų apdorojimas", layout="wide")
     st.title("Excel komponentų apdorojimas")
 
-    uploaded_file = st.file_uploader("Įkelk Excel failą", type=["xlsx"])
+    uploaded = st.file_uploader("Įkelk Excel failą", type=["xlsx"])
 
-    if uploaded_file is None:
+    if uploaded is None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
 
     if st.button("Apdoroti failą"):
         try:
-            file_bytes = uploaded_file.getvalue()
-            cleaned_df, removed_df, out_bytes, stats = process_excel(file_bytes)
+            cleaned_df, removed_df, out_bytes, stats = process_excel(uploaded.getvalue())
 
             st.subheader("Statistika")
             st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
@@ -44,7 +43,7 @@ def main() -> None:
         except ValueError as e:
             st.error(f"Klaida: {e}")
         except Exception as e:
-            st.error(f"Įvyko netikėta klaida apdorojant failą. Detalės (techninė informacija): {e}")
+            st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
 
 if __name__ == "__main__":
