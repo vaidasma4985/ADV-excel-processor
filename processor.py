@@ -553,3 +553,4 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     cleaned_preview = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
     return cleaned_preview, removed_df, out_bytes, stats
+    
