@@ -15,6 +15,10 @@ YELLOW_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+def _drop_unnamed_cols(df: pd.DataFrame) -> pd.DataFrame:
+    return df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")].copy()
+
+
 def _ensure_cols(df: pd.DataFrame, cols: List[str]) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
@@ -62,20 +66,14 @@ def _extract_x_first2(name: str) -> str | None:
 
 
 def _extract_x4(name: str) -> int | None:
-    """
-    Ištraukia X**** kaip int:
-      -X1912 -> 1912
-      -X1114 -> 1114
-    """
     m = re.search(r"-X(\d{4})\b", str(name))
     return int(m.group(1)) if m else None
 
 
 def _terminal_sort_key(name: str) -> int:
     """
-    Rikiavimo raktas:
-    -X1912 -> 1912
-    -X192A5 -> 1925 (t.y. 192 + 5)
+    Rikiavimo raktas, kad X192A* galėtume laikyti "tarp" X1922 ir X1953.
+    Prielaida: X192A3 = 1923 (t.y. 192 + A3).
     """
     s = str(name)
 
@@ -83,7 +81,7 @@ def _terminal_sort_key(name: str) -> int:
     if m:
         return int(m.group(1))
 
-    m = re.search(r"-X(\d{3})A(\d)\b", s)  # X192A3
+    m = re.search(r"-X(\d{3})A(\d+)\b", s)  # X192A3
     if m:
         return int(m.group(1) + m.group(2))  # "192"+"3" => 1923
 
@@ -95,29 +93,34 @@ def _terminal_sort_key(name: str) -> int:
 
 
 # -----------------------------------------------------------------------------
-# Terminal rule: X192A insertion inside one GS group
+# Terminal rule: X192A insertion inside one base GS group
 # -----------------------------------------------------------------------------
 def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Vienoje terminalų GS grupėje (pvz. 2010), jei yra X192A*:
-      - iki X192A paliekam tame pačiame GS
-      - visi X192A* -> į naują GS = next_free(base+1)
-      - visi po X192A (pagal X numerį) -> į dar sekantį GS = next_free(prev+1)
-    """
+    Taisyklė:
 
+    Bazė = ORIGINALUS GS iš įkelto failo (df['_gs_orig']).
+
+    Vienoje bazinėje GS (pvz. 2010), jei yra X192A*:
+      - iki X192A paliekam esamam GS
+      - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
+      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
+    """
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    has_gs = gs_num.notna()
-
     existing_gs: set[int] = set(gs_num.dropna().astype(int).tolist())
 
-    work = df[is_terminal & has_gs].copy()
+    # Bazė = originalus GS (tik terminalams)
+    if "_gs_orig" not in df.columns:
+        df["_gs_orig"] = gs_num
+
+    work = df[is_terminal & df["_gs_orig"].notna()].copy()
     if work.empty:
         return df
 
-    work["_base_gs"] = gs_num[is_terminal & has_gs].astype(int)
+    work["_base_gs"] = work["_gs_orig"].astype(int)
     work["_xkey"] = work["Name"].astype(str).apply(_terminal_sort_key)
     work["_is_x192a"] = work["Name"].astype(str).str.contains(r"-X192A\d+\b", regex=True, na=False)
 
@@ -127,7 +130,6 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
         gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
         max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
-
         after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
 
         gs_for_after = None
@@ -146,6 +148,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
+    df = _drop_unnamed_cols(df)
     input_rows = len(df)
 
     required = ["Name", "Type", "Quantity", "Group Sorting"]
@@ -153,10 +156,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     df["Name"] = df["Name"].astype(str)
     df["Type"] = df["Type"].astype(str)
-
-    # ✅ labai svarbu: išsaugom ORIGINALŲ GS, nes dangtelius dedam pagal jį
-    if "GS_ORIG" not in df.columns:
-        df["GS_ORIG"] = df["Group Sorting"]
 
     # ensure columns exist
     for col, default in [
@@ -180,6 +179,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     _append_removed(removed_parts, df[non_numeric], "Removed: Group Sorting is not numeric")
     df = df[~non_numeric].copy()
 
+    # Įsimenam ORIGINALŲ GS (tik skaičiai)
+    df["_gs_orig"] = pd.to_numeric(df["Group Sorting"], errors="coerce")
+
     # -------------------------------------------------------------------------
     # STEP 1 – remove by Name prefixes
     # -------------------------------------------------------------------------
@@ -195,7 +197,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df["_highlight_invalid_prefix"] = ~_starts_with_any(df["Name"], valid_prefixes)
 
     # -------------------------------------------------------------------------
-    # STEP 3 – Type allowlist
+    # STEP 3 – Type allowlist (palik kaip pas tave projekte)
     # -------------------------------------------------------------------------
     allowed_types = {
         "2002-1611/1000-541",
@@ -203,7 +205,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "2002-3201",
         "2002-3207",
         "RXZE2S114M",
-        "RXM4GB2P7",
         "RXM4GB2BD",
         "RXG22P7",
         "RXG22BD",
@@ -223,6 +224,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "2002-3201",
         "2002-3207",
         "249-116",
+        "2002-991",
+        "2002-3292",
     }
     mw = df["Type"].isin(wago_types)
     df.loc[mw, "Type"] = "WAGO." + df.loc[mw, "Type"].astype(str)
@@ -259,7 +262,10 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             return
 
         drop_idxs: List[int] = []
-        for name_val, grp in df[df["Name"].isin(df.loc[mb, "Name"])].groupby("Name", sort=False):
+        # grupuojam tik pagal Name, kur bent viena eilutė yra base_type
+        names_with_base = set(df.loc[mb, "Name"].astype(str).tolist())
+
+        for name_val, grp in df[df["Name"].astype(str).isin(names_with_base)].groupby("Name", sort=False):
             idxs = grp.index.to_list()
             keep = None
             for i in idxs:
@@ -289,48 +295,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df = apply_x192a_terminal_gs_rules(df)
 
     # -------------------------------------------------------------------------
-    # STEP 6 – Fuses GS grouping (per your latest spec)
-    # -------------------------------------------------------------------------
-    existing_gs: set[int] = set(pd.to_numeric(df["Group Sorting"], errors="coerce").dropna().astype(int).tolist())
-
-    m541 = df["Type"].astype(str).eq("WAGO.2002-1611/1000-541_ADV")
-    m836 = df["Type"].astype(str).eq("WAGO.2002-1611/1000-836_ADV")
-
-    if m541.any():
-        gs541 = _next_free_gs(existing_gs, 1)
-        df.loc[m541, "Group Sorting"] = gs541
-
-    if m836.any():
-        names = df.loc[m836, "Name"].astype(str)
-
-        mf9 = names.str.contains(r"-F9", regex=True, na=False)
-        mf192a = names.str.contains(r"-F192A", regex=True, na=False)
-        mf192 = names.str.contains(r"-F192", regex=True, na=False) & (~mf192a)
-
-        if mf9.any():
-            gs_f9 = _next_free_gs(existing_gs, 1)
-            df.loc[df.loc[m836].index[mf9.values], "Group Sorting"] = gs_f9
-
-        if mf192a.any():
-            gs_f192a = _next_free_gs(existing_gs, 1)
-            df.loc[df.loc[m836].index[mf192a.values], "Group Sorting"] = gs_f192a
-
-        not_f9 = ~mf9
-        not_f192a = ~mf192a
-        is_f1xxx = names.str.contains(r"-F1\d{3}", regex=True, na=False)
-        group3_mask = not_f9 & not_f192a & (mf192 | is_f1xxx)
-
-        if group3_mask.any():
-            gs_g3 = _next_free_gs(existing_gs, 1)
-            df.loc[df.loc[m836].index[group3_mask.values], "Group Sorting"] = gs_g3
-
-        group5_mask = not_f9 & not_f192a & (~group3_mask)
-        if group5_mask.any():
-            gs_g5 = _next_free_gs(existing_gs, 1)
-            df.loc[df.loc[m836].index[group5_mask.values], "Group Sorting"] = gs_g5
-
-    # -------------------------------------------------------------------------
-    # STEP 7 – Add +GS to Name (terminals + fuses + relays)
+    # STEP 6 – Add +GS to Name (čia palik, kaip buvo pas tave)
     # -------------------------------------------------------------------------
     gss = df["Group Sorting"].apply(_gs_str)
     has_gs = gss.ne("")
@@ -338,7 +303,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df.loc[has_gs & not_prefixed, "Name"] = "+" + gss[has_gs & not_prefixed] + df.loc[has_gs & not_prefixed, "Name"].astype(str)
 
     # -------------------------------------------------------------------------
-    # STEP 8 – Terminal split by Quantity + Designation (3201/3207 only)
+    # STEP 7 – Terminal split by Quantity + Designation (3201/3207 only)
     # -------------------------------------------------------------------------
     df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
 
@@ -371,11 +336,10 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df = pd.DataFrame(rows)
 
     # -------------------------------------------------------------------------
-    # STEP 9 – PE /3 reduction
+    # STEP 8 – PE /3 reduction (tik PE)
     # -------------------------------------------------------------------------
     name_s = df["Name"].astype(str)
     pe_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
-
     if pe_mask.any():
         keep: List[int] = []
         for pe_name, grp in df[pe_mask].groupby("Name", sort=False):
@@ -386,8 +350,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         df = df[(~pe_mask) | (df.index.isin(keep))].copy()
 
     # -------------------------------------------------------------------------
-    # STEP 10 – Accessories:
-    # ✅ TERMINAL COVER LOGIKA DABAR REMIASI GS_ORIG (ORIGINALIU)
+    # STEP 9 – Accessories (FIX: dangteliai pagal ORIGINALŲ GS, ne pagal sukurtą)
     # -------------------------------------------------------------------------
     df["Accessories"] = df["Accessories"].fillna("")
     df["Accessories2"] = df["Accessories2"].fillna("")
@@ -397,73 +360,64 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
-    # ORIGINAL GS (įkeltas)
-    gs_orig_num = pd.to_numeric(df["GS_ORIG"], errors="coerce")
-    df["_gs_orig_sort"] = gs_orig_num.fillna(10**9).astype(int)
+    # dabartinis GS – reikalingas „kur padėjom“
+    gs_now = pd.to_numeric(df["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
+    df["_gs_sort"] = gs_now
 
-    # kad teisingai rastume "paskutinį terminalą" pagal X numerį
-    df["_xkey"] = df["Name"].astype(str).apply(_terminal_sort_key)
+    # ORIGINALUS GS – bazė dangteliams
+    gs_base = pd.to_numeric(df.get("_gs_orig", pd.Series([None] * len(df))), errors="coerce")
 
     def _set_cover(idx: int) -> None:
         if str(df.at[idx, "Accessories"]).strip() == "":
             df.at[idx, "Accessories"] = "WAGO.2002-3292_ADV"
             df.at[idx, "Quantity of accessories"] = 1
 
-    # 1010 & 1110: subgroup pagal X** (pirmi 2 skaitmenys po -X), cover ant paskutinio subgroup terminalo (pagal Xkey)
-    for g in (1010, 1110):
-        m = is_terminal & df["_gs_orig_sort"].eq(g)
+    # 1010 & 1110: po kiekvienos grupelės (pagal X pirmus 2 skaitmenis) – ant paskutinio terminalo grupelėje
+    for base in (1010, 1110):
+        m = is_terminal & gs_base.eq(base)
         if not m.any():
             continue
         tmp = df[m].copy()
         tmp["_sub"] = tmp["Name"].astype(str).apply(_extract_x_first2)
         for _, grp in tmp.groupby("_sub", sort=False):
-            last_idx = grp.sort_values("_xkey", kind="stable").index.to_list()[-1]
+            last_idx = grp.index.to_list()[-1]
             _set_cover(last_idx)
 
-    # 1030: cover po X**14 kiekvienam subgroup (jei nėra 14 – tada ant paskutinio subgroup terminalo)
-    m1030 = is_terminal & df["_gs_orig_sort"].eq(1030)
+    # 1030: dangtelis po X**14 (jei yra), jei nėra – ant paskutinio grupelės
+    m1030 = is_terminal & gs_base.eq(1030)
     if m1030.any():
         tmp = df[m1030].copy()
         tmp["_sub"] = tmp["Name"].astype(str).apply(_extract_x_first2)
-
         for _, grp in tmp.groupby("_sub", sort=False):
-            grp_sorted = grp.sort_values("_xkey", kind="stable")
             idx14 = None
-            for idx in grp_sorted.index:
+            for idx in grp.index:
                 x4 = _extract_x4(df.at[idx, "Name"])
                 if x4 is not None and str(x4).endswith("14"):
                     idx14 = idx
-                    break
             if idx14 is None:
-                idx14 = grp_sorted.index.to_list()[-1]
+                idx14 = grp.index.to_list()[-1]
             _set_cover(idx14)
 
-    # kiti ORIGINAL GS: cover ant paskutinio terminalo pagal Xkey (pagal ORIGINALŲ GS, ne pagal mūsų)
-    for gs_val, grp in df[is_terminal & gs_orig_num.notna()].groupby("_gs_orig_sort", sort=True):
-        if int(gs_val) in (1010, 1110, 1030):
-            continue
-        last_idx = grp.sort_values("_xkey", kind="stable").index.to_list()[-1]
-        _set_cover(last_idx)
-
-    # Fuse accessories – paliekam kaip buvo (čia nekeičiama)
-    is_fuse = df["Type"].astype(str).isin({"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"})
-    gs_num2 = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    df["_gs_sort"] = gs_num2.fillna(10**9).astype(int)
-
-    if is_fuse.any():
-        for gs_val, grp in df[is_fuse & gs_num2.notna()].groupby("_gs_sort", sort=True):
-            last_idx = grp.index.to_list()[-1]
-            df.at[last_idx, "Accessories"] = "WAGO.2002-991_ADV"
-            df.at[last_idx, "Quantity of accessories"] = 1
-
-            names_grp = grp["Name"].astype(str)
-            has_f9 = names_grp.str.contains(r"-F9", regex=True, na=False).any()
-            if df.at[last_idx, "Type"] == "WAGO.2002-1611/1000-541_ADV" or (not has_f9):
-                df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
-                df.at[last_idx, "Quantity of accessories2"] = 1
+    # VISOS kitos terminalų grupės: 1 dangtelis per ORIGINALŲ GS bloką
+    # (pvz. originalus 2010 -> po X192A perstumdyta į 2011/2012, bet dangtelis turi atsidurti ant paskutinio viso to bloko)
+    other_mask = is_terminal & gs_base.notna() & (~gs_base.isin([1010, 1110, 1030]))
+    if other_mask.any():
+        # paskutinis = max pagal (dabartinis GS, X key, Designation)
+        xkey = df["Name"].astype(str).apply(_terminal_sort_key)
+        for base_val, grp_idxs in df[other_mask].groupby(gs_base[other_mask], sort=True).groups.items():
+            idxs = list(grp_idxs)
+            best = max(
+                idxs,
+                key=lambda i: (
+                    int(df.at[i, "_gs_sort"]),
+                    int(xkey.loc[i]),
+                    str(df.at[i, "Designation"]),
+                ),
+            )
+            _set_cover(best)
 
     # -------------------------------------------------------------------------
-    # STEP 11 – Function designation into Name
+    # STEP 10 – Function designation into Name
     # -------------------------------------------------------------------------
     def type_to_func(t: str) -> str:
         m = {
@@ -483,12 +437,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df.drop(columns=["_func"], inplace=True, errors="ignore")
 
     # -------------------------------------------------------------------------
-    # STEP 12 – Final sort by numeric GS then Name (stable)
+    # STEP 11 – Final sort by numeric GS then Name (stable)
     # -------------------------------------------------------------------------
-    df = df.sort_values(["_gs_sort", "Name"], kind="stable")
-
-    # cleanup helper cols
-    df = df.drop(columns=["_gs_sort", "_gs_orig_sort", "_xkey"], errors="ignore")
+    df = df.sort_values(["_gs_sort", "Name"], kind="stable").drop(columns=["_gs_sort"], errors="ignore")
 
     # -------------------------------------------------------------------------
     # Removed DF
@@ -509,7 +460,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     ws_c.title = "Cleaned"
     ws_r = wb.create_sheet("Removed")
 
+    # Cleaned
     out_clean = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
+    out_clean = out_clean.drop(columns=["_gs_orig"], errors="ignore")  # kad nebūtų „vidinių“ stulpelių rezultate
     for row in dataframe_to_rows(out_clean, index=False, header=True):
         ws_c.append(row)
 
@@ -528,7 +481,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                     ws_c.cell(row=excel_row, column=col).fill = YELLOW_FILL
 
     # Removed
-    for row in dataframe_to_rows(removed_df, index=False, header=True):
+    removed_out = removed_df.drop(columns=["_gs_orig"], errors="ignore")
+    for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
     # Force Removed Name as TEXT too
