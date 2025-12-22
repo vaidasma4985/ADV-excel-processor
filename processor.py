@@ -98,13 +98,14 @@ def _terminal_sort_key(name: str) -> int:
 # -----------------------------------------------------------------------------
 def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Taisyklė (pagal tavo paskutinį patikslinimą):
-
     Vienoje terminalų GS grupėje (pvz. 2010), jei yra X192A*:
       - X**** iki X192A paliekam tame pačiame GS (2010)
       - visi X192A* perkelti į naują neegzistuojantį GS = next_free(2010+1) (pvz. 2011)
-      - visi terminalai "po X192A" (pagal X numerį) perkelti į dar sekantį GS = next_free(2011+1) (pvz. 2012)
+      - visi terminalai "po X192A" perkelti į dar sekantį GS = next_free(2011+1) (pvz. 2012)
       - kitų GS grupių nekeičiam
+
+    SVARBU: eilutės, kurioms pakeičiam GS, pažymimos kaip GS_IS_GENERATED=True,
+    kad dangteliai būtų dedami tik pagal originalų GS (GS_ORIG), o ne sugeneruotą.
     """
 
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
@@ -136,9 +137,14 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
         if after_mask.any():
             gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
 
-        df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
+        idx_x192a = grp.loc[grp["_is_x192a"]].index
+        df.loc[idx_x192a, "Group Sorting"] = gs_for_x192a
+        df.loc[idx_x192a, "GS_IS_GENERATED"] = True
+
         if gs_for_after is not None:
-            df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
+            idx_after = grp.loc[after_mask].index
+            df.loc[idx_after, "Group Sorting"] = gs_for_after
+            df.loc[idx_after, "GS_IS_GENERATED"] = True
 
     return df
 
@@ -177,6 +183,10 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     non_numeric = gs_raw.notna() & (gs_raw.astype(str).str.strip() != "") & gs_num.isna()
     _append_removed(removed_parts, df[non_numeric], "Removed: Group Sorting is not numeric")
     df = df[~non_numeric].copy()
+
+    # ---- NEW: store ORIGINAL GS from uploaded file, before any GS edits ----
+    df["GS_ORIG"] = pd.to_numeric(df["Group Sorting"], errors="coerce")  # float or NaN
+    df["GS_IS_GENERATED"] = False  # by default nothing is generated
 
     # -------------------------------------------------------------------------
     # STEP 1 – remove by Name prefixes
@@ -290,50 +300,31 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     # -------------------------------------------------------------------------
     # STEP 6 – Fuses GS grouping (per your latest spec)
-    # 541: its own GS
-    # 836: -F9** own GS; group3 = up to F192* inclusive; group4 = F192A*; group5 = rest
-    # Then we will add +GS to Name for fuses too.
     # -------------------------------------------------------------------------
     existing_gs: set[int] = set(pd.to_numeric(df["Group Sorting"], errors="coerce").dropna().astype(int).tolist())
 
     m541 = df["Type"].astype(str).eq("WAGO.2002-1611/1000-541_ADV")
     m836 = df["Type"].astype(str).eq("WAGO.2002-1611/1000-836_ADV")
 
-    # 541 -> one new GS
     if m541.any():
         gs541 = _next_free_gs(existing_gs, 1)
         df.loc[m541, "Group Sorting"] = gs541
 
-    # 836 grouping
     if m836.any():
         names = df.loc[m836, "Name"].astype(str)
 
         mf9 = names.str.contains(r"-F9", regex=True, na=False)
-
-        # F192A*
         mf192a = names.str.contains(r"-F192A", regex=True, na=False)
-        # F192* (but not F192A)
         mf192 = names.str.contains(r"-F192", regex=True, na=False) & (~mf192a)
 
-        # Group 2: -F9**
         if mf9.any():
             gs_f9 = _next_free_gs(existing_gs, 1)
             df.loc[df.loc[m836].index[mf9.values], "Group Sorting"] = gs_f9
 
-        # Group 4: F192A*
         if mf192a.any():
             gs_f192a = _next_free_gs(existing_gs, 1)
             df.loc[df.loc[m836].index[mf192a.values], "Group Sorting"] = gs_f192a
 
-        # Group 3: "iki F192*" + F192* (tame pačiame GS)
-        # Approximacija pagal tavo aprašymą: viskas kas nėra -F9** ir nėra F192A* ir
-        # yra "iki F192*" + F192* => čia praktiškai "ne F9 ir ne F192A ir (<=F192?)"
-        # Kadangi tikros "iki" ribos be papildomų metaduomenų nėra, laikom:
-        #  - F192* patenka į group3
-        #  - o "kiti iki F192" = visi kiti 836, kurie nėra F9, nėra F192A, ir nėra "likusieji" (group5)
-        # Group5 apibrėžiam kaip: 836, kurie nėra F9, nėra F192A, ir nėra F192*, bet lieka po.
-        # Praktikoje group3 = (not F9) & (not F192A) & (F192 OR startswith -F1?? excluding 9??)
-        # Minimaliai: group3 = (not F9) & (not F192A) & (F192 OR Name matches -F1\d{3})
         not_f9 = ~mf9
         not_f192a = ~mf192a
 
@@ -344,7 +335,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             gs_g3 = _next_free_gs(existing_gs, 1)
             df.loc[df.loc[m836].index[group3_mask.values], "Group Sorting"] = gs_g3
 
-        # Group 5: remaining 836 (not F9, not F192A, not in group3)
         group5_mask = not_f9 & not_f192a & (~group3_mask)
         if group5_mask.any():
             gs_g5 = _next_free_gs(existing_gs, 1)
@@ -393,7 +383,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     # -------------------------------------------------------------------------
     # STEP 9 – PE rename + PE /3 reduction
-    # (čia paliekam minimalų: jei jau turi -PE formą, skaičiuojam; jei neturi – nelendam)
     # -------------------------------------------------------------------------
     name_s = df["Name"].astype(str)
     pe_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
@@ -411,9 +400,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     # -------------------------------------------------------------------------
     # STEP 10 – Accessories:
     # A) Terminal covers WAGO.2002-3292_ADV
-    #   - 1010, 1110: by X** first2 subgroup -> last row gets cover
-    #   - 1030: by subgroup -> cover goes on X**14 row (if exists), else last in subgroup
-    #   - other GS: last terminal in GS gets cover
+    #    IMPORTANT: covers are added ONLY for ORIGINAL GS (GS_ORIG) and ONLY for rows
+    #    where GS_IS_GENERATED=False (so X192/X192A moved rows won't get covers)
     # B) Fuse accessories (2002-991 / 249-116) on last element of each fuse GS group
     # -------------------------------------------------------------------------
     df["Accessories"] = df["Accessories"].fillna("")
@@ -422,20 +410,23 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df["Quantity of accessories2"] = pd.to_numeric(df["Quantity of accessories2"], errors="coerce").fillna(0).astype(int)
 
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
-    is_terminal = df["Type"].astype(str).isin(terminal_types)
+    is_terminal_all = df["Type"].astype(str).isin(terminal_types)
 
-    gs_num2 = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    df["_gs_sort"] = gs_num2.fillna(10**9).astype(int)
+    # --- cover eligible terminals: ONLY ORIGINAL rows ---
+    is_original = ~df["GS_IS_GENERATED"].fillna(False)
+    is_terminal = is_terminal_all & is_original
+
+    gs_orig_num = pd.to_numeric(df["GS_ORIG"], errors="coerce")
+    df["_gs_orig_sort"] = gs_orig_num.fillna(10**9).astype(int)
 
     def _set_cover(idx: int) -> None:
-        # no duplicates + do not overwrite existing accessories
         if str(df.at[idx, "Accessories"]).strip() == "":
             df.at[idx, "Accessories"] = "WAGO.2002-3292_ADV"
             df.at[idx, "Quantity of accessories"] = 1
 
-    # 1010 & 1110
+    # 1010 & 1110 (based on ORIGINAL GS only)
     for g in (1010, 1110):
-        m = is_terminal & df["_gs_sort"].eq(g)
+        m = is_terminal & df["_gs_orig_sort"].eq(g)
         if not m.any():
             continue
         tmp = df[m].copy()
@@ -444,14 +435,13 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             last_idx = grp.index.to_list()[-1]
             _set_cover(last_idx)
 
-    # 1030 special: cover after X**14 per subgroup
-    m1030 = is_terminal & df["_gs_sort"].eq(1030)
+    # 1030 special: cover after X**14 per subgroup (based on ORIGINAL GS only)
+    m1030 = is_terminal & df["_gs_orig_sort"].eq(1030)
     if m1030.any():
         tmp = df[m1030].copy()
         tmp["_sub"] = tmp["Name"].astype(str).apply(_extract_x_first2)
 
         for _, grp in tmp.groupby("_sub", sort=False):
-            # find X**14 row inside subgroup
             idx14 = None
             for idx in grp.index:
                 x4 = _extract_x4(df.at[idx, "Name"])
@@ -461,23 +451,24 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 idx14 = grp.index.to_list()[-1]
             _set_cover(idx14)
 
-    # other GS: last terminal in GS gets cover
-    for gs_val, grp in df[is_terminal & gs_num2.notna()].groupby("_gs_sort", sort=True):
+    # other ORIGINAL GS: last terminal in ORIGINAL GS gets cover
+    for gs_val, grp in df[is_terminal & gs_orig_num.notna()].groupby("_gs_orig_sort", sort=True):
         if int(gs_val) in (1010, 1110, 1030):
             continue
         last_idx = grp.index.to_list()[-1]
         _set_cover(last_idx)
 
-    # Fuse accessories on last row of each fuse-GS group
+    # Fuse accessories on last row of each fuse-GS group (uses CURRENT GS – ok)
+    gs_num2 = pd.to_numeric(df["Group Sorting"], errors="coerce")
+    df["_gs_sort"] = gs_num2.fillna(10**9).astype(int)
+
     is_fuse = df["Type"].astype(str).isin({"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"})
     if is_fuse.any():
         for gs_val, grp in df[is_fuse & gs_num2.notna()].groupby("_gs_sort", sort=True):
             last_idx = grp.index.to_list()[-1]
-            # 2002-991 always on last
             df.at[last_idx, "Accessories"] = "WAGO.2002-991_ADV"
             df.at[last_idx, "Quantity of accessories"] = 1
-            # 249-116 only for 541 and for 836 groups that are NOT -F9** (pagal ankstesnę taisyklę)
-            # Paprastai: jei grupėje nėra -F9, dedam ir 249-116 į Accessories2
+
             names_grp = grp["Name"].astype(str)
             has_f9 = names_grp.str.contains(r"-F9", regex=True, na=False).any()
             if df.at[last_idx, "Type"] == "WAGO.2002-1611/1000-541_ADV" or (not has_f9):
@@ -507,7 +498,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     # -------------------------------------------------------------------------
     # STEP 12 – Final sort by numeric GS then Name (stable)
     # -------------------------------------------------------------------------
-    df = df.sort_values(["_gs_sort", "Name"], kind="stable").drop(columns=["_gs_sort"], errors="ignore")
+    df = df.sort_values(["_gs_sort", "Name"], kind="stable").drop(
+        columns=["_gs_sort", "_gs_orig_sort"], errors="ignore"
+    )
 
     # -------------------------------------------------------------------------
     # Removed DF
