@@ -92,6 +92,15 @@ def _terminal_sort_key(name: str) -> int:
     return 10**9
 
 
+def _normalize_terminal_name(name: str) -> str:
+    """
+    Normalizuoja terminalo pavadinimą deduplikavimui, nuimdama
+    automatiškai pridėtą +GS prefiksą ir lygybės ženklą.
+    """
+    s = str(name).lstrip("=")
+    return re.sub(r"^\+\d+", "", s)
+
+
 # -----------------------------------------------------------------------------
 # Terminal rule: X192A insertion inside one base GS group
 # -----------------------------------------------------------------------------
@@ -417,7 +426,26 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             _set_cover(best)
 
     # -------------------------------------------------------------------------
-    # STEP 10 – Function designation into Name
+    # STEP 10 – Remove duplicate terminals within the same original GS
+    # -------------------------------------------------------------------------
+    df["_terminal_sort"] = df["Name"].astype(str).apply(_terminal_sort_key)
+
+    if is_terminal.any():
+        dup_idxs: List[int] = []
+        term_df = df[is_terminal & df["_gs_orig"].notna()].copy()
+        term_df["_norm_term_name"] = term_df["Name"].apply(_normalize_terminal_name)
+
+        group_keys = ["_gs_orig", "Type", "_norm_term_name", "Designation"]
+        for _, grp in term_df.groupby(group_keys, sort=False):
+            keep_idx = grp.sort_values(["_gs_sort", "_terminal_sort", "Name"], kind="stable").index[0]
+            dup_idxs.extend(i for i in grp.index if i != keep_idx)
+
+        if dup_idxs:
+            _append_removed(removed_parts, df.loc[dup_idxs], "Removed: duplicate terminal within original GS")
+            df = df.drop(index=dup_idxs).copy()
+
+    # -------------------------------------------------------------------------
+    # STEP 11 – Function designation into Name
     # -------------------------------------------------------------------------
     def type_to_func(t: str) -> str:
         m = {
@@ -437,9 +465,16 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df.drop(columns=["_func"], inplace=True, errors="ignore")
 
     # -------------------------------------------------------------------------
-    # STEP 11 – Final sort by numeric GS then Name (stable)
+    # STEP 12 – Final sort by numeric GS then terminal-aware order (stable)
     # -------------------------------------------------------------------------
-    df = df.sort_values(["_gs_sort", "Name"], kind="stable").drop(columns=["_gs_sort"], errors="ignore")
+    is_terminal_sorted = df["Type"].astype(str).isin(terminal_types)
+    df["_terminal_sort"] = df.get("_terminal_sort", df["Name"].astype(str).apply(_terminal_sort_key))
+    df["_terminal_sort_order"] = is_terminal_sorted.map({True: 0, False: 1})
+
+    df = df.sort_values(
+        ["_gs_sort", "_terminal_sort_order", "_terminal_sort", "Name"],
+        kind="stable",
+    ).drop(columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
 
     # -------------------------------------------------------------------------
     # Removed DF
@@ -481,7 +516,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                     ws_c.cell(row=excel_row, column=col).fill = YELLOW_FILL
 
     # Removed
-    removed_out = removed_df.drop(columns=["_gs_orig"], errors="ignore")
+    removed_out = removed_df.drop(columns=["_gs_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
     for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
