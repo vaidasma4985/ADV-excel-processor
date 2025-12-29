@@ -121,7 +121,7 @@ def _allocate_category_gs(
 
 def _terminal_base_name(name: str) -> str:
     s = str(name)
-    s = re.sub(r"^=[A-Z]+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^=[^+]+", "", s)
     s = s.lstrip("=")
     s = re.sub(r"^\+\d+", "", s)
     return s
@@ -135,17 +135,19 @@ def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
     combo = df["Type"].astype(str)
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
 
-    dup_mask = (
-        pd.concat({"base": base, "type": combo, "gs": gs_num}, axis=1)
-        .groupby(["base", "type"])["gs"]
-        .transform("nunique")
-        > 1
-    )
-    if dup_mask.any():
-        bad = df.loc[dup_mask, ["Name", "Type", "Group Sorting"]]
+    offenders: list[tuple[tuple[str, str], list[int]]] = []
+    for (b, t), grp in pd.concat({"base": base, "type": combo, "gs": gs_num}, axis=1).groupby(
+        ["base", "type"], sort=False
+    ):
+        unique_gs = [int(v) for v in sorted(grp["gs"].dropna().unique())]
+        if len(unique_gs) > 1:
+            offenders.append(((b, t), unique_gs))
+
+    if offenders:
+        sample = "; ".join(f"{b}/{t}: {vals}" for (b, t), vals in offenders[:5])
         raise ValueError(
-            "Terminal invariant violated: multiple GS values for the same terminal (Name+Type):\n"
-            f"{bad.to_string(index=False)}"
+            "Terminal invariant violated: each (terminal_base_name, Type) must map to exactly one GS. "
+            f"Examples: {sample}"
         )
 
 
@@ -553,21 +555,23 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         term_data = _allocate_category_gs(term_data, start=1000, end=None, missing_default=1000)
         term_data = _add_gs_prefix(term_data)
 
-        # Terminal duplicate bugfix across GS
+        # Terminal duplicates across GS blocks
         term_data["_terminal_base"] = term_data["Name"].astype(str).apply(_terminal_base_name)
         term_data["_gs_num_final"] = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
         duplicate_idxs: List[int] = []
         for (_, _type), grp in term_data.groupby(["_terminal_base", "Type"], sort=False):
-            if grp["_gs_num_final"].nunique() <= 1:
+            gs_values = grp["_gs_num_final"].dropna().unique()
+            if len(gs_values) <= 1:
                 continue
-            keep_idx = grp.sort_values(["_gs_num_final", "_terminal_sort", "Name"], kind="stable").index[0]
-            duplicate_idxs.extend(i for i in grp.index if i != keep_idx)
+            lowest_gs = min(gs_values)
+            keep_mask = grp["_gs_num_final"].eq(lowest_gs)
+            duplicate_idxs.extend(grp.loc[~keep_mask].index.tolist())
 
         if duplicate_idxs:
             _append_removed(
                 removed_local,
                 term_data.loc[duplicate_idxs],
-                "Removed: duplicate terminal (Name+Type) across multiple GS",
+                "Removed: terminal duplicated across multiple GS blocks",
             )
             term_data = term_data.drop(index=duplicate_idxs).copy()
 
