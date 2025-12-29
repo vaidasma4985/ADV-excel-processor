@@ -118,6 +118,42 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _remove_missing_group_sorting(cleaned_df: pd.DataFrame, removed_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Move rows with missing/blank Group Sorting to Removed."""
+    if cleaned_df.empty:
+        return cleaned_df, removed_df
+
+    missing_mask = cleaned_df["Group Sorting"].isna() | cleaned_df["Group Sorting"].astype(str).str.strip().eq("")
+    if not missing_mask.any():
+        return cleaned_df, removed_df
+
+    missing_rows = cleaned_df[missing_mask].copy()
+    missing_rows["Removed Reason"] = "Missing Group Sorting after allocation"
+    removed_df = pd.concat([removed_df, missing_rows], ignore_index=True)
+    cleaned_df = cleaned_df[~missing_mask].copy()
+    return cleaned_df, removed_df
+
+
+def _validate_group_sorting(cleaned_df: pd.DataFrame) -> None:
+    """Ensure Group Sorting is unique and properly reserved."""
+    if cleaned_df.empty:
+        return
+
+    gs = pd.to_numeric(cleaned_df["Group Sorting"], errors="coerce")
+    if gs.isna().any():
+        raise ValueError("Group Sorting contains missing values after allocation")
+
+    duplicates = gs.duplicated(keep=False)
+    if duplicates.any():
+        dup_vals = sorted(set(int(v) for v in gs[duplicates]))
+        raise ValueError(f"Group Sorting must be unique across all rows; duplicates found for values: {dup_vals}")
+
+    non_a9f_zero = gs.eq(0) & cleaned_df["Type"].astype(str).ne("SE.A9F04604_ADV")
+    if non_a9f_zero.any():
+        bad = cleaned_df.loc[non_a9f_zero, ["Name", "Type"]]
+        raise ValueError("Only SE.A9F04604_ADV may use Group Sorting 0:\n" + bad.to_string(index=False))
+
+
 def _allocate_category_gs(
     df: pd.DataFrame, allocator: GlobalGSAllocator, start: int, end: int | None
 ) -> pd.DataFrame:
@@ -125,24 +161,18 @@ def _allocate_category_gs(
     df = df.copy()
     df["_gs_orig_num"] = pd.to_numeric(df["_gs_orig"], errors="coerce")
 
-    groups: List[Tuple[float | None, List[int]]] = []
-    for orig_gs, grp in df.groupby("_gs_orig_num", sort=False):
-        groups.append((orig_gs if pd.notna(orig_gs) else None, grp.index.to_list()))
+    def sort_key(idx: int) -> Tuple[int, float, int]:
+        orig = df.at[idx, "_gs_orig_num"]
+        if pd.isna(orig):
+            return (1, float("inf"), idx)
+        return (0, float(orig), idx)
 
-    def group_sort_key(item: Tuple[float | None, List[int]]) -> Tuple[int, float, int]:
-        orig, idxs = item
-        first_idx = idxs[0]
-        if orig is None:
-            return (1, float("inf"), first_idx)
-        return (0, float(orig), first_idx)
-
-    groups.sort(key=group_sort_key)
-
-    for orig, idxs in groups:
-        preferred = int(orig) if orig is not None and (orig >= start) and (end is None or orig <= end) else None
+    for idx in sorted(df.index.tolist(), key=sort_key):
+        orig = df.at[idx, "_gs_orig_num"]
+        preferred = int(orig) if pd.notna(orig) and (orig >= start) and (end is None or orig <= end) else None
         new_gs = allocator.allocate(preferred, start=start, end=end)
-        df.loc[idxs, "Group Sorting"] = new_gs
-        df.loc[idxs, "_gs_sort"] = new_gs
+        df.at[idx, "Group Sorting"] = new_gs
+        df.at[idx, "_gs_sort"] = new_gs
 
     df.drop(columns=["_gs_orig_num"], inplace=True, errors="ignore")
     return df
@@ -380,7 +410,15 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     df["Type"] = df["Type"].replace(adv_map)
 
     # -------------------------------------------------------------------------
-    # STEP 4b – relay merge by Name (2POLE/4POLE)
+    # STEP 4b – strict GS rules per component type
+    # -------------------------------------------------------------------------
+    a9f_mask = df["Type"].astype(str).eq("SE.A9F04604_ADV")
+    if a9f_mask.any():
+        df.loc[a9f_mask, "Group Sorting"] = 0
+        df.loc[a9f_mask, "_gs_orig"] = 0
+
+    # -------------------------------------------------------------------------
+    # STEP 4c – relay merge by Name (2POLE/4POLE)
     # -------------------------------------------------------------------------
     def _merge_relay(base_type: str, combined_type: str) -> None:
         nonlocal df
@@ -422,11 +460,13 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     # Category pipelines
     # -------------------------------------------------------------------------
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
-    fuse_types = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV", "SE.A9F04604_ADV"}
-    relay_types = set(df["Type"].unique()) - terminal_types - fuse_types
+    fuse_types = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"}
+    breaker_types = {"SE.A9F04604_ADV"}
+    relay_types = set(df["Type"].unique()) - terminal_types - fuse_types - breaker_types
 
     terminal_df = df[df["Type"].isin(terminal_types)].copy()
     fuse_df = df[df["Type"].isin(fuse_types)].copy()
+    breaker_df = df[df["Type"].isin(breaker_types)].copy()
     relay_df = df[df["Type"].isin(relay_types)].copy()
 
     def process_relays(relay_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -436,6 +476,13 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         relay_data["_gs_sort"] = pd.to_numeric(relay_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
         relay_data = _allocate_category_gs(relay_data, allocator, start=1, end=30)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
+
+    def process_breakers(breaker_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        if breaker_data.empty:
+            return breaker_data.copy(), pd.DataFrame(columns=list(breaker_data.columns) + ["Removed Reason"])
+
+        breaker_data["_gs_sort"] = 0
+        return breaker_data, pd.DataFrame(columns=list(breaker_data.columns) + ["Removed Reason"])
 
     def process_fuses(fuse_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if fuse_data.empty:
@@ -604,19 +651,25 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         return term_data, (pd.concat(removed_local, ignore_index=True) if removed_local else pd.DataFrame())
 
     relay_clean, relay_removed = process_relays(relay_df)
+    breaker_clean, breaker_removed = process_breakers(breaker_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
     terminal_clean, terminal_removed = process_terminals(terminal_df)
 
-    cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
-    removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
+    cleaned_df = pd.concat([relay_clean, breaker_clean, fuse_clean, terminal_clean], ignore_index=True)
+    removed_df_parts = [
+        p for p in [relay_removed, breaker_removed, fuse_removed, terminal_removed] if p is not None and not p.empty
+    ]
     removed_df = pd.concat(removed_parts + removed_df_parts, ignore_index=True) if (removed_parts or removed_df_parts) else pd.DataFrame()
     if removed_df.empty:
         removed_df = pd.DataFrame(columns=list(df.columns) + ["Removed Reason"])
     elif "Removed Reason" not in removed_df.columns:
         removed_df["Removed Reason"] = ""
 
+    cleaned_df, removed_df = _remove_missing_group_sorting(cleaned_df, removed_df)
+
     cleaned_df = _add_gs_prefix(cleaned_df)
     cleaned_df = _apply_function_designation(cleaned_df)
+    _validate_group_sorting(cleaned_df)
 
     _validate_terminal_uniqueness(cleaned_df[cleaned_df["Type"].astype(str).isin(terminal_types)])
 
