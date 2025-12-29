@@ -60,34 +60,6 @@ def _next_free_gs(existing: set[int], preferred: int) -> int:
     return g
 
 
-class GlobalGSAllocator:
-    """Allocates unique Group Sorting numbers across independent pipelines."""
-
-    def __init__(self) -> None:
-        self.used: set[int] = set()
-
-    def allocate(self, preferred: int | None, start: int, end: int | None = None) -> int:
-        """
-        Return the first available GS value within the provided range.
-
-        If ``preferred`` is outside the allowed range it is ignored. Allocation is
-        monotonic and guarantees global uniqueness across categories.
-        """
-
-        candidate = preferred if preferred is not None else start
-        candidate = max(candidate, start)
-
-        while True:
-            if end is not None and candidate > end:
-                raise ValueError("No available Group Sorting values in the requested range")
-
-            if candidate not in self.used:
-                self.used.add(candidate)
-                return candidate
-
-            candidate += 1
-
-
 def _add_gs_prefix(df: pd.DataFrame) -> pd.DataFrame:
     """Prefix Name with +GS where missing."""
     gss = df["Group Sorting"].apply(_gs_str)
@@ -119,30 +91,29 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _allocate_category_gs(
-    df: pd.DataFrame, allocator: GlobalGSAllocator, start: int, end: int | None
+    df: pd.DataFrame, start: int, end: int | None, missing_default: int | pd.Series | None = None
 ) -> pd.DataFrame:
-    """Map Group Sorting into the provided range while keeping relative order."""
+    """Assign Group Sorting while keeping category ordering predictable."""
     df = df.copy()
     df["_gs_orig_num"] = pd.to_numeric(df["_gs_orig"], errors="coerce")
 
-    groups: List[Tuple[float | None, List[int]]] = []
-    for orig_gs, grp in df.groupby("_gs_orig_num", sort=False):
-        groups.append((orig_gs if pd.notna(orig_gs) else None, grp.index.to_list()))
+    if missing_default is None:
+        missing_default_series = pd.Series(start, index=df.index)
+    elif isinstance(missing_default, pd.Series):
+        missing_default_series = missing_default.reindex(df.index).fillna(start)
+    else:
+        missing_default_series = pd.Series(missing_default, index=df.index)
 
-    def group_sort_key(item: Tuple[float | None, List[int]]) -> Tuple[int, float, int]:
-        orig, idxs = item
-        first_idx = idxs[0]
-        if orig is None:
-            return (1, float("inf"), first_idx)
-        return (0, float(orig), first_idx)
+    def resolve(idx: int, orig: float | None) -> int:
+        if orig is not None:
+            val = int(orig)
+            if (val >= start) and (end is None or val <= end):
+                return val
+        return int(missing_default_series.loc[idx])
 
-    groups.sort(key=group_sort_key)
-
-    for orig, idxs in groups:
-        preferred = int(orig) if orig is not None and (orig >= start) and (end is None or orig <= end) else None
-        new_gs = allocator.allocate(preferred, start=start, end=end)
-        df.loc[idxs, "Group Sorting"] = new_gs
-        df.loc[idxs, "_gs_sort"] = new_gs
+    resolved = pd.Series({idx: resolve(idx, orig if pd.notna(orig) else None) for idx, orig in df["_gs_orig_num"].items()})
+    df["Group Sorting"] = resolved
+    df["_gs_sort"] = pd.to_numeric(resolved, errors="coerce").fillna(missing_default_series).astype(int)
 
     df.drop(columns=["_gs_orig_num"], inplace=True, errors="ignore")
     return df
@@ -416,8 +387,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     _merge_relay("SE.RGZE1S48M", "SE.RGZE1S48M + SE.RXG22P7")
     _merge_relay("SE.RXZE2S114M", "SE.RXZE2S114M + SE.RXM4GB2BD")
 
-    allocator = GlobalGSAllocator()
-
     # -------------------------------------------------------------------------
     # Category pipelines
     # -------------------------------------------------------------------------
@@ -434,7 +403,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             return relay_data.copy(), pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
         relay_data["_gs_sort"] = pd.to_numeric(relay_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
-        relay_data = _allocate_category_gs(relay_data, allocator, start=1, end=30)
+        relay_data = _allocate_category_gs(relay_data, start=1, end=30, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
     def process_fuses(fuse_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -442,7 +411,11 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             return fuse_data.copy(), pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
         fuse_data["_gs_sort"] = pd.to_numeric(fuse_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
-        fuse_data = _allocate_category_gs(fuse_data, allocator, start=31, end=50)
+        missing_defaults = pd.Series(31, index=fuse_data.index)
+        a9f_mask = fuse_data["Type"].astype(str).eq("SE.A9F04604_ADV")
+        missing_defaults.loc[a9f_mask] = 0
+
+        fuse_data = _allocate_category_gs(fuse_data, start=31, end=50, missing_default=missing_defaults)
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(term_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -577,7 +550,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 )
                 term_data = term_data.drop(index=dup_idxs).copy()
 
-        term_data = _allocate_category_gs(term_data, allocator, start=1000, end=None)
+        term_data = _allocate_category_gs(term_data, start=1000, end=None, missing_default=1000)
         term_data = _add_gs_prefix(term_data)
 
         # Terminal duplicate bugfix across GS
