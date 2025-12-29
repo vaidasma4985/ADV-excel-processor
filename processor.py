@@ -91,31 +91,34 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _allocate_category_gs(
-    df: pd.DataFrame, start: int, end: int | None, missing_default: int | pd.Series | None = None
+    df: pd.DataFrame, missing_default: int | pd.Series | None = None, fallback_col: str | None = None
 ) -> pd.DataFrame:
-    """Assign Group Sorting while keeping category ordering predictable."""
+    """
+    Fill missing Group Sorting values without overwriting existing ones.
+
+    `missing_default` supplies the value (or per-row series) for rows where
+    Group Sorting is missing. If `fallback_col` is provided, its numeric value
+    is used when both Group Sorting and `missing_default` are missing.
+    """
     df = df.copy()
-    df["_gs_orig_num"] = pd.to_numeric(df["_gs_orig"], errors="coerce")
 
-    if missing_default is None:
-        missing_default_series = pd.Series(start, index=df.index)
-    elif isinstance(missing_default, pd.Series):
-        missing_default_series = missing_default.reindex(df.index).fillna(start)
+    gs_numeric = pd.to_numeric(df["Group Sorting"], errors="coerce")
+
+    if isinstance(missing_default, pd.Series):
+        default_series = missing_default.reindex(df.index)
+    elif missing_default is None:
+        default_series = pd.Series([None] * len(df), index=df.index, dtype="float")
     else:
-        missing_default_series = pd.Series(missing_default, index=df.index)
+        default_series = pd.Series(missing_default, index=df.index)
 
-    def resolve(idx: int, orig: float | None) -> int:
-        if orig is not None:
-            val = int(orig)
-            if (val >= start) and (end is None or val <= end):
-                return val
-        return int(missing_default_series.loc[idx])
+    if fallback_col is not None and fallback_col in df.columns:
+        fallback_series = pd.to_numeric(df[fallback_col], errors="coerce")
+        default_series = default_series.combine_first(fallback_series)
 
-    resolved = pd.Series({idx: resolve(idx, orig if pd.notna(orig) else None) for idx, orig in df["_gs_orig_num"].items()})
+    resolved = gs_numeric.combine_first(default_series)
     df["Group Sorting"] = resolved
-    df["_gs_sort"] = pd.to_numeric(resolved, errors="coerce").fillna(missing_default_series).astype(int)
+    df["_gs_sort"] = pd.to_numeric(resolved, errors="coerce").fillna(10**9).astype(int)
 
-    df.drop(columns=["_gs_orig_num"], inplace=True, errors="ignore")
     return df
 
 
@@ -403,7 +406,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             return relay_data.copy(), pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
         relay_data["_gs_sort"] = pd.to_numeric(relay_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
-        relay_data = _allocate_category_gs(relay_data, start=1, end=30, missing_default=1)
+        relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
     def process_fuses(fuse_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -415,7 +418,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         a9f_mask = fuse_data["Type"].astype(str).eq("SE.A9F04604_ADV")
         missing_defaults.loc[a9f_mask] = 0
 
-        fuse_data = _allocate_category_gs(fuse_data, start=31, end=50, missing_default=missing_defaults)
+        fuse_data = _allocate_category_gs(fuse_data, missing_default=missing_defaults)
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(term_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -550,7 +553,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 )
                 term_data = term_data.drop(index=dup_idxs).copy()
 
-        term_data = _allocate_category_gs(term_data, start=1000, end=None, missing_default=1000)
+        term_data = _allocate_category_gs(term_data, missing_default=None, fallback_col="_gs_orig")
         term_data = _add_gs_prefix(term_data)
 
         # Terminal duplicate bugfix across GS
