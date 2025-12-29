@@ -277,9 +277,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     _append_removed(removed_parts, df[non_numeric], "Removed: Group Sorting is not numeric")
     df = df[~non_numeric].copy()
 
-    # Įsimenam ORIGINALŲ GS (tik skaičiai)
-    df["_gs_orig"] = pd.to_numeric(df["Group Sorting"], errors="coerce")
-
     # -------------------------------------------------------------------------
     # STEP 1 – remove by Name prefixes
     # -------------------------------------------------------------------------
@@ -387,6 +384,12 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     _merge_relay("SE.RGZE1S48M", "SE.RGZE1S48M + SE.RXG22P7")
     _merge_relay("SE.RXZE2S114M", "SE.RXZE2S114M + SE.RXM4GB2BD")
 
+    # Įsimenam ORIGINALŲ GS (tik skaičiai)
+    df["_gs_orig"] = pd.to_numeric(df["Group Sorting"], errors="coerce")
+
+    # Taikome X192A terminalų GS taisyklę prieš bet kokį terminalų skaidymą/rikiavimą
+    df = apply_x192a_terminal_gs_rules(df)
+
     # -------------------------------------------------------------------------
     # Category pipelines
     # -------------------------------------------------------------------------
@@ -423,8 +426,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
-
-        term_data = apply_x192a_terminal_gs_rules(term_data)
 
         term_data["Quantity"] = pd.to_numeric(term_data["Quantity"], errors="coerce").fillna(0)
 
