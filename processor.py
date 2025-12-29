@@ -461,15 +461,27 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         # PE /3 reduction
         name_s = term_data["Name"].astype(str)
-        pe_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
+        pe_mask = (
+            term_data["Type"].astype(str).eq("WAGO.2002-3207_ADV") & name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
+        )
         if pe_mask.any():
-            keep: List[int] = []
-            for pe_name, grp in term_data[pe_mask].groupby("Name", sort=False):
+            remove_idxs: List[int] = []
+            for _, grp in term_data[pe_mask].groupby("Name", sort=False):
                 idxs = grp.index.to_list()
                 cnt = len(idxs)
                 need = (cnt + 2) // 3  # ceil(cnt/3)
-                keep.extend(idxs[:need])
-            term_data = term_data[(~pe_mask) | (term_data.index.isin(keep))].copy()
+                keep = idxs[:need]
+                for offset, idx in enumerate(keep):
+                    term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
+                remove_idxs.extend(idxs[need:])
+
+            if remove_idxs:
+                _append_removed(
+                    removed_local,
+                    term_data.loc[remove_idxs],
+                    "Removed: PE reduction ceil(count/3)",
+                )
+                term_data = term_data.drop(index=remove_idxs).copy()
 
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
