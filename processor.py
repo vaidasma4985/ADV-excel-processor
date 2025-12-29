@@ -201,14 +201,13 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     Vienoje bazinėje GS (pvz. 2010), jei yra X192A*:
       - iki X192A paliekam esamam GS
-      - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
-      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
+      - visi X192A* perkelti į GS = base+1 (pvz. 2011)
+      - visi terminalai po paskutinio X192A (pagal _terminal_sort_key) perkelti į GS = base+2 (pvz. 2012)
     """
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    existing_gs: set[int] = set(gs_num.dropna().astype(int).tolist())
 
     # Bazė = originalus GS (tik terminalams)
     if "_gs_orig" not in df.columns:
@@ -226,16 +225,17 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
         if not grp["_is_x192a"].any():
             continue
 
-        gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
-        max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
+        base_int = int(base_gs)
+        gs_for_x192a = base_int + 1
+        gs_for_after = base_int + 2
+
+        x192a_keys = grp.loc[grp["_is_x192a"], "_xkey"]
+        max_x192a_key = int(x192a_keys.max())
+
         after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
 
-        gs_for_after = None
-        if after_mask.any():
-            gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
-
         df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
-        if gs_for_after is not None:
+        if after_mask.any():
             df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
 
     return df
