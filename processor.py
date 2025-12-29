@@ -159,18 +159,24 @@ def _extract_x4(name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _terminal_core(name: str) -> str:
+    s = str(name).strip().upper()
+    x_pos = s.find("-X")
+    return s[x_pos:] if x_pos != -1 else s
+
+
 def _terminal_sort_key(name: str) -> int:
     """
     Rikiavimo raktas, kad X192A* galėtume laikyti "tarp" X1922 ir X1953.
     Prielaida: X192A3 = 1923 (t.y. 192 + A3).
     """
-    s = str(name)
+    s = _terminal_core(name)
 
-    m = re.search(r"-X(\d{4})\b", s)
+    m = re.search(r"-X(\d{4})(?![0-9A-Z])", s)
     if m:
         return int(m.group(1))
 
-    m = re.search(r"-X(\d{3})A(\d+)\b", s)  # X192A3
+    m = re.search(r"-X(\d{3})A(\d+)", s)  # X192A3
     if m:
         return int(m.group(1) + m.group(2))  # "192"+"3" => 1923
 
@@ -179,6 +185,10 @@ def _terminal_sort_key(name: str) -> int:
         return int(m.group(1))
 
     return 10**9
+
+
+def _is_x192a_name(name: str) -> bool:
+    return "-X192A" in _terminal_core(name)
 
 
 def _normalize_terminal_name(name: str) -> str:
@@ -204,15 +214,12 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
       - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
       - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
     """
-    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+    terminal_types = {"WAGO.2002-3201_ADV"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
-
-    gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    existing_gs: set[int] = set(gs_num.dropna().astype(int).tolist())
 
     # Bazė = originalus GS (tik terminalams)
     if "_gs_orig" not in df.columns:
-        df["_gs_orig"] = gs_num
+        df["_gs_orig"] = pd.to_numeric(df["Group Sorting"], errors="coerce")
 
     work = df[is_terminal & df["_gs_orig"].notna()].copy()
     if work.empty:
@@ -220,23 +227,47 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     work["_base_gs"] = work["_gs_orig"].astype(int)
     work["_xkey"] = work["Name"].astype(str).apply(_terminal_sort_key)
-    work["_is_x192a"] = work["Name"].astype(str).str.contains(r"-X192A\d+\b", regex=True, na=False)
+    work["_is_x192a"] = work["Name"].astype(str).apply(_is_x192a_name)
 
+    postcheck: dict[int, dict[str, Any]] = {}
     for base_gs, grp in work.groupby("_base_gs", sort=True):
         if not grp["_is_x192a"].any():
             continue
 
-        gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
+        gs_for_x192a = int(base_gs) + 1
         max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
         after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
 
-        gs_for_after = None
-        if after_mask.any():
-            gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
+        gs_for_after = int(base_gs) + 2
 
         df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
-        if gs_for_after is not None:
-            df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
+        df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
+
+        postcheck[base_gs] = {
+            "has_after": after_mask.any(),
+            "idx_all": grp.index,
+            "target_x192a": gs_for_x192a,
+            "target_after": gs_for_after,
+        }
+
+    critical_bases = {2010, 3010}
+    if postcheck:
+        gs_orig_int = pd.to_numeric(df["_gs_orig"], errors="coerce").fillna(-1).astype(int)
+        gs_now = pd.to_numeric(df["Group Sorting"], errors="coerce")
+        for base_gs, meta in postcheck.items():
+            if base_gs not in critical_bases:
+                continue
+
+            base_mask = is_terminal & gs_orig_int.eq(base_gs)
+            moved_x192a = df[base_mask & gs_now.eq(meta["target_x192a"])]
+            moved_after = df[base_mask & gs_now.eq(meta["target_after"])]
+            if meta and (moved_x192a.empty or moved_after.empty):
+                sample_names = df.loc[meta["idx_all"], "Name"].astype(str).head(5).tolist()
+                raise ValueError(
+                    f"X192A split failed for base GS {base_gs}: expected rows in "
+                    f"{meta['target_x192a']} and {meta['target_after']} when X192A is present. "
+                    f"Sample names: {', '.join(sample_names)}"
+                )
 
     return df
 
