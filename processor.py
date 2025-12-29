@@ -201,14 +201,13 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     Vienoje bazinėje GS (pvz. 2010), jei yra X192A*:
       - iki X192A paliekam esamam GS
-      - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
-      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
+      - visi X192A* perkelti į naują GS = base+1 (pvz. 2011)
+      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS = base+2 (pvz. 2012)
     """
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    existing_gs: set[int] = set(gs_num.dropna().astype(int).tolist())
 
     # Bazė = originalus GS (tik terminalams)
     if "_gs_orig" not in df.columns:
@@ -226,13 +225,11 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
         if not grp["_is_x192a"].any():
             continue
 
-        gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
+        gs_for_x192a = int(base_gs) + 1
         max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
         after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
 
-        gs_for_after = None
-        if after_mask.any():
-            gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
+        gs_for_after = (int(base_gs) + 2) if after_mask.any() else None
 
         df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
         if gs_for_after is not None:
@@ -425,6 +422,12 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             return term_data.copy(), empty_removed
 
         term_data = apply_x192a_terminal_gs_rules(term_data)
+        gs_numeric = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+        gs_orig_numeric = pd.to_numeric(term_data.get("_gs_orig"), errors="coerce")
+        missing_gs_mask = gs_numeric.isna() & gs_orig_numeric.notna()
+        if missing_gs_mask.any():
+            gs_numeric.loc[missing_gs_mask] = gs_orig_numeric.loc[missing_gs_mask]
+        term_data["Group Sorting"] = gs_numeric
 
         term_data["Quantity"] = pd.to_numeric(term_data["Quantity"], errors="coerce").fillna(0)
 
@@ -550,7 +553,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 )
                 term_data = term_data.drop(index=dup_idxs).copy()
 
-        term_data = _allocate_category_gs(term_data, start=1000, end=None, missing_default=1000)
         term_data = _add_gs_prefix(term_data)
 
         # Terminal duplicate bugfix across GS
