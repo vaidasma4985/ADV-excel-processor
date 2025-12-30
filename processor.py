@@ -459,17 +459,39 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         term_data = pd.DataFrame(rows)
 
-        # PE /3 reduction
+        # PE mapping and /3 reduction
+        pe_mask = term_data["Type"].astype(str).str.contains("2002-3207", na=False)
+        pe_with_base = pe_mask & term_data["_gs_orig"].notna()
+
+        if pe_with_base.any():
+            base_values = term_data.loc[pe_with_base, "_gs_orig"].astype(int)
+            unique_bases = sorted(base_values.unique())
+            base_to_pe = {b: i + 1 for i, b in enumerate(unique_bases)}
+
+            for idx in term_data.loc[pe_with_base].index:
+                base = int(term_data.at[idx, "_gs_orig"])
+                pe_id = base_to_pe[base]
+                term_data.at[idx, "Name"] = f"=CONTROL+{base}-PE{pe_id}"
+
         name_s = term_data["Name"].astype(str)
-        pe_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
-        if pe_mask.any():
+        pe_name_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
+        if pe_name_mask.any():
             keep: List[int] = []
-            for pe_name, grp in term_data[pe_mask].groupby("Name", sort=False):
+            for pe_name, grp in term_data[pe_name_mask].groupby("Name", sort=False):
                 idxs = grp.index.to_list()
                 cnt = len(idxs)
                 need = (cnt + 2) // 3  # ceil(cnt/3)
+
+                for offset, idx in enumerate(idxs[:need]):
+                    term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
+
+                removed_idxs = idxs[need:]
+                if removed_idxs:
+                    _append_removed(removed_local, term_data.loc[removed_idxs], "Removed: PE reduction (/3)")
+
                 keep.extend(idxs[:need])
-            term_data = term_data[(~pe_mask) | (term_data.index.isin(keep))].copy()
+
+            term_data = term_data[(~pe_name_mask) | (term_data.index.isin(keep))].copy()
 
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
