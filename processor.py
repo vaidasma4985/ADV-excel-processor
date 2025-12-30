@@ -471,7 +471,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             for idx in term_data.loc[pe_with_base].index:
                 base = int(term_data.at[idx, "_gs_orig"])
                 pe_id = base_to_pe[base]
-                term_data.at[idx, "Name"] = f"=CONTROL+{base}-PE{pe_id}"
+                term_data.at[idx, "Name"] = f"+{base}-PE{pe_id}"
                 term_data.at[idx, "Group Sorting"] = base
 
         name_s = term_data["Name"].astype(str)
