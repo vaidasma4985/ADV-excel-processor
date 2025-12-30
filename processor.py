@@ -90,6 +90,32 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _apply_pe_canonical_names(df: pd.DataFrame) -> pd.DataFrame:
+    pe_mask = df["Type"].astype(str).str.contains("2002-3207", na=False)
+    if not pe_mask.any() or "_gs_orig" not in df.columns:
+        return df
+
+    pe_gs = pd.to_numeric(df.loc[pe_mask, "_gs_orig"], errors="coerce")
+    pe_gs_valid = pe_gs.dropna().astype(int)
+    if pe_gs_valid.empty:
+        return df
+
+    base_to_id = {b: idx + 1 for idx, b in enumerate(sorted(pe_gs_valid.unique()))}
+
+    def _canonical_name(base_val: float | int | None) -> str | None:
+        if pd.isna(base_val):
+            return None
+        base_int = int(base_val)
+        pe_id = base_to_id.get(base_int)
+        if pe_id is None:
+            return None
+        return f"=CONTROL+{base_int}-PE{pe_id}"
+
+    new_names = pe_gs.map(_canonical_name)
+    df.loc[pe_mask, "Name"] = new_names.combine_first(df.loc[pe_mask, "Name"])
+    return df
+
+
 def _allocate_category_gs(
     df: pd.DataFrame, missing_default: int | pd.Series | None = None, fallback_col: str | None = None
 ) -> pd.DataFrame:
@@ -593,6 +619,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     cleaned_df = _add_gs_prefix(cleaned_df)
     cleaned_df = _apply_function_designation(cleaned_df)
+    cleaned_df = _apply_pe_canonical_names(cleaned_df)
 
     _validate_terminal_uniqueness(cleaned_df[cleaned_df["Type"].astype(str).isin(terminal_types)])
 
