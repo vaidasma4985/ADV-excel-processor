@@ -488,7 +488,11 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
                 removed_idxs = idxs[need:]
                 if removed_idxs:
-                    _append_removed(removed_local, term_data.loc[removed_idxs], "Removed: PE reduction (/3)")
+                    _append_removed(
+                        removed_local,
+                        term_data.loc[removed_idxs],
+                        "Removed: PE reduction ceil(count/3)",
+                    )
 
                 keep.extend(idxs[:need])
 
