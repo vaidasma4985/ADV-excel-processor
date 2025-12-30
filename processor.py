@@ -194,6 +194,57 @@ def _normalize_terminal_name(name: str) -> str:
 
 
 # -----------------------------------------------------------------------------
+# PE helpers
+# -----------------------------------------------------------------------------
+def _pe_group_mapping(gs_values: List[int]) -> dict[int, int]:
+    return {gs: i + 1 for i, gs in enumerate(sorted(gs_values))}
+
+
+def _apply_pe_logic(term_data: pd.DataFrame, removed_local: List[pd.DataFrame]) -> pd.DataFrame:
+    term_data = term_data.copy()
+    term_data["_pe_order"] = range(len(term_data))
+
+    target_mask = term_data["Type"].astype(str).str.contains("2002-3207", na=False)
+    if not target_mask.any():
+        term_data.drop(columns=["_pe_order"], inplace=True)
+        return term_data
+
+    gs_values = [_gs_int(v) for v in term_data.loc[target_mask, "Group Sorting"]]
+    gs_values = [g for g in gs_values if g is not None]
+    gs_to_pe = _pe_group_mapping(gs_values) if gs_values else {}
+
+    def _rename(idx: int) -> None:
+        gs_num = _gs_int(term_data.at[idx, "Group Sorting"])
+        pe_id = gs_to_pe.get(gs_num)
+        if pe_id is None or gs_num is None:
+            return
+        term_data.at[idx, "Name"] = f"+{gs_num}-PE{pe_id}"
+
+    term_data.loc[target_mask].index.to_series().apply(_rename)
+
+    drop_idxs: List[int] = []
+    for _, grp in term_data[target_mask].groupby("Name", sort=False):
+        idxs = grp.sort_values("_pe_order").index.to_list()
+        cnt = len(idxs)
+        need = (cnt + 2) // 3
+        drop_idxs.extend(idxs[need:])
+
+    if drop_idxs:
+        drop_block = term_data.loc[drop_idxs].drop(columns=["_pe_order"], errors="ignore")
+        _append_removed(removed_local, drop_block, "Removed: PE reduction ceil(count/3)")
+        term_data = term_data.drop(index=drop_idxs).copy()
+
+    kept_mask = term_data["Type"].astype(str).str.contains("2002-3207", na=False)
+    for _, grp in term_data[kept_mask].groupby("Name", sort=False):
+        idxs = grp.sort_values("_pe_order").index.to_list()
+        for i, idx in enumerate(idxs):
+            term_data.at[idx, "Designation"] = "" if i == 0 else str(i)
+
+    term_data.drop(columns=["_pe_order"], inplace=True)
+    return term_data
+
+
+# -----------------------------------------------------------------------------
 # Terminal rule: X192A insertion inside one base GS group
 # -----------------------------------------------------------------------------
 def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
@@ -459,17 +510,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         term_data = pd.DataFrame(rows)
 
-        # PE /3 reduction
-        name_s = term_data["Name"].astype(str)
-        pe_mask = name_s.str.contains(r"-PE\d+\b", regex=True, na=False)
-        if pe_mask.any():
-            keep: List[int] = []
-            for pe_name, grp in term_data[pe_mask].groupby("Name", sort=False):
-                idxs = grp.index.to_list()
-                cnt = len(idxs)
-                need = (cnt + 2) // 3  # ceil(cnt/3)
-                keep.extend(idxs[:need])
-            term_data = term_data[(~pe_mask) | (term_data.index.isin(keep))].copy()
+        # PE rename and reduction (2002-3207 terminals)
+        term_data = _apply_pe_logic(term_data, removed_local)
 
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
