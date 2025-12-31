@@ -152,6 +152,31 @@ def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
         )
 
 
+def validate_terminal_covers(term_df: pd.DataFrame) -> None:
+    """
+    Ensure every original GS for control terminals has at least one cover assigned.
+    """
+    if term_df.empty or "_gs_orig" not in term_df.columns:
+        return
+
+    target_type = "WAGO.2002-3201_ADV"
+    terminals = term_df[term_df["Type"].astype(str).eq(target_type)].copy()
+    if terminals.empty:
+        return
+
+    base_gs = pd.to_numeric(terminals["_gs_orig"], errors="coerce").dropna().astype(int)
+    if base_gs.empty:
+        return
+
+    cover_mask = terminals["Accessories"].astype(str).eq("WAGO.2002-3292_ADV")
+    covered_bases = pd.to_numeric(terminals.loc[cover_mask, "_gs_orig"], errors="coerce").dropna().astype(int)
+
+    missing = [gs for gs in sorted(base_gs.unique()) if gs not in set(covered_bases.unique())]
+    if missing:
+        missing_str = ", ".join(str(m) for m in missing)
+        raise ValueError(f"Missing terminal covers for original GS: [{missing_str}]")
+
+
 def _extract_x_first2(name: str) -> str | None:
     m = re.search(r"-X(\d{2})\d{2}\b", str(name))
     return m.group(1) if m else None
@@ -603,6 +628,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         term_data.drop(columns=["_terminal_base", "_gs_num_final"], inplace=True, errors="ignore")
         _validate_terminal_uniqueness(term_data)
+        validate_terminal_covers(term_data)
 
         return term_data, (pd.concat(removed_local, ignore_index=True) if removed_local else pd.DataFrame())
 
