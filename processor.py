@@ -435,9 +435,11 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         def _parse_fuse_key(name: str) -> dict | None:
             s = str(name)
-            m_a = re.search(r"-F(\d+)A(\d+)?", s)
+            m_a = re.search(r"-F(\d{3})A(\d+)", s)
             if m_a:
-                return {"main": int(m_a.group(1)), "sub": int(m_a.group(2) or 0), "is_a": True}
+                main = int(m_a.group(1))
+                sub = int(m_a.group(2))
+                return {"main": main, "sub": sub, "is_a": True}
             m = re.search(r"-F(\d+)(?:\.(\d+))?", s)
             if not m:
                 return None
@@ -446,9 +448,10 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         def _fuse_order_value(key: dict | None) -> float | None:
             if key is None:
                 return None
-            if key.get("is_a") and key.get("main") == 192:
-                return key["main"] * 1000 + 500 + key["sub"]
-            return key["main"] * 1000 + key["sub"]
+            if key.get("is_a"):
+                # F192A5 -> 1925 (matches terminal-style insertion)
+                return int(f"{key['main']}{key['sub']}")
+            return key["main"] + key["sub"] / 10
 
         fuse_data["_fuse_key"] = fuse_data["Name"].astype(str).apply(_parse_fuse_key)
         fuse_data["_fuse_order_val"] = fuse_data["_fuse_key"].apply(_fuse_order_value)
