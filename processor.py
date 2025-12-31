@@ -622,6 +622,17 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         term_data.drop(columns=["_terminal_base", "_gs_num_final"], inplace=True, errors="ignore")
         _validate_terminal_uniqueness(term_data)
 
+        # Secondary accessory on the last terminal per original GS
+        terminal_mask = term_data["Type"].astype(str).isin(terminal_types) & term_data["_gs_orig"].notna()
+        if terminal_mask.any():
+            ordering_cols = ["_gs_sort", "_terminal_sort", "Name"]
+            for base_gs, grp in term_data[terminal_mask].groupby("_gs_orig", sort=False):
+                ordered = grp.sort_values(ordering_cols, kind="stable")
+                last_idx = ordered.index[-1]
+                if str(term_data.at[last_idx, "Accessories2"]).strip() == "":
+                    term_data.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
+                    term_data.at[last_idx, "Quantity of accessories2"] = 1
+
         return term_data, (pd.concat(removed_local, ignore_index=True) if removed_local else pd.DataFrame())
 
     relay_clean, relay_removed = process_relays(relay_df)
