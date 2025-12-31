@@ -152,14 +152,22 @@ def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
         )
 
 
-def _extract_x_first2(name: str) -> str | None:
-    m = re.search(r"-X(\d{2})\d{2}\b", str(name))
-    return m.group(1) if m else None
+def _extract_x_digits(name: str) -> str | None:
+    m = re.search(r"-X(\d+)", str(name))
+    if not m:
+        return None
+    digits = m.group(1)
+    return digits if len(digits) >= 2 else None
 
 
-def _extract_x4(name: str) -> int | None:
-    m = re.search(r"-X(\d{4})\b", str(name))
-    return int(m.group(1)) if m else None
+def _extract_x_subgroup(name: str) -> str | None:
+    digits = _extract_x_digits(name)
+    return digits[:2] if digits is not None else None
+
+
+def _x_number_endswith_14(name: str) -> bool:
+    digits = _extract_x_digits(name)
+    return bool(digits and digits.endswith("14"))
 
 
 def _terminal_sort_key(name: str) -> int:
@@ -257,6 +265,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     df["Name"] = df["Name"].astype(str)
     df["Type"] = df["Type"].astype(str)
+    df["_name_orig"] = df["Name"]
 
     # ensure columns exist
     for col, default in [
@@ -514,34 +523,42 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         gs_base = pd.to_numeric(term_data.get("_gs_orig", pd.Series([None] * len(term_data))), errors="coerce")
 
-        def _set_cover(idx: int) -> None:
-            if str(term_data.at[idx, "Accessories"]).strip() == "":
-                term_data.at[idx, "Accessories"] = "WAGO.2002-3292_ADV"
-                term_data.at[idx, "Quantity of accessories"] = 1
+        def _place_cover(candidate_idxs: List[int], gs_orig_value: int | None, subgroup_key: str | None) -> None:
+            for idx in reversed(candidate_idxs):
+                if str(term_data.at[idx, "Accessories"]).strip() == "":
+                    term_data.at[idx, "Accessories"] = "WAGO.2002-3292_ADV"
+                    term_data.at[idx, "Quantity of accessories"] = 1
+                    return
+            raise ValueError(
+                f"Cannot place terminal cover (gs_orig={gs_orig_value}, subgroup={subgroup_key}): no empty Accessories slot"
+            )
 
         for base in (1010, 1110):
             m = term_data["Type"].astype(str).isin(terminal_types) & gs_base.eq(base)
             if not m.any():
                 continue
             tmp = term_data[m].copy()
-            tmp["_sub"] = tmp["Name"].astype(str).apply(_extract_x_first2)
-            for _, grp in tmp.groupby("_sub", sort=False):
-                last_idx = grp.index.to_list()[-1]
-                _set_cover(last_idx)
+            tmp["_sub"] = tmp["_name_orig"].astype(str).apply(_extract_x_subgroup)
+            for _, grp in tmp.groupby("_sub", sort=False, dropna=False):
+                idxs = grp.index.to_list()
+                _place_cover(idxs, base, grp["_sub"].iloc[0])
 
         m1030 = term_data["Type"].astype(str).isin(terminal_types) & gs_base.eq(1030)
         if m1030.any():
             tmp = term_data[m1030].copy()
-            tmp["_sub"] = tmp["Name"].astype(str).apply(_extract_x_first2)
-            for _, grp in tmp.groupby("_sub", sort=False):
-                idx14 = None
-                for idx in grp.index:
-                    x4 = _extract_x4(term_data.at[idx, "Name"])
-                    if x4 is not None and str(x4).endswith("14"):
-                        idx14 = idx
-                if idx14 is None:
-                    idx14 = grp.index.to_list()[-1]
-                _set_cover(idx14)
+            tmp["_sub"] = tmp["_name_orig"].astype(str).apply(_extract_x_subgroup)
+            for _, grp in tmp.groupby("_sub", sort=False, dropna=False):
+                target_idx = None
+                idxs = grp.index.to_list()
+                for idx in idxs:
+                    if _x_number_endswith_14(term_data.at[idx, "_name_orig"]):
+                        target_idx = idx
+                        break
+                if target_idx is None:
+                    target_idx = idxs[-1]
+                target_pos = idxs.index(target_idx)
+                candidate_idxs = idxs[: target_pos + 1]
+                _place_cover(candidate_idxs, 1030, grp["_sub"].iloc[0])
 
         other_mask = (
             term_data["Type"].astype(str).isin(terminal_types) & gs_base.notna() & (~gs_base.isin([1010, 1110, 1030]))
@@ -550,7 +567,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             xkey = term_data["Name"].astype(str).apply(_terminal_sort_key)
             for _, grp_idxs in term_data[other_mask].groupby(gs_base[other_mask], sort=True).groups.items():
                 idxs = list(grp_idxs)
-                best = max(
+                sorted_idxs = sorted(
                     idxs,
                     key=lambda i: (
                         int(term_data.at[i, "_gs_sort"]),
@@ -558,7 +575,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                         str(term_data.at[i, "Designation"]),
                     ),
                 )
-                _set_cover(best)
+                gs_val = term_data.at[sorted_idxs[0], "_gs_orig"]
+                _place_cover(sorted_idxs, gs_val if pd.notna(gs_val) else None, None)
 
         # remove duplicate terminals within same original GS
         term_data["_terminal_sort"] = term_data["Name"].astype(str).apply(_terminal_sort_key)
@@ -637,7 +655,17 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     cleaned_df = cleaned_df.sort_values(
         ["_gs_sort", "_terminal_sort_order", "_terminal_sort", "Name"],
         kind="stable",
-    ).drop(columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
+    )
+
+    # Single secondary accessory on the globally last WAGO.2002-3201_ADV terminal
+    mask_primary_terminal = cleaned_df["Type"].astype(str).eq("WAGO.2002-3201_ADV")
+    if mask_primary_terminal.any():
+        last_idx = cleaned_df[mask_primary_terminal].index[-1]
+        if str(cleaned_df.at[last_idx, "Accessories2"]).strip() == "":
+            cleaned_df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
+            cleaned_df.at[last_idx, "Quantity of accessories2"] = 1
+
+    cleaned_df = cleaned_df.drop(columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
 
     # Workbook output
     wb = Workbook()
@@ -646,7 +674,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     ws_r = wb.create_sheet("Removed")
 
     out_clean = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
-    out_clean = out_clean.drop(columns=["_gs_orig"], errors="ignore")
+    out_clean = out_clean.drop(columns=["_gs_orig", "_name_orig"], errors="ignore")
     for row in dataframe_to_rows(out_clean, index=False, header=True):
         ws_c.append(row)
 
@@ -662,7 +690,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 for col in range(1, ws_c.max_column + 1):
                     ws_c.cell(row=excel_row, column=col).fill = YELLOW_FILL
 
-    removed_out = removed_df.drop(columns=["_gs_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
+    removed_out = removed_df.drop(
+        columns=["_gs_orig", "_name_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore"
+    )
     for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
