@@ -422,12 +422,104 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         if fuse_data.empty:
             return fuse_data.copy(), pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
-        fuse_data["_gs_sort"] = pd.to_numeric(fuse_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
-        missing_defaults = pd.Series(31, index=fuse_data.index)
-        a9f_mask = fuse_data["Type"].astype(str).eq("SE.A9F04604_ADV")
-        missing_defaults.loc[a9f_mask] = 0
+        fuse_data = fuse_data.copy()
+        fuse_data["_orig_order"] = range(len(fuse_data))
+        fuse_data["Accessories"] = fuse_data["Accessories"].fillna("")
+        fuse_data["Accessories2"] = fuse_data["Accessories2"].fillna("")
+        fuse_data["Quantity of accessories"] = (
+            pd.to_numeric(fuse_data["Quantity of accessories"], errors="coerce").fillna(0).astype(int)
+        )
+        fuse_data["Quantity of accessories2"] = (
+            pd.to_numeric(fuse_data["Quantity of accessories2"], errors="coerce").fillna(0).astype(int)
+        )
 
+        def _parse_fuse_key(name: str) -> Tuple[int, int] | None:
+            m = re.search(r"-F(\d+)(?:\.(\d+))?", str(name))
+            if not m:
+                return None
+            main = int(m.group(1))
+            sub_raw = m.group(2)
+            sub = int(sub_raw) if sub_raw is not None else -1
+            return main, sub
+
+        fuse_data["_fuse_key"] = fuse_data["Name"].astype(str).apply(_parse_fuse_key)
+
+        def _fuse_sort_key(idx: int) -> Tuple[int, int, int, int]:
+            key = fuse_data.at[idx, "_fuse_key"]
+            orig = int(fuse_data.at[idx, "_orig_order"])
+            if key is None:
+                return (1, 10**9, 10**9, orig)
+            main, sub = key
+            return (0, main, sub, orig)
+
+        fuse_types_target = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"}
+        is_541 = fuse_data["Type"].astype(str).eq("WAGO.2002-1611/1000-541_ADV")
+        is_836 = fuse_data["Type"].astype(str).eq("WAGO.2002-1611/1000-836_ADV")
+
+        existing_gs = pd.to_numeric(fuse_data["Group Sorting"], errors="coerce")
+        existing_fuse_gs = sorted(set(int(x) for x in existing_gs.dropna() if 31 <= x <= 50))
+        existing_non541_gs = sorted(
+            set(int(x) for x in existing_gs[~is_541].dropna() if 31 <= x <= 50)
+        )
+
+        gs_541 = 31
+        if 31 in existing_non541_gs:
+            alternatives = [g for g in existing_fuse_gs if g != 31]
+            if alternatives:
+                gs_541 = min(alternatives)
+
+        if is_541.any():
+            fuse_data.loc[is_541, "Group Sorting"] = gs_541
+
+        def _assign_block(mask: pd.Series, target_gs: int) -> None:
+            if mask.any():
+                fuse_data.loc[mask, "Group Sorting"] = target_gs
+
+        def _is_f9xx(key: Tuple[int, int] | None) -> bool:
+            return key is not None and 900 <= key[0] <= 999
+
+        def _is_f192_or_less(key: Tuple[int, int] | None) -> bool:
+            return key is not None and key[0] <= 192
+
+        def _is_f192a(name: str) -> bool:
+            return bool(re.search(r"-F192A", str(name)))
+
+        mask_836 = is_836
+        keys = fuse_data["_fuse_key"]
+        names = fuse_data["Name"].astype(str)
+        block32 = mask_836 & keys.apply(_is_f9xx)
+        block34 = mask_836 & names.apply(_is_f192a)
+        block33 = mask_836 & (~block32) & (~block34) & keys.apply(_is_f192_or_less)
+        block35 = mask_836 & (~block32) & (~block33) & (~block34)
+
+        _assign_block(block32, 32)
+        _assign_block(block33, 33)
+        _assign_block(block34, 34)
+        _assign_block(block35, 35)
+
+        def _apply_accessories(block_mask: pd.Series, accessories: str | None, accessories2: str | None) -> None:
+            if not block_mask.any():
+                return
+            idxs = block_mask[block_mask].index.tolist()
+            last_idx = sorted(idxs, key=_fuse_sort_key)[-1]
+            if accessories and str(fuse_data.at[last_idx, "Accessories"]).strip() == "":
+                fuse_data.at[last_idx, "Accessories"] = accessories
+                fuse_data.at[last_idx, "Quantity of accessories"] = 1
+            if accessories2 and str(fuse_data.at[last_idx, "Accessories2"]).strip() == "":
+                fuse_data.at[last_idx, "Accessories2"] = accessories2
+                fuse_data.at[last_idx, "Quantity of accessories2"] = 1
+
+        _apply_accessories(is_541, "WAGO.2002-991_ADV", "WAGO.249-116_ADV")
+        _apply_accessories(block32, "WAGO.2002-991_ADV", None)
+        _apply_accessories(block35, "WAGO.2002-991_ADV", None)
+
+        a9f_mask = fuse_data["Type"].astype(str).eq("SE.A9F04604_ADV")
+        missing_defaults = pd.Series(None, index=fuse_data.index, dtype="float")
+        missing_defaults.loc[a9f_mask] = 0
         fuse_data = _allocate_category_gs(fuse_data, missing_default=missing_defaults)
+        fuse_data["_gs_sort"] = pd.to_numeric(fuse_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
+        fuse_data = fuse_data.drop(columns=["_orig_order", "_fuse_key"], errors="ignore")
+
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(term_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
