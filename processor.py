@@ -10,6 +10,7 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 YELLOW_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+COVER_DEBUG_CHECK = True
 
 
 # -----------------------------------------------------------------------------
@@ -257,6 +258,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     df["Name"] = df["Name"].astype(str)
     df["Type"] = df["Type"].astype(str)
+    df["_gs_input"] = pd.to_numeric(df["Group Sorting"], errors="coerce")
 
     # ensure columns exist
     for col, default in [
@@ -427,6 +429,10 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
 
+        term_data["_gs_orig"] = pd.to_numeric(term_data.get("_gs_orig"), errors="coerce")
+        term_data["_gs_input"] = pd.to_numeric(term_data.get("_gs_input"), errors="coerce")
+        term_data["_gs_orig"] = term_data["_gs_orig"].combine_first(term_data["_gs_input"])
+
         term_data = apply_x192a_terminal_gs_rules(term_data)
 
         term_data["Quantity"] = pd.to_numeric(term_data["Quantity"], errors="coerce").fillna(0)
@@ -547,18 +553,22 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             term_data["Type"].astype(str).isin(terminal_types) & gs_base.notna() & (~gs_base.isin([1010, 1110, 1030]))
         )
         if other_mask.any():
-            xkey = term_data["Name"].astype(str).apply(_terminal_sort_key)
+            sort_key = term_data["Name"].astype(str).apply(_terminal_sort_key)
+
+            def _designation_sort(val: Any) -> Any:
+                try:
+                    return int(val)
+                except (TypeError, ValueError):
+                    return str(val)
+
+            designation_sort = term_data["Designation"].apply(_designation_sort)
+
             for _, grp_idxs in term_data[other_mask].groupby(gs_base[other_mask], sort=True).groups.items():
-                idxs = list(grp_idxs)
-                best = max(
-                    idxs,
-                    key=lambda i: (
-                        int(term_data.at[i, "_gs_sort"]),
-                        int(xkey.loc[i]),
-                        str(term_data.at[i, "Designation"]),
-                    ),
-                )
-                _set_cover(best)
+                grp = term_data.loc[list(grp_idxs)].copy()
+                grp["_t_key"] = sort_key.reindex(grp.index)
+                grp["_d_key"] = designation_sort.reindex(grp.index)
+                grp = grp.sort_values(["_t_key", "_d_key", "Name"], kind="stable")
+                _set_cover(grp.index[-1])
 
         # remove duplicate terminals within same original GS
         term_data["_terminal_sort"] = term_data["Name"].astype(str).apply(_terminal_sort_key)
@@ -604,6 +614,23 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         term_data.drop(columns=["_terminal_base", "_gs_num_final"], inplace=True, errors="ignore")
         _validate_terminal_uniqueness(term_data)
 
+        if COVER_DEBUG_CHECK:
+            terminal_mask = term_data["Type"].astype(str).isin(terminal_types)
+            base_series = pd.to_numeric(term_data.get("_gs_orig"), errors="coerce")
+            if "_gs_input" in term_data.columns:
+                base_series = base_series.combine_first(pd.to_numeric(term_data["_gs_input"], errors="coerce"))
+
+            unique_base_count = base_series[terminal_mask].dropna().nunique()
+            cover_bases = base_series[
+                (terminal_mask) & (term_data["Accessories"].astype(str) == "WAGO.2002-3292_ADV")
+            ]
+            cover_base_count = cover_bases.dropna().nunique()
+            assert cover_base_count >= unique_base_count, (
+                "Cover assignment mismatch: "
+                f"unique original GS groups={unique_base_count}, "
+                f"cover base count={cover_base_count}"
+            )
+
         return term_data, (pd.concat(removed_local, ignore_index=True) if removed_local else pd.DataFrame())
 
     relay_clean, relay_removed = process_relays(relay_df)
@@ -646,7 +673,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     ws_r = wb.create_sheet("Removed")
 
     out_clean = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
-    out_clean = out_clean.drop(columns=["_gs_orig"], errors="ignore")
+    out_clean = out_clean.drop(columns=["_gs_orig", "_gs_input"], errors="ignore")
     for row in dataframe_to_rows(out_clean, index=False, header=True):
         ws_c.append(row)
 
@@ -662,7 +689,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
                 for col in range(1, ws_c.max_column + 1):
                     ws_c.cell(row=excel_row, column=col).fill = YELLOW_FILL
 
-    removed_out = removed_df.drop(columns=["_gs_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
+    removed_out = removed_df.drop(
+        columns=["_gs_orig", "_gs_input", "_terminal_sort", "_terminal_sort_order"], errors="ignore"
+    )
     for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
