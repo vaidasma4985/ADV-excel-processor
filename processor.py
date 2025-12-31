@@ -152,6 +152,65 @@ def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
         )
 
 
+def _has_cover_value(val: Any, qty: Any) -> bool:
+    cover_id = "WAGO.2002-3292_ADV"
+    val_str = str(val).strip()
+    if val_str == "" or pd.isna(val):
+        return False
+
+    qty_num = pd.to_numeric(qty, errors="coerce")
+    if pd.isna(qty_num) or float(qty_num) <= 0:
+        return False
+
+    return cover_id in val_str
+
+
+def _row_has_cover(row: pd.Series) -> bool:
+    return _has_cover_value(row.get("Accessories", ""), row.get("Quantity of accessories", 0)) or _has_cover_value(
+        row.get("Accessories2", ""), row.get("Quantity of accessories2", 0)
+    )
+
+
+def _validate_terminal_covers(df: pd.DataFrame, terminal_types: set[str]) -> None:
+    if df.empty or "_gs_orig" not in df.columns:
+        return
+
+    term_mask = df["Type"].astype(str).isin(terminal_types) & df["_gs_orig"].notna()
+    terminal_df = df[term_mask].copy()
+    if terminal_df.empty:
+        return
+
+    terminal_df["_gs_sort_tmp"] = pd.to_numeric(terminal_df["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
+    if "_terminal_sort" in terminal_df.columns:
+        terminal_df["_terminal_sort_tmp"] = terminal_df["_terminal_sort"]
+    else:
+        terminal_df["_terminal_sort_tmp"] = terminal_df["Name"].astype(str).apply(_terminal_sort_key)
+
+    missing: List[int] = []
+    for base_gs, grp in terminal_df.groupby("_gs_orig", sort=True):
+        if grp.empty:
+            continue
+
+        base_id = int(base_gs)
+
+        # Only PE terminals
+        if grp["Type"].astype(str).str.contains("2002-3207", na=False).all():
+            if not grp.apply(_row_has_cover, axis=1).any():
+                missing.append(base_id)
+            continue
+
+        ordered = grp.sort_values(
+            ["_gs_sort_tmp", "_terminal_sort_tmp", "Designation", "Name"],
+            kind="stable",
+        )
+        last_row = ordered.iloc[-1]
+        if not _row_has_cover(last_row):
+            missing.append(base_id)
+
+    if missing:
+        raise ValueError(f"Missing terminal covers for original GS: {sorted(missing)}")
+
+
 def _extract_x_first2(name: str) -> str | None:
     m = re.search(r"-X(\d{2})\d{2}\b", str(name))
     return m.group(1) if m else None
@@ -622,6 +681,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     cleaned_df = _apply_function_designation(cleaned_df)
 
     _validate_terminal_uniqueness(cleaned_df[cleaned_df["Type"].astype(str).isin(terminal_types)])
+    _validate_terminal_covers(cleaned_df, terminal_types)
 
     # Final sort
     is_terminal_sorted = cleaned_df["Type"].astype(str).isin(terminal_types)
