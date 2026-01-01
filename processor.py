@@ -424,7 +424,19 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         if relay_data.empty:
             return relay_data.copy(), pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
-        relay_data["_gs_sort"] = pd.to_numeric(relay_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
+        relay_data = relay_data.copy()
+
+        relay_combo_types = {
+            "SE.RGZE1S48M + SE.RXG22P7",
+            "SE.RXZE2S114M + SE.RXM4GB2BD",
+        }
+        combo_mask = relay_data["Type"].astype(str).isin(relay_combo_types)
+        combo_gs_numeric = pd.to_numeric(relay_data.loc[combo_mask, "Group Sorting"], errors="coerce")
+        combo_missing = combo_mask.copy()
+        combo_missing.loc[combo_mask] = combo_gs_numeric.isna()
+        if combo_missing.any():
+            relay_data.loc[combo_missing, "Group Sorting"] = 1
+
         relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
@@ -772,8 +784,14 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     cleaned_df["_terminal_sort_order"] = is_terminal_sorted.map({True: 0, False: 1})
     cleaned_df["_gs_sort"] = pd.to_numeric(cleaned_df["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
 
+    relay_type_priority = {
+        "SE.RGZE1S48M + SE.RXG22P7": 0,  # 2POLE before 4POLE when GS is equal
+        "SE.RXZE2S114M + SE.RXM4GB2BD": 1,
+    }
+    cleaned_df["_relay_type_order"] = cleaned_df["Type"].map(relay_type_priority).fillna(2).astype(int)
+
     cleaned_df = cleaned_df.sort_values(
-        ["_gs_sort", "_terminal_sort_order", "_terminal_sort", "Name"],
+        ["_gs_sort", "_terminal_sort_order", "_relay_type_order", "_terminal_sort", "Name"],
         kind="stable",
     )
 
@@ -785,7 +803,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             cleaned_df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
             cleaned_df.at[last_idx, "Quantity of accessories2"] = 1
 
-    cleaned_df = cleaned_df.drop(columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
+    cleaned_df = cleaned_df.drop(
+        columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order", "_relay_type_order"], errors="ignore"
+    )
 
     # Workbook output
     wb = Workbook()
