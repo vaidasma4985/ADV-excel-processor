@@ -81,10 +81,17 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
             "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
             "WAGO.2002-3201_ADV": "CONTROL",
             "WAGO.2002-3207_ADV": "CONTROL",
+            "SE.RE22R1AMR_ADV": "BACKUP",
+            "FIN.39.00.8.230.8240_ADV": "1POLE",
+            "SE.RE17LCBM_ADV": "TIMED_RELAYS",
         }
         return m.get(t, "")
 
     func_col = df["Type"].astype(str).map(type_to_func).fillna("")
+    backup_name_mask = df["Name"].astype(str).str.match(r"-K56[123]\d*", na=False)
+    func_col.loc[backup_name_mask] = "BACKUP"
+    timed_name_mask = df["Name"].astype(str).str.contains(r"-K192A?\d+\b", regex=True, na=False)
+    func_col.loc[timed_name_mask] = "TIMED_RELAYS"
     hasf = func_col.astype(str).ne("")
     df.loc[hasf, "Name"] = "=" + func_col[hasf].astype(str) + df.loc[hasf, "Name"].astype(str)
     return df
@@ -424,7 +431,150 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         if relay_data.empty:
             return relay_data.copy(), pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
-        relay_data["_gs_sort"] = pd.to_numeric(relay_data["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
+        relay_data = relay_data.copy()
+
+        relay_combo_types = {
+            "SE.RGZE1S48M + SE.RXG22P7",
+            "SE.RXZE2S114M + SE.RXM4GB2BD",
+        }
+        type_2pole = "SE.RGZE1S48M + SE.RXG22P7"
+        type_4pole = "SE.RXZE2S114M + SE.RXM4GB2BD"
+        type_backup = "SE.RE22R1AMR_ADV"
+        type_1pole = "FIN.39.00.8.230.8240_ADV"
+
+        gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
+        existing_gs: set[int] = set(int(x) for x in gs_numeric_all.dropna())
+
+        combo_mask = relay_data["Type"].astype(str).isin(relay_combo_types)
+
+        all_2pole = relay_data["Type"].astype(str).eq(type_2pole)
+        all_4pole = relay_data["Type"].astype(str).eq(type_4pole)
+
+        def _assign_missing(
+            mask: pd.Series, preferred_start: int, min_start: int | None = None, current_value: int | None = None
+        ) -> int | None:
+            missing_numeric = pd.to_numeric(relay_data.loc[mask, "Group Sorting"], errors="coerce").isna()
+            if not missing_numeric.any():
+                return None
+            start = preferred_start if min_start is None else max(preferred_start, min_start)
+            if current_value is not None and start < current_value:
+                start = current_value
+            if current_value is not None and start == current_value:
+                existing_gs.add(int(current_value))
+                relay_data.loc[missing_numeric[missing_numeric].index, "Group Sorting"] = int(current_value)
+                return int(current_value)
+            gs_value = _next_free_gs(existing_gs, start)
+            relay_data.loc[missing_numeric[missing_numeric].index, "Group Sorting"] = gs_value
+            return gs_value
+
+        def _first_group_gs(mask: pd.Series) -> int | None:
+            s = pd.to_numeric(relay_data.loc[mask, "Group Sorting"], errors="coerce")
+            if s.notna().any():
+                return int(s.dropna().iloc[0])
+            return None
+
+        gs_2_existing = _first_group_gs(all_2pole)
+        gs_2pole_val = _assign_missing(
+            all_2pole, preferred_start=gs_2_existing or 1, min_start=None, current_value=gs_2_existing
+        )
+        gs_2_final = _first_group_gs(all_2pole)
+
+        gs_4_existing = _first_group_gs(all_4pole)
+        min_for_4pole = (gs_2_final + 1) if gs_2_final is not None else 2
+        gs_4pole_val = _assign_missing(
+            all_4pole, preferred_start=gs_4_existing or 2, min_start=min_for_4pole, current_value=gs_4_existing
+        )
+        gs_4_final = _first_group_gs(all_4pole)
+
+        # --- TIMED RELAYS GS (K192* sequential, K192A* one shared) -------------------
+        k192_mask = relay_data["Name"].astype(str).str.contains(r"-K192(?!A)\d+\b", regex=True, na=False)
+        k192a_mask = relay_data["Name"].astype(str).str.contains(r"-K192A\d+\b", regex=True, na=False)
+
+        def _k192_num(name: str) -> int:
+            m = re.search(r"-K192(?!A)(\d+)\b", str(name))
+            return int(m.group(1)) if m else 10**9
+
+        def _k192a_num(name: str) -> int:
+            m = re.search(r"-K192A(\d+)\b", str(name))
+            return int(m.group(1)) if m else 10**9
+
+        # start GS for timed relays must be AFTER 2POLE and 4POLE (real numbers)
+        gs_2_final = _first_group_gs(all_2pole)
+        gs_4_final = _first_group_gs(all_4pole)
+        start_gs = max([g for g in [gs_2_final, gs_4_final] if g is not None], default=0) + 1
+
+        # ensure we respect any already used GS numbers
+        gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
+        existing_gs = set(int(x) for x in gs_numeric_all.dropna())
+
+        # 1) K192* (no A): assign sequential GS per item, sorted by K-number
+        k192_idxs = relay_data[k192_mask].index.tolist()
+        k192_sorted = sorted(k192_idxs, key=lambda i: _k192_num(relay_data.at[i, "Name"]))
+
+        gs_cursor = _next_free_gs(existing_gs, start_gs) if k192_sorted else start_gs
+
+        for i, idx in enumerate(k192_sorted):
+            # gs_cursor already free; assign and move cursor to next free
+            relay_data.at[idx, "Group Sorting"] = gs_cursor
+            if i < len(k192_sorted) - 1:
+                gs_cursor = _next_free_gs(existing_gs, gs_cursor + 1)
+
+        # 2) K192A*: ALL share one GS, which is the next GS after last K192*
+        k192a_idxs = relay_data[k192a_mask].index.tolist()
+        gs_k192 = gs_cursor if k192_sorted else None
+        if k192a_idxs:
+            # if there were K192*, next after last assigned; else start_gs
+            preferred_a = (gs_cursor + 1) if k192_sorted else start_gs
+            gs_k192a = _next_free_gs(existing_gs, preferred_a)
+            for idx in k192a_idxs:
+                relay_data.at[idx, "Group Sorting"] = gs_k192a
+        else:
+            gs_k192a = None
+
+        one_pole_mask = relay_data["Type"].astype(str).eq(type_1pole)
+        prev_for_1pole = max([g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a] if g is not None], default=0) + 1
+        gs_one_pole_val = _assign_missing(one_pole_mask, preferred_start=prev_for_1pole, min_start=prev_for_1pole)
+        gs_one_pole_final = _first_group_gs(one_pole_mask)
+
+        backup_mask = relay_data["Type"].astype(str).eq(type_backup) | relay_data["Name"].astype(str).str.match(r"-K56[123]\d*", na=False)
+        prev_for_backup = max(
+            [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a, gs_one_pole_final] if g is not None], default=0
+        ) + 1
+        _assign_missing(backup_mask, preferred_start=prev_for_backup, min_start=prev_for_backup)
+
+        def _relay_sort_value(name: str) -> int:
+            m = re.search(r"-K192A?(\d+)", str(name))
+            if m:
+                digits = m.group(1)
+                return int(f"192{digits}")
+            return 10**9
+
+        def _gs_int_safe(idx: int) -> int:
+            gs_val = pd.to_numeric(relay_data.at[idx, "Group Sorting"], errors="coerce")
+            return 10**9 if pd.isna(gs_val) else int(gs_val)
+
+        timed_idxs = relay_data[k192_mask | k192a_mask].index.tolist()
+        if timed_idxs:
+            relay_data.loc[timed_idxs, "_terminal_sort"] = [_relay_sort_value(relay_data.at[i, "Name"]) for i in timed_idxs]
+            timed_sorted = sorted(timed_idxs, key=lambda i: (_gs_int_safe(i), relay_data.at[i, "_terminal_sort"]))
+            last_timed = timed_sorted[-1]
+            relay_data.at[last_timed, "Accessories"] = "WAGO.249-116_ADV"
+            relay_data.at[last_timed, "Quantity of accessories"] = 1
+
+        one_pole_idxs = relay_data[one_pole_mask].index.tolist()
+        if one_pole_idxs:
+            one_pole_sorted = sorted(one_pole_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
+            last_one_pole = one_pole_sorted[-1]
+            relay_data.at[last_one_pole, "Accessories"] = "WAGO.249-116_ADV"
+            relay_data.at[last_one_pole, "Quantity of accessories"] = 1
+
+        backup_idxs = relay_data[backup_mask].index.tolist()
+        if backup_idxs:
+            backup_sorted = sorted(backup_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
+            last_backup = backup_sorted[-1]
+            relay_data.at[last_backup, "Accessories"] = "WAGO.249-116_ADV"
+            relay_data.at[last_backup, "Quantity of accessories"] = 1
+
         relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
 
@@ -772,8 +922,19 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
     cleaned_df["_terminal_sort_order"] = is_terminal_sorted.map({True: 0, False: 1})
     cleaned_df["_gs_sort"] = pd.to_numeric(cleaned_df["Group Sorting"], errors="coerce").fillna(10**9).astype(int)
 
+    relay_type_priority = {
+        "SE.RGZE1S48M + SE.RXG22P7": 0,  # 2POLE before 4POLE when GS is equal
+        "SE.RXZE2S114M + SE.RXM4GB2BD": 1,
+        "FIN.39.00.8.230.8240_ADV": 3,
+        "SE.RE22R1AMR_ADV": 4,
+    }
+    timed_mask = cleaned_df["Name"].astype(str).str.contains(r"-K192A?\d+", regex=True, na=False)
+    type_order_series = cleaned_df["Type"].map(relay_type_priority)
+    type_order_series.loc[timed_mask] = 2
+    cleaned_df["_relay_type_order"] = type_order_series.fillna(5).astype(int)
+
     cleaned_df = cleaned_df.sort_values(
-        ["_gs_sort", "_terminal_sort_order", "_terminal_sort", "Name"],
+        ["_gs_sort", "_terminal_sort_order", "_relay_type_order", "_terminal_sort", "Name"],
         kind="stable",
     )
 
@@ -785,7 +946,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             cleaned_df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
             cleaned_df.at[last_idx, "Quantity of accessories2"] = 1
 
-    cleaned_df = cleaned_df.drop(columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order"], errors="ignore")
+    cleaned_df = cleaned_df.drop(
+        columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order", "_relay_type_order"], errors="ignore"
+    )
 
     # Workbook output
     wb = Workbook()
