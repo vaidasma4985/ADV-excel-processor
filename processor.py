@@ -441,8 +441,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         type_4pole = "SE.RXZE2S114M + SE.RXM4GB2BD"
         type_backup = "SE.RE22R1AMR_ADV"
         type_1pole = "FIN.39.00.8.230.8240_ADV"
-        timed_regex = r"-K192\d+\b"
-        timed_a_regex = r"-K192A\d+\b"
 
         gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
         existing_gs: set[int] = set(int(x) for x in gs_numeric_all.dropna())
@@ -488,49 +486,59 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         )
         gs_4_final = _first_group_gs(all_4pole)
 
-        k192_mask = relay_data["Name"].astype(str).str.contains(timed_regex, regex=True, na=False)
-        k192a_mask = relay_data["Name"].astype(str).str.contains(timed_a_regex, regex=True, na=False)
+        # --- TIMED RELAYS GS (K192* sequential, K192A* one shared) -------------------
+        k192_mask = relay_data["Name"].astype(str).str.contains(r"-K192(?!A)\d+\b", regex=True, na=False)
+        k192a_mask = relay_data["Name"].astype(str).str.contains(r"-K192A\d+\b", regex=True, na=False)
 
-        prev_for_timed = max([g for g in [gs_2_final, gs_4_final] if g is not None], default=0) + 1
+        def _k192_num(name: str) -> int:
+            m = re.search(r"-K192(?!A)(\d+)\b", str(name))
+            return int(m.group(1)) if m else 10**9
 
-        def _choose_existing(mask: pd.Series) -> list[int]:
-            s = pd.to_numeric(relay_data.loc[mask, "Group Sorting"], errors="coerce")
-            return sorted(set(int(v) for v in s.dropna().tolist()))
+        def _k192a_num(name: str) -> int:
+            m = re.search(r"-K192A(\d+)\b", str(name))
+            return int(m.group(1)) if m else 10**9
 
-        existing_k192 = _choose_existing(k192_mask)
-        if existing_k192:
-            gs_k192 = existing_k192[0]
-            existing_gs.add(gs_k192)
+        # start GS for timed relays must be AFTER 2POLE and 4POLE (real numbers)
+        gs_2_final = _first_group_gs(all_2pole)
+        gs_4_final = _first_group_gs(all_4pole)
+        start_gs = max([g for g in [gs_2_final, gs_4_final] if g is not None], default=0) + 1
+
+        # ensure we respect any already used GS numbers
+        gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
+        existing_gs = set(int(x) for x in gs_numeric_all.dropna())
+
+        # 1) K192* (no A): assign sequential GS per item, sorted by K-number
+        k192_idxs = relay_data[k192_mask].index.tolist()
+        k192_sorted = sorted(k192_idxs, key=lambda i: _k192_num(relay_data.at[i, "Name"]))
+
+        gs_cursor = _next_free_gs(existing_gs, start_gs) if k192_sorted else start_gs
+
+        for i, idx in enumerate(k192_sorted):
+            # gs_cursor already free; assign and move cursor to next free
+            relay_data.at[idx, "Group Sorting"] = gs_cursor
+            if i < len(k192_sorted) - 1:
+                gs_cursor = _next_free_gs(existing_gs, gs_cursor + 1)
+
+        # 2) K192A*: ALL share one GS, which is the next GS after last K192*
+        k192a_idxs = relay_data[k192a_mask].index.tolist()
+        gs_k192 = gs_cursor if k192_sorted else None
+        if k192a_idxs:
+            # if there were K192*, next after last assigned; else start_gs
+            preferred_a = (gs_cursor + 1) if k192_sorted else start_gs
+            gs_k192a = _next_free_gs(existing_gs, preferred_a)
+            for idx in k192a_idxs:
+                relay_data.at[idx, "Group Sorting"] = gs_k192a
         else:
-            gs_k192 = _next_free_gs(existing_gs, prev_for_timed)
-        missing_k192 = pd.to_numeric(relay_data.loc[k192_mask, "Group Sorting"], errors="coerce").isna()
-        if missing_k192.any():
-            relay_data.loc[missing_k192[missing_k192].index, "Group Sorting"] = gs_k192
-
-        next_after_k192 = gs_k192 + 1 if gs_k192 is not None else prev_for_timed
-        existing_k192a = _choose_existing(k192a_mask)
-        gs_k192a = None
-        if existing_k192a:
-            candidates = [v for v in existing_k192a if v != gs_k192]
-            if candidates:
-                gs_k192a = candidates[0]
-                existing_gs.add(gs_k192a)
-        if gs_k192a is None:
-            gs_k192a = _next_free_gs(existing_gs, next_after_k192)
-        current_k192a = pd.to_numeric(relay_data.loc[k192a_mask, "Group Sorting"], errors="coerce")
-        need_reassign_k192a = current_k192a.isna() | current_k192a.eq(gs_k192)
-        if need_reassign_k192a.any():
-            relay_data.loc[need_reassign_k192a[need_reassign_k192a].index, "Group Sorting"] = gs_k192a
-        gs_k192a_final = gs_k192a
+            gs_k192a = None
 
         one_pole_mask = relay_data["Type"].astype(str).eq(type_1pole)
-        prev_for_1pole = max([g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a_final] if g is not None], default=0) + 1
+        prev_for_1pole = max([g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a] if g is not None], default=0) + 1
         gs_one_pole_val = _assign_missing(one_pole_mask, preferred_start=prev_for_1pole, min_start=prev_for_1pole)
         gs_one_pole_final = _first_group_gs(one_pole_mask)
 
         backup_mask = relay_data["Type"].astype(str).eq(type_backup) | relay_data["Name"].astype(str).str.match(r"-K56[123]\d*", na=False)
         prev_for_backup = max(
-            [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a_final, gs_one_pole_final] if g is not None], default=0
+            [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a, gs_one_pole_final] if g is not None], default=0
         ) + 1
         _assign_missing(backup_mask, preferred_start=prev_for_backup, min_start=prev_for_backup)
 
