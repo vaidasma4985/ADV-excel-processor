@@ -430,12 +430,30 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             "SE.RGZE1S48M + SE.RXG22P7",
             "SE.RXZE2S114M + SE.RXM4GB2BD",
         }
+        type_2pole = "SE.RGZE1S48M + SE.RXG22P7"
+        type_4pole = "SE.RXZE2S114M + SE.RXM4GB2BD"
+
+        gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
+        existing_gs: set[int] = set(int(x) for x in gs_numeric_all.dropna())
+
         combo_mask = relay_data["Type"].astype(str).isin(relay_combo_types)
-        combo_gs_numeric = pd.to_numeric(relay_data.loc[combo_mask, "Group Sorting"], errors="coerce")
-        combo_missing = combo_mask.copy()
-        combo_missing.loc[combo_mask] = combo_gs_numeric.isna()
-        if combo_missing.any():
-            relay_data.loc[combo_missing, "Group Sorting"] = 1
+
+        missing_2pole = combo_mask & relay_data["Type"].astype(str).eq(type_2pole)
+        missing_4pole = combo_mask & relay_data["Type"].astype(str).eq(type_4pole)
+
+        gs_2pole = pd.to_numeric(relay_data.loc[missing_2pole, "Group Sorting"], errors="coerce").isna()
+        if gs_2pole.any():
+            relay_data.loc[gs_2pole[gs_2pole].index, "Group Sorting"] = 1
+            existing_gs.add(1)
+
+        gs_4pole_missing = pd.to_numeric(relay_data.loc[missing_4pole, "Group Sorting"], errors="coerce").isna()
+        if gs_4pole_missing.any():
+            target_gs_4pole = 2
+            if target_gs_4pole in existing_gs:
+                target_gs_4pole = _next_free_gs(existing_gs, target_gs_4pole)
+            else:
+                existing_gs.add(target_gs_4pole)
+            relay_data.loc[gs_4pole_missing[gs_4pole_missing].index, "Group Sorting"] = target_gs_4pole
 
         relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
