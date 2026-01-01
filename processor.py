@@ -320,6 +320,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "RXG22BD",
         "RGZE1S48M",
         "A9F04604",
+        "RE17LCBM",
+        "RE22R1AMR",
+        "39.00.8.230.8240",
     }
     m3 = df["Type"].isin(allowed_types)
     _append_removed(removed_parts, df[~m3], "Removed by Type filter (not in allowed list)")
@@ -361,6 +364,13 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "SE.A9F04604": "SE.A9F04604_ADV",
     }
     df["Type"] = df["Type"].replace(adv_map)
+
+    relay_map = {
+        "RE17LCBM": "SE.RE17LCBM_ADV",
+        "RE22R1AMR": "SE.RE22R1AMR_ADV",
+        "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
+    }
+    df["Type"] = df["Type"].replace(relay_map)
 
     # -------------------------------------------------------------------------
     # STEP 4b – relay merge by Name (2POLE/4POLE)
