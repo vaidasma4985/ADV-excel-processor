@@ -72,8 +72,10 @@ def main() -> None:
 
     if st.session_state.mode == "component":
         render_component_correction()
-    else:
+    elif st.session_state.mode == "wire":
         render_wire_tool()
+    else:
+        st.info("Pasirink įrankį viršuje.")
 
 
 if __name__ == "__main__":
