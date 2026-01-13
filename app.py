@@ -58,7 +58,7 @@ def main() -> None:
     st.title("Excel įrankiai")
 
     if "mode" not in st.session_state:
-        st.session_state.mode = "component"
+        st.session_state.mode = "none"
 
     c1, c2 = st.columns(2)
     with c1:
