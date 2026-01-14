@@ -49,7 +49,6 @@ def render_component_correction() -> None:
 def render_wire_tool() -> None:
     from wire_tool.wire_app import render_wire_page  # new module
 
-    st.subheader("Wire sizing tool")
     render_wire_page()
 
 
