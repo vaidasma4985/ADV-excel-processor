@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import re
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import pandas as pd
@@ -9,7 +10,8 @@ Node = str
 Issue = Dict[str, Any]
 
 
-SUPPLY_PREFIXES = ("MT/", "IT/", "LT/")
+_MAIN_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)/(L1|L2|L3|N)$")
+_SUB_ROOT_PATTERN = re.compile(r"^F\\d+/(L1|L2|L3|N)$")
 
 
 def _is_missing(value: Any) -> bool:
@@ -111,25 +113,6 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
     return adjacency, issues
 
 
-def bfs_parents(adjacency: Dict[Node, Set[Node]], start_nodes: Iterable[Node]) -> Dict[Node, Node]:
-    start_list = sorted(start_nodes)
-    visited: Set[Node] = set(start_list)
-    parent: Dict[Node, Node] = {}
-    queue: deque[Node] = deque(start_list)
-
-    while queue:
-        current = queue.popleft()
-        neighbors = sorted(adjacency.get(current, set()))
-        for neighbor in neighbors:
-            if neighbor in visited:
-                continue
-            visited.add(neighbor)
-            parent[neighbor] = current
-            queue.append(neighbor)
-
-    return parent
-
-
 def _compress_path_names(path: List[Node]) -> List[str]:
     collapsed: List[str] = []
     last_name: str | None = None
@@ -146,19 +129,22 @@ def _compress_path_names(path: List[Node]) -> List[str]:
     return collapsed
 
 
-def _shortest_path_to_supply(
+def _shortest_path_to_roots(
     adjacency: Dict[Node, Set[Node]],
     start_nodes: Iterable[Node],
-    supply_roots: Set[Node],
+    root_nodes: Set[Node],
 ) -> Tuple[List[Node], Node | None]:
     start_list = sorted(start_nodes)
+    if not start_list:
+        return [], None
+
     visited: Set[Node] = set(start_list)
     parent: Dict[Node, Node] = {}
     queue: deque[Node] = deque(start_list)
 
     while queue:
         current = queue.popleft()
-        if current in supply_roots:
+        if current in root_nodes:
             path_nodes: List[Node] = [current]
             while current not in start_list:
                 current = parent[current]
@@ -175,16 +161,30 @@ def _shortest_path_to_supply(
     return [], None
 
 
+def _direct_net_neighbors(adjacency: Dict[Node, Set[Node]], nodes: Iterable[Node]) -> List[str]:
+    nets: Set[str] = set()
+    for node in nodes:
+        for neighbor in adjacency.get(node, set()):
+            if _is_net_node(neighbor):
+                nets.add(_net_name(neighbor))
+    return sorted(nets)
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
 ) -> Tuple[List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
 
-    supply_roots = {
+    main_root_nets = {
         node
         for node in adjacency
-        if _is_net_node(node) and _net_name(node).startswith(SUPPLY_PREFIXES)
+        if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
+    }
+    sub_root_nets = {
+        node
+        for node in adjacency
+        if _is_net_node(node) and _SUB_ROOT_PATTERN.match(_net_name(node))
     }
 
     feeder_nodes = [
@@ -198,44 +198,68 @@ def compute_feeder_paths(
 
     for feeder_name in feeder_names:
         candidate_nodes = [node for node in feeder_nodes if _device_name(node) == feeder_name]
-        path_nodes, supply_node = _shortest_path_to_supply(
+        direct_nets = _direct_net_neighbors(adjacency, candidate_nodes)
+
+        path_any, supply_any = _shortest_path_to_roots(
             adjacency,
             candidate_nodes,
-            supply_roots,
+            main_root_nets | sub_root_nets,
         )
-        reachable = bool(path_nodes)
+        path_main, supply_main = _shortest_path_to_roots(
+            adjacency,
+            candidate_nodes,
+            main_root_nets,
+        )
 
-        if not reachable:
+        reachable_to_any_root = bool(path_any)
+        reachable_to_main = bool(path_main)
+
+        if not reachable_to_any_root:
             issues.append(
                 _issue(
                     "ERROR",
                     "W202",
-                    "Feeder end is unreachable from any supply root net.",
-                    context={"feeder_name": feeder_name},
+                    "Feeder end is unreachable from any root net (main or sub).",
+                    context={"feeder_name": feeder_name, "direct_nets": direct_nets},
+                )
+            )
+        elif not reachable_to_main:
+            issues.append(
+                _issue(
+                    "WARNING",
+                    "W203",
+                    "Feeder reaches downstream supply (Fxx/*) but not main (MT/IT/LT).",
+                    context={"feeder_name": feeder_name, "direct_nets": direct_nets},
                 )
             )
 
-        supply_net = _net_name(supply_node) if supply_node else ""
-        path_nodes_raw = " -> ".join(path_nodes)
-        path_names_collapsed = " -> ".join(_compress_path_names(path_nodes))
+        supply_net_any = _net_name(supply_any) if supply_any else ""
+        supply_net_main = _net_name(supply_main) if supply_main else ""
+        path_nodes_raw = " -> ".join(path_any)
+        path_names_collapsed = " -> ".join(_compress_path_names(path_any))
 
         feeders.append(
             {
                 "feeder_end_name": feeder_name,
-                "supply_net": supply_net,
+                "supply_net_any": supply_net_any,
+                "supply_net_main": supply_net_main,
+                "reachable_to_any_root": reachable_to_any_root,
+                "reachable_to_main": reachable_to_main,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
-                "path_len_nodes": len(path_nodes),
-                "reachable": reachable,
+                "path_len_nodes": len(path_any),
             }
         )
 
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
-        "supply_root_nets_found": sorted(_net_name(node) for node in supply_roots),
+        "main_root_nets": sorted(_net_name(node) for node in main_root_nets),
+        "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
         "feeder_ends_found": feeder_names,
-        "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
+        "unreachable_feeders_count": sum(
+            1 for feeder in feeders if not feeder["reachable_to_any_root"]
+        ),
     }
 
     return feeders, issues, debug
