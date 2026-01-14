@@ -95,15 +95,15 @@ def _net_name(node: Node) -> str:
     return node.replace("NET:", "", 1)
 
 
-def _strip_contact_suffix(name: str) -> str:
-    return name.split(":", 1)[0].split(".", 1)[0]
+def _strip_terminal_suffix(name: str) -> str:
+    return name.split(":", 1)[0]
 
 
 def _base_device_name(name: Any) -> str | None:
     name_str = _normalize_name(name)
     if not name_str:
         return None
-    return _strip_contact_suffix(name_str)
+    return _strip_terminal_suffix(name_str)
 
 
 def _extract_root_tokens(wireno: str | None) -> List[str]:
@@ -299,12 +299,12 @@ def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
 
 
 def _extract_device_names_from_path(path: List[Node]) -> List[str]:
-    # Filter out NET nodes and non-device labels; keep only base device names.
+    # Filter out NET nodes and non-device labels; keep device names only.
     names: List[str] = []
     for node in path:
         if _is_net_node(node):
             continue
-        device_name = _strip_contact_suffix(_device_name(node))
+        device_name = _device_name(node)
         if not device_name.startswith("-"):
             continue
         names.append(device_name)
@@ -477,7 +477,7 @@ def _prefer_downstream_q(
                         neighbor_base
                         and neighbor_base in q_bases
                         and base_min_distance.get(neighbor_base, -1.0)
-                        >= start_distance - epsilon
+                        > start_distance + epsilon
                     ):
                         filtered.discard(base)
                         queue.clear()
