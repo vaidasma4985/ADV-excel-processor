@@ -21,12 +21,13 @@ def _to_excel_bytes(df):
 
 def _clear_results():
     for key in (
-        "wire_tool_computed",
-        "wire_tool_debug",
-        "wire_tool_detailed_df",
-        "wire_tool_grouped_df",
-        "wire_tool_issues_df",
-        "wire_tool_unreachable_df",
+        "wire_results_computed",
+        "wire_results_debug",
+        "wire_results_raw_df",
+        "wire_results_simplified_df",
+        "wire_results_grouped_df",
+        "wire_results_issues_df",
+        "wire_results_unreachable_df",
     ):
         st.session_state.pop(key, None)
 
@@ -107,25 +108,37 @@ def render_wire_page() -> None:
 
         issues_df = pd.DataFrame(_sort_issues(issues))
         unreachable_df = feeders_df[~feeders_df["reachable"]].copy()
+        simplified_columns = [
+            "feeder_end_name",
+            "feeder_end_cps",
+            "supply_net",
+            "path_names_collapsed",
+            "device_chain_grouped",
+            "reachable",
+            "path_len_nodes",
+        ]
+        simplified_df = aggregated_df[simplified_columns].copy()
 
         # Store computed data in session_state so downloads/tables persist on rerun.
         st.session_state.update(
             {
-                "wire_tool_computed": True,
-                "wire_tool_debug": debug,
-                "wire_tool_detailed_df": feeders_df,
-                "wire_tool_grouped_df": aggregated_df,
-                "wire_tool_issues_df": issues_df,
-                "wire_tool_unreachable_df": unreachable_df,
+                "wire_results_computed": True,
+                "wire_results_debug": debug,
+                "wire_results_raw_df": feeders_df,
+                "wire_results_simplified_df": simplified_df,
+                "wire_results_grouped_df": aggregated_df,
+                "wire_results_issues_df": issues_df,
+                "wire_results_unreachable_df": unreachable_df,
             }
         )
 
-    if st.session_state.get("wire_tool_computed"):
-        feeders_df = st.session_state["wire_tool_detailed_df"]
-        aggregated_df = st.session_state["wire_tool_grouped_df"]
-        issues_df = st.session_state["wire_tool_issues_df"]
-        unreachable_df = st.session_state["wire_tool_unreachable_df"]
-        debug = st.session_state["wire_tool_debug"]
+    if st.session_state.get("wire_results_computed"):
+        feeders_df = st.session_state["wire_results_raw_df"]
+        aggregated_df = st.session_state["wire_results_grouped_df"]
+        simplified_df = st.session_state["wire_results_simplified_df"]
+        issues_df = st.session_state["wire_results_issues_df"]
+        unreachable_df = st.session_state["wire_results_unreachable_df"]
+        debug = st.session_state["wire_results_debug"]
 
         feeders_found = len(feeders_df)
         unreachable_count = len(unreachable_df)
@@ -135,39 +148,48 @@ def render_wire_page() -> None:
         st.metric("Unreachable feeders", unreachable_count)
         st.metric("Issues", issues_count)
 
-        st.dataframe(feeders_df, use_container_width=True)
+        simplified_tab, detailed_tab = st.tabs(["Simplified view", "Detailed view"])
 
-        st.dataframe(aggregated_df, use_container_width=True)
+        with simplified_tab:
+            st.dataframe(simplified_df, use_container_width=True)
 
-        with st.expander("Debug: feeder path computation"):
-            st.write(
-                {
-                    "total_nodes": debug["total_nodes"],
-                    "total_edges": debug["total_edges"],
-                    "main_root_nets": debug["main_root_nets"],
-                    "sub_root_nets": debug["sub_root_nets"],
-                    "feeder_ends_found": debug["feeder_ends_found"],
-                    "unreachable_feeders_count": debug["unreachable_feeders_count"],
-                }
-            )
+        with detailed_tab:
+            with st.expander("Details: per-contact paths (raw)"):
+                st.dataframe(feeders_df, use_container_width=True)
 
-        if not unreachable_df.empty:
-            unreachable_excel = _to_excel_bytes(unreachable_df)
-            st.download_button(
-                "Download unreachable feeders",
-                data=unreachable_excel,
-                file_name="unreachable_feeders.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            with st.expander("Details: grouped summary"):
+                st.dataframe(aggregated_df, use_container_width=True)
 
-        if not issues_df.empty:
-            issues_excel = _to_excel_bytes(issues_df)
-            st.download_button(
-                "Download issues",
-                data=issues_excel,
-                file_name="wire_tool_issues.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            with st.expander("Debug: feeder path computation"):
+                st.write(
+                    {
+                        "total_nodes": debug["total_nodes"],
+                        "total_edges": debug["total_edges"],
+                        "main_root_nets": debug["main_root_nets"],
+                        "sub_root_nets": debug["sub_root_nets"],
+                        "feeder_ends_found": debug["feeder_ends_found"],
+                        "unreachable_feeders_count": debug["unreachable_feeders_count"],
+                    }
+                )
 
-        if not issues_df.empty:
-            st.dataframe(issues_df, use_container_width=True)
+            with st.expander("Downloads"):
+                if unreachable_count > 0:
+                    unreachable_excel = _to_excel_bytes(unreachable_df)
+                    st.download_button(
+                        "Download unreachable feeders",
+                        data=unreachable_excel,
+                        file_name="unreachable_feeders.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                if issues_count > 0:
+                    issues_excel = _to_excel_bytes(issues_df)
+                    st.download_button(
+                        "Download issues",
+                        data=issues_excel,
+                        file_name="wire_tool_issues.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+            if issues_count > 0:
+                st.dataframe(issues_df, use_container_width=True)
