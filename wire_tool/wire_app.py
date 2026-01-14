@@ -1,11 +1,7 @@
 import streamlit as st
 
-from wire_tool.graph import bfs_parents, build_graph, compute_feeder_paths
-from wire_tool.io import load_connection_list
-from wire_tool.validators import validate_required_columns
 
-
-_Q81_NAME = "-Q81"
+_TITLE = "Wire sizing tool"
 
 
 def _sort_issues(issues):
@@ -14,7 +10,10 @@ def _sort_issues(issues):
 
 
 def render_wire_page() -> None:
-    st.subheader("Wire sizing tool")
+    from wire_tool.io import load_connection_list
+    from wire_tool.validators import validate_required_columns
+
+    st.subheader(_TITLE)
     uploaded_file = st.file_uploader(
         "Upload connection list Excel file",
         type=["xlsx", "xlsm", "xls"],
@@ -45,55 +44,10 @@ def render_wire_page() -> None:
     st.dataframe(df_power.head(50), use_container_width=True)
 
     if st.button("Compute feeder paths"):
+        from wire_tool.graph import build_graph, compute_feeder_paths
+
         adjacency, issues = build_graph(df_power)
-        q81_name_rows = int((df_power["Name"] == _Q81_NAME).sum())
-        q81_name1_rows = int((df_power["Name.1"] == _Q81_NAME).sum())
-        q81_nodes = [node for node in adjacency if node[0] == _Q81_NAME]
-        q81_node_count = len(q81_nodes)
-        q81_name_samples = sorted(
-            {
-                value
-                for value in df_power["Name"].dropna().astype(str).unique()
-                if "Q81" in value
-            }
-        )
-        q81_name1_samples = sorted(
-            {
-                value
-                for value in df_power["Name.1"].dropna().astype(str).unique()
-                if "Q81" in value
-            }
-        )
-
-        with st.expander("Debug: Q81 detection"):
-            st.write(
-                {
-                    "rows_name_eq_-Q81": q81_name_rows,
-                    "rows_name1_eq_-Q81": q81_name1_rows,
-                    "graph_nodes_name_eq_-Q81": q81_node_count,
-                }
-            )
-            st.write({"Name contains Q81": q81_name_samples})
-            st.write({"Name.1 contains Q81": q81_name1_samples})
-
-        start_nodes = q81_nodes
-
-        if not start_nodes:
-            issues.append(
-                {
-                    "severity": "ERROR",
-                    "code": "W203",
-                    "message": "No -Q81 start node found in Power rows.",
-                    "row_index": None,
-                    "context": {},
-                }
-            )
-            st.error("-Q81 was not found in Power rows; unable to compute feeder paths.")
-            st.dataframe(_sort_issues(issues), use_container_width=True)
-            st.stop()
-
-        parents = bfs_parents(adjacency, start_nodes)
-        feeders, feeder_issues = compute_feeder_paths(adjacency, parents, start_nodes)
+        feeders, feeder_issues, debug = compute_feeder_paths(adjacency)
         issues.extend(feeder_issues)
 
         feeders_found = len(feeders)
@@ -104,7 +58,28 @@ def render_wire_page() -> None:
         st.metric("Unreachable feeders", unreachable_count)
         st.metric("Issues", issues_count)
 
-        st.dataframe(feeders, use_container_width=True)
+        import pandas as pd
+
+        feeder_columns = [
+            "feeder_end_name",
+            "supply_net",
+            "path_nodes_raw",
+            "path_names_collapsed",
+            "path_len_nodes",
+            "reachable",
+        ]
+        st.dataframe(pd.DataFrame(feeders, columns=feeder_columns), use_container_width=True)
+
+        with st.expander("Debug: feeder path computation"):
+            st.write(
+                {
+                    "total_nodes": debug["total_nodes"],
+                    "total_edges": debug["total_edges"],
+                    "supply_root_nets_found": debug["supply_root_nets_found"],
+                    "feeder_ends_found": debug["feeder_ends_found"],
+                    "unreachable_feeders_count": debug["unreachable_feeders_count"],
+                }
+            )
 
         if issues:
             st.dataframe(_sort_issues(issues), use_container_width=True)
