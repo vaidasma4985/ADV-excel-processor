@@ -46,7 +46,37 @@ def render_wire_page() -> None:
 
     if st.button("Compute feeder paths"):
         adjacency, issues = build_graph(df_power)
-        start_nodes = [node for node in adjacency if node[0] == _Q81_NAME]
+        q81_name_rows = int((df_power["Name"] == _Q81_NAME).sum())
+        q81_name1_rows = int((df_power["Name.1"] == _Q81_NAME).sum())
+        q81_nodes = [node for node in adjacency if node[0] == _Q81_NAME]
+        q81_node_count = len(q81_nodes)
+        q81_name_samples = sorted(
+            {
+                value
+                for value in df_power["Name"].dropna().astype(str).unique()
+                if "Q81" in value
+            }
+        )
+        q81_name1_samples = sorted(
+            {
+                value
+                for value in df_power["Name.1"].dropna().astype(str).unique()
+                if "Q81" in value
+            }
+        )
+
+        with st.expander("Debug: Q81 detection"):
+            st.write(
+                {
+                    "rows_name_eq_-Q81": q81_name_rows,
+                    "rows_name1_eq_-Q81": q81_name1_rows,
+                    "graph_nodes_name_eq_-Q81": q81_node_count,
+                }
+            )
+            st.write({"Name contains Q81": q81_name_samples})
+            st.write({"Name.1 contains Q81": q81_name1_samples})
+
+        start_nodes = q81_nodes
 
         if not start_nodes:
             issues.append(
