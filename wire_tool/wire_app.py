@@ -19,6 +19,33 @@ def _to_excel_bytes(df):
     return output.getvalue()
 
 
+def _simplify_device_chain(chain: str) -> str:
+    if not chain:
+        return ""
+    parts = [part.strip() for part in chain.split("->")]
+    simplified = []
+    seen = set()
+    for part in parts:
+        token = part.replace("NET:", "").strip()
+        if not token:
+            continue
+        token = token.split(":", 1)[0].strip()
+        token = token.split("/", 1)[0].strip()
+        if not token:
+            continue
+        if token.startswith("-") or token in {"MT", "IT", "LT"}:
+            if token not in seen:
+                simplified.append(token)
+                seen.add(token)
+    return " -> ".join(simplified)
+
+
+def _supply_group(supply_net: str) -> str:
+    if not supply_net:
+        return ""
+    return supply_net.split("/", 1)[0].strip()
+
+
 def _clear_results():
     for key in (
         "wire_results_computed",
@@ -95,6 +122,11 @@ def render_wire_page() -> None:
             "path_len_nodes",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
+        feeders_df["supply_group"] = feeders_df["supply_net"].apply(_supply_group)
+        feeders_df["device_chain_simplified"] = feeders_df["path_names_collapsed"].apply(
+            _simplify_device_chain
+        )
+        feeders_df["feeder_end_cps"] = feeders_df["feeder_end_cp"]
 
         aggregated_columns = [
             "feeder_end_name",
@@ -106,15 +138,18 @@ def render_wire_page() -> None:
             "path_len_nodes",
         ]
         aggregated_df = pd.DataFrame(aggregated, columns=aggregated_columns)
+        aggregated_df["supply_group"] = aggregated_df["supply_net"].apply(_supply_group)
+        aggregated_df["device_chain_simplified"] = aggregated_df[
+            "device_chain_grouped"
+        ].apply(_simplify_device_chain)
 
         issues_df = pd.DataFrame(_sort_issues(issues))
         unreachable_df = feeders_df[~feeders_df["reachable"]].copy()
         simplified_columns = [
             "feeder_end_name",
             "feeder_end_cps",
-            "supply_net",
-            "path_names_collapsed",
-            "device_chain_grouped",
+            "supply_group",
+            "device_chain_simplified",
             "reachable",
             "path_len_nodes",
         ]
@@ -149,16 +184,82 @@ def render_wire_page() -> None:
         st.metric("Unreachable feeders", unreachable_count)
         st.metric("Issues", issues_count)
 
+        st.subheader("Validation / Spot-check")
+        feeder_options = sorted(aggregated_df["feeder_end_name"].unique())
+        if not feeder_options:
+            st.info("No feeders detected for validation.")
+        else:
+            selected_feeder = st.selectbox(
+                "Select feeder end",
+                feeder_options,
+                key="wire_validation_feeder",
+            )
+            selected_summary = aggregated_df[
+                aggregated_df["feeder_end_name"] == selected_feeder
+            ].head(1)
+            if not selected_summary.empty:
+                summary_row = selected_summary.iloc[0]
+                st.write(
+                    {
+                        "supply_group": summary_row["supply_group"],
+                        "reachable": summary_row["reachable"],
+                        "path_len_nodes": summary_row["path_len_nodes"],
+                    }
+                )
+                st.markdown(
+                    f"**Device chain (simplified):** `{summary_row['device_chain_simplified']}`"
+                )
+
+            with st.expander("Raw path details"):
+                raw_details = feeders_df[
+                    feeders_df["feeder_end_name"] == selected_feeder
+                ][
+                    [
+                        "feeder_end_name",
+                        "feeder_end_cp",
+                        "supply_net",
+                        "path_nodes_raw",
+                        "path_names_collapsed",
+                        "device_chain",
+                        "device_chain_simplified",
+                        "reachable",
+                        "path_len_nodes",
+                    ]
+                ]
+                st.dataframe(raw_details, use_container_width=True)
+
+            with st.expander("Source rows"):
+                name_match = df_power["Name"].astype(str).str.contains(
+                    selected_feeder, na=False, regex=False
+                )
+                name1_match = df_power["Name.1"].astype(str).str.contains(
+                    selected_feeder, na=False, regex=False
+                )
+                source_rows = df_power[name_match | name1_match]
+                st.dataframe(source_rows, use_container_width=True)
+
         simplified_tab, detailed_tab = st.tabs(["Simplified view", "Detailed view"])
 
         with simplified_tab:
             st.dataframe(simplified_df, use_container_width=True)
 
         with detailed_tab:
-            with st.expander("Details: per-contact paths (raw)"):
+            minimal_columns = [
+                "feeder_end_name",
+                "feeder_end_cps",
+                "supply_group",
+                "device_chain_simplified",
+                "reachable",
+                "path_len_nodes",
+            ]
+            st.subheader("Per-contact paths (summary)")
+            st.dataframe(feeders_df[minimal_columns], use_container_width=True)
+            with st.expander("Extra columns: per-contact paths (raw)"):
                 st.dataframe(feeders_df, use_container_width=True)
 
-            with st.expander("Details: grouped summary"):
+            st.subheader("Grouped summary (minimal)")
+            st.dataframe(aggregated_df[minimal_columns], use_container_width=True)
+            with st.expander("Extra columns: grouped summary"):
                 st.dataframe(aggregated_df, use_container_width=True)
 
             with st.expander("Debug: feeder path computation"):
