@@ -19,6 +19,18 @@ def _to_excel_bytes(df):
     return output.getvalue()
 
 
+def _clear_results():
+    for key in (
+        "wire_tool_computed",
+        "wire_tool_debug",
+        "wire_tool_detailed_df",
+        "wire_tool_grouped_df",
+        "wire_tool_issues_df",
+        "wire_tool_unreachable_df",
+    ):
+        st.session_state.pop(key, None)
+
+
 def render_wire_page() -> None:
     from wire_tool.io import load_connection_list
     from wire_tool.validators import validate_required_columns
@@ -31,6 +43,14 @@ def render_wire_page() -> None:
     if not uploaded_file:
         st.info("Upload a connection list to preview Power rows.")
         return
+
+    import hashlib
+
+    file_bytes = uploaded_file.getvalue()
+    file_id = (uploaded_file.name, hashlib.sha256(file_bytes).hexdigest())
+    if st.session_state.get("wire_tool_file_id") != file_id:
+        st.session_state["wire_tool_file_id"] = file_id
+        _clear_results()
 
     try:
         df = load_connection_list(uploaded_file)
@@ -60,14 +80,6 @@ def render_wire_page() -> None:
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(adjacency)
         issues.extend(feeder_issues)
 
-        feeders_found = len(feeders)
-        unreachable_count = sum(1 for feeder in feeders if not feeder["reachable"])
-        issues_count = len(issues)
-
-        st.metric("Feeders found", feeders_found)
-        st.metric("Unreachable feeders", unreachable_count)
-        st.metric("Issues", issues_count)
-
         import pandas as pd
 
         feeder_columns = [
@@ -77,20 +89,54 @@ def render_wire_page() -> None:
             "reachable",
             "path_nodes_raw",
             "path_names_collapsed",
+            "simplified_chain",
             "path_len_nodes",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
-        st.dataframe(feeders_df, use_container_width=True)
 
         aggregated_columns = [
             "feeder_end_name",
             "feeder_end_cps",
             "supply_net",
             "path_names_collapsed",
+            "simplified_chain_grouped",
             "reachable",
             "path_len_nodes",
         ]
         aggregated_df = pd.DataFrame(aggregated, columns=aggregated_columns)
+
+        issues_df = pd.DataFrame(_sort_issues(issues))
+        unreachable_df = feeders_df[~feeders_df["reachable"]].copy()
+
+        # Store computed data in session_state so downloads/tables persist on rerun.
+        st.session_state.update(
+            {
+                "wire_tool_computed": True,
+                "wire_tool_debug": debug,
+                "wire_tool_detailed_df": feeders_df,
+                "wire_tool_grouped_df": aggregated_df,
+                "wire_tool_issues_df": issues_df,
+                "wire_tool_unreachable_df": unreachable_df,
+            }
+        )
+
+    if st.session_state.get("wire_tool_computed"):
+        feeders_df = st.session_state["wire_tool_detailed_df"]
+        aggregated_df = st.session_state["wire_tool_grouped_df"]
+        issues_df = st.session_state["wire_tool_issues_df"]
+        unreachable_df = st.session_state["wire_tool_unreachable_df"]
+        debug = st.session_state["wire_tool_debug"]
+
+        feeders_found = len(feeders_df)
+        unreachable_count = len(unreachable_df)
+        issues_count = len(issues_df)
+
+        st.metric("Feeders found", feeders_found)
+        st.metric("Unreachable feeders", unreachable_count)
+        st.metric("Issues", issues_count)
+
+        st.dataframe(feeders_df, use_container_width=True)
+
         st.dataframe(aggregated_df, use_container_width=True)
 
         with st.expander("Debug: feeder path computation"):
@@ -105,23 +151,23 @@ def render_wire_page() -> None:
                 }
             )
 
-        unreachable_feeders = feeders_df[~feeders_df["reachable"]].copy()
-        unreachable_excel = _to_excel_bytes(unreachable_feeders)
-        st.download_button(
-            "Download unreachable feeders",
-            data=unreachable_excel,
-            file_name="unreachable_feeders.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        if not unreachable_df.empty:
+            unreachable_excel = _to_excel_bytes(unreachable_df)
+            st.download_button(
+                "Download unreachable feeders",
+                data=unreachable_excel,
+                file_name="unreachable_feeders.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-        issues_df = pd.DataFrame(_sort_issues(issues))
-        issues_excel = _to_excel_bytes(issues_df)
-        st.download_button(
-            "Download issues",
-            data=issues_excel,
-            file_name="wire_tool_issues.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        if not issues_df.empty:
+            issues_excel = _to_excel_bytes(issues_df)
+            st.download_button(
+                "Download issues",
+                data=issues_excel,
+                file_name="wire_tool_issues.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-        if issues:
+        if not issues_df.empty:
             st.dataframe(issues_df, use_container_width=True)

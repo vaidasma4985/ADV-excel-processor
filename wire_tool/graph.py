@@ -172,6 +172,35 @@ def _compress_path_names(path: List[Node]) -> List[str]:
     return collapsed
 
 
+def _simplified_chain(path: List[Node]) -> str:
+    if not path:
+        return ""
+
+    reversed_path = list(reversed(path))
+    # Build a human-friendly chain from supply net to feeder, skipping NET nodes.
+    chain: List[str] = []
+    last_name: str | None = None
+
+    root_node = reversed_path[0]
+    if _is_net_node(root_node):
+        root_name = _net_name(root_node)
+    else:
+        root_name = _device_name(root_node)
+
+    chain.append(root_name)
+    last_name = root_name
+
+    for node in reversed_path[1:]:
+        if _is_net_node(node):
+            continue
+        name = _device_name(node)
+        if name != last_name:
+            chain.append(name)
+            last_name = name
+
+    return " -> ".join(chain)
+
+
 def _shortest_path_to_roots(
     adjacency: Dict[Node, Set[Node]],
     start_nodes: Iterable[Node],
@@ -268,6 +297,7 @@ def compute_feeder_paths(
         supply_net = _net_name(supply_any) if supply_any else ""
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
+        simplified_chain = _simplified_chain(path_any)
 
         feeders.append(
             {
@@ -277,6 +307,7 @@ def compute_feeder_paths(
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
+                "simplified_chain": simplified_chain,
                 "path_len_nodes": len(path_any),
             }
         )
@@ -296,17 +327,20 @@ def compute_feeder_paths(
 
 
 def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, Dict[str, Any]] = {}
+    grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
 
     for feeder in feeders:
         name = feeder["feeder_end_name"]
+        supply_net = feeder["supply_net"]
         entry = grouped.setdefault(
-            name,
+            (name, supply_net),
             {
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
-                "supply_net": "",
+                "supply_net": supply_net,
                 "path_names_collapsed": "",
+                "simplified_chain_grouped": "",
+                "simplified_chain_candidates": defaultdict(int),
                 "reachable": False,
                 "path_len_nodes": 0,
             },
@@ -316,24 +350,39 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
 
         if feeder["reachable"]:
             entry["reachable"] = True
-            if not entry["supply_net"]:
-                entry["supply_net"] = feeder["supply_net"]
             if not entry["path_names_collapsed"]:
                 entry["path_names_collapsed"] = feeder["path_names_collapsed"]
+            if feeder["simplified_chain"]:
+                entry["simplified_chain_candidates"][feeder["simplified_chain"]] += 1
             if entry["path_len_nodes"] == 0:
                 entry["path_len_nodes"] = feeder["path_len_nodes"]
             else:
                 entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
 
     aggregated = []
-    for name, entry in sorted(grouped.items()):
+    for (_name, _supply), entry in sorted(grouped.items()):
         cps = sorted(entry["feeder_end_cps"], key=lambda cp: (len(cp), cp))
+        if entry["simplified_chain_candidates"]:
+            chain_lengths = {
+                chain: len(chain.split(" -> ")) for chain in entry["simplified_chain_candidates"]
+            }
+            shortest_length = min(chain_lengths.values())
+            shortest_chains = [
+                chain
+                for chain, length in chain_lengths.items()
+                if length == shortest_length
+            ]
+            entry["simplified_chain_grouped"] = max(
+                shortest_chains,
+                key=lambda chain: entry["simplified_chain_candidates"][chain],
+            )
         aggregated.append(
             {
-                "feeder_end_name": name,
+                "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
                 "path_names_collapsed": entry["path_names_collapsed"],
+                "simplified_chain_grouped": entry["simplified_chain_grouped"],
                 "reachable": entry["reachable"],
                 "path_len_nodes": entry["path_len_nodes"],
             }
