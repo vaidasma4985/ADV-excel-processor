@@ -172,33 +172,29 @@ def _compress_path_names(path: List[Node]) -> List[str]:
     return collapsed
 
 
-def _simplified_chain(path: List[Node]) -> str:
-    if not path:
-        return ""
+def _strip_contact_suffix(name: str) -> str:
+    return name.split(":", 1)[0].split(".", 1)[0]
 
-    reversed_path = list(reversed(path))
-    # Build a human-friendly chain from supply net to feeder, skipping NET nodes.
-    chain: List[str] = []
-    last_name: str | None = None
 
-    root_node = reversed_path[0]
-    if _is_net_node(root_node):
-        root_name = _net_name(root_node)
-    else:
-        root_name = _device_name(root_node)
+def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
+    collapsed: List[str] = []
+    for name in names:
+        if not collapsed or name != collapsed[-1]:
+            collapsed.append(name)
+    return collapsed
 
-    chain.append(root_name)
-    last_name = root_name
 
-    for node in reversed_path[1:]:
+def _extract_device_names_from_path(path: List[Node]) -> List[str]:
+    # Filter out NET nodes and wire labels; keep only base device names.
+    names: List[str] = []
+    for node in path:
         if _is_net_node(node):
             continue
-        name = _device_name(node)
-        if name != last_name:
-            chain.append(name)
-            last_name = name
-
-    return " -> ".join(chain)
+        device_name = _strip_contact_suffix(_device_name(node))
+        if not device_name.startswith("-"):
+            continue
+        names.append(device_name)
+    return _collapse_consecutive_duplicates(names)
 
 
 def _shortest_path_to_roots(
@@ -297,7 +293,7 @@ def compute_feeder_paths(
         supply_net = _net_name(supply_any) if supply_any else ""
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
-        simplified_chain = _simplified_chain(path_any)
+        device_chain = " -> ".join(_extract_device_names_from_path(path_any))
 
         feeders.append(
             {
@@ -307,7 +303,7 @@ def compute_feeder_paths(
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
-                "simplified_chain": simplified_chain,
+                "device_chain": device_chain,
                 "path_len_nodes": len(path_any),
             }
         )
@@ -339,32 +335,31 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
                 "path_names_collapsed": "",
-                "simplified_chain_grouped": "",
-                "simplified_chain_candidates": defaultdict(int),
-                "reachable": False,
+                "device_chain_grouped": "",
+                "device_chain_candidates": defaultdict(int),
+                "reachable": True,
                 "path_len_nodes": 0,
             },
         )
         if feeder["feeder_end_cp"]:
             entry["feeder_end_cps"].add(feeder["feeder_end_cp"])
 
-        if feeder["reachable"]:
-            entry["reachable"] = True
-            if not entry["path_names_collapsed"]:
-                entry["path_names_collapsed"] = feeder["path_names_collapsed"]
-            if feeder["simplified_chain"]:
-                entry["simplified_chain_candidates"][feeder["simplified_chain"]] += 1
-            if entry["path_len_nodes"] == 0:
-                entry["path_len_nodes"] = feeder["path_len_nodes"]
-            else:
-                entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
+        entry["reachable"] = entry["reachable"] and feeder["reachable"]
+        if not entry["path_names_collapsed"]:
+            entry["path_names_collapsed"] = feeder["path_names_collapsed"]
+        if feeder["device_chain"]:
+            entry["device_chain_candidates"][feeder["device_chain"]] += 1
+        if entry["path_len_nodes"] == 0:
+            entry["path_len_nodes"] = feeder["path_len_nodes"]
+        else:
+            entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
 
     aggregated = []
     for (_name, _supply), entry in sorted(grouped.items()):
         cps = sorted(entry["feeder_end_cps"], key=lambda cp: (len(cp), cp))
-        if entry["simplified_chain_candidates"]:
+        if entry["device_chain_candidates"]:
             chain_lengths = {
-                chain: len(chain.split(" -> ")) for chain in entry["simplified_chain_candidates"]
+                chain: len(chain.split(" -> ")) for chain in entry["device_chain_candidates"]
             }
             shortest_length = min(chain_lengths.values())
             shortest_chains = [
@@ -372,9 +367,9 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 for chain, length in chain_lengths.items()
                 if length == shortest_length
             ]
-            entry["simplified_chain_grouped"] = max(
+            entry["device_chain_grouped"] = max(
                 shortest_chains,
-                key=lambda chain: entry["simplified_chain_candidates"][chain],
+                key=lambda chain: entry["device_chain_candidates"][chain],
             )
         aggregated.append(
             {
@@ -382,7 +377,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
                 "path_names_collapsed": entry["path_names_collapsed"],
-                "simplified_chain_grouped": entry["simplified_chain_grouped"],
+                "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
                 "path_len_nodes": entry["path_len_nodes"],
             }

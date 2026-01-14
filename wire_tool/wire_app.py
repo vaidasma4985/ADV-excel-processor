@@ -89,7 +89,7 @@ def render_wire_page() -> None:
             "reachable",
             "path_nodes_raw",
             "path_names_collapsed",
-            "simplified_chain",
+            "device_chain",
             "path_len_nodes",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
@@ -99,7 +99,7 @@ def render_wire_page() -> None:
             "feeder_end_cps",
             "supply_net",
             "path_names_collapsed",
-            "simplified_chain_grouped",
+            "device_chain_grouped",
             "reachable",
             "path_len_nodes",
         ]
