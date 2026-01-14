@@ -8,6 +8,7 @@ import pandas as pd
 
 Node = str
 Issue = Dict[str, Any]
+GraphDebug = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)/(L1|L2|L3|N)$")
@@ -110,12 +111,64 @@ def _extract_root_tokens(wireno: str | None) -> List[str]:
     return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
 
 
-def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Issue]]:
+def _split_logical_base(name: str) -> Tuple[str | None, bool]:
+    m = re.match(r"^(?P<base>-[A-Z]+\d+)(?P<suffix>\.\d+)?$", name)
+    if not m:
+        return None, False
+    base = m.group("base")
+    if not base.startswith(("-F", "-Q")):
+        return None, False
+    return base, bool(m.group("suffix"))
+
+
+def _add_logical_edges(
+    adjacency: Dict[Node, Set[Node]],
+    device_terminals: Dict[str, Set[str]],
+) -> Tuple[int, List[Dict[str, Any]], Dict[Tuple[str, str], str]]:
+    base_groups: Dict[str, List[str]] = defaultdict(list)
+    base_has_suffix: Dict[str, bool] = defaultdict(bool)
+
+    for device_name in device_terminals:
+        base, has_suffix = _split_logical_base(device_name)
+        if base is None:
+            continue
+        base_groups[base].append(device_name)
+        if has_suffix:
+            base_has_suffix[base] = True
+
+    logical_edges: Set[Tuple[Node, Node]] = set()
+    logical_edge_types: Dict[Tuple[str, str], str] = {}
+    sample_groups: List[Dict[str, Any]] = []
+
+    for base, devices in sorted(base_groups.items()):
+        if not base_has_suffix[base]:
+            continue
+        if len(devices) < 2:
+            continue
+        sample_groups.append({"base": base, "parts": sorted(devices)})
+        for i, left in enumerate(devices):
+            for right in devices[i + 1 :]:
+                for left_term in device_terminals.get(left, set()):
+                    for right_term in device_terminals.get(right, set()):
+                        left_node = f"{left}:{left_term}"
+                        right_node = f"{right}:{right_term}"
+                        adjacency.setdefault(left_node, set()).add(right_node)
+                        adjacency.setdefault(right_node, set()).add(left_node)
+                        edge = tuple(sorted((left_node, right_node)))
+                        logical_edges.add(edge)
+                        logical_edge_types[edge] = "logical"
+
+    return len(logical_edges), sample_groups[:5], logical_edge_types
+
+
+def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Issue], GraphDebug]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
 
     for row_index, row in df_power.iterrows():
+        if "Line-Function" in row and row["Line-Function"] != "Power":
+            continue
         wireno = _normalize_wireno(row.get("Wireno"))
         root_tokens = _extract_root_tokens(wireno)
 
@@ -174,7 +227,18 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
 
-    return adjacency, issues
+    logical_edges_count, logical_groups, logical_edge_types = _add_logical_edges(
+        adjacency,
+        device_terminals,
+    )
+
+    graph_debug: GraphDebug = {
+        "logical_edges_added": logical_edges_count,
+        "logical_groups_sample": logical_groups,
+        "logical_edge_types": logical_edge_types,
+    }
+
+    return adjacency, issues, graph_debug
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -255,8 +319,97 @@ def _direct_net_neighbors(adjacency: Dict[Node, Set[Node]], nodes: Iterable[Node
     return sorted(nets)
 
 
+def _bfs_distances(adjacency: Dict[Node, Set[Node]], start_nodes: Iterable[Node]) -> Dict[Node, int]:
+    distances: Dict[Node, int] = {}
+    queue: deque[Node] = deque()
+    for node in start_nodes:
+        distances[node] = 0
+        queue.append(node)
+
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency.get(current, set()):
+            if neighbor in distances:
+                continue
+            distances[neighbor] = distances[current] + 1
+            queue.append(neighbor)
+    return distances
+
+
+def _device_nodes(adjacency: Dict[Node, Set[Node]]) -> Dict[str, Set[Node]]:
+    devices: Dict[str, Set[Node]] = defaultdict(set)
+    for node in adjacency:
+        if _is_net_node(node):
+            continue
+        devices[_device_name(node)].add(node)
+    return devices
+
+
+def _find_downstream_feeder(
+    adjacency: Dict[Node, Set[Node]],
+    device_nodes: Dict[str, Set[Node]],
+    root_nodes: Set[Node],
+    distances: Dict[Node, int],
+    device_min_distance: Dict[str, int],
+    start_device: str,
+    eligible_devices: Set[str],
+) -> bool:
+    start_nodes = device_nodes.get(start_device, set())
+    if not start_nodes:
+        return False
+    start_distance = device_min_distance[start_device]
+    queue: deque[Node] = deque(start_nodes)
+    visited: Set[Node] = set(start_nodes)
+
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency.get(current, set()):
+            if neighbor in visited or neighbor in root_nodes:
+                continue
+            if neighbor not in distances:
+                continue
+            if distances[neighbor] < start_distance:
+                continue
+            visited.add(neighbor)
+            if not _is_net_node(neighbor):
+                neighbor_device = _device_name(neighbor)
+                if (
+                    neighbor_device != start_device
+                    and neighbor_device in eligible_devices
+                    and device_min_distance.get(neighbor_device, -1) > start_distance
+                ):
+                    return True
+            queue.append(neighbor)
+    return False
+
+
+def _reachable_between_devices(
+    adjacency: Dict[Node, Set[Node]],
+    device_nodes: Dict[str, Set[Node]],
+    left_device: str,
+    right_device: str,
+) -> bool:
+    start_nodes = device_nodes.get(left_device, set())
+    target_nodes = device_nodes.get(right_device, set())
+    if not start_nodes or not target_nodes:
+        return False
+    visited: Set[Node] = set(start_nodes)
+    queue: deque[Node] = deque(start_nodes)
+    while queue:
+        current = queue.popleft()
+        if current in target_nodes:
+            return True
+        for neighbor in adjacency.get(current, set()):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            queue.append(neighbor)
+    return False
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
+    graph_debug: GraphDebug | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -266,15 +419,45 @@ def compute_feeder_paths(
         for node in adjacency
         if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
     }
+    device_nodes = _device_nodes(adjacency)
+    eligible_pattern = re.compile(r"^-(Q|F)\d+")
+    excluded_devices = {"-Q81"}
+    eligible_devices = {
+        name
+        for name in device_nodes
+        if eligible_pattern.match(name) and name not in excluded_devices
+    }
 
-    feeder_nodes = [
-        node
-        for node in adjacency
-        if not _is_net_node(node)
-        and _device_name(node).startswith(("-F", "-Q", "-X"))
-        and _device_name(node) != "-Q81"
-    ]
-    feeder_nodes_sorted = sorted(feeder_nodes)
+    distances = _bfs_distances(adjacency, root_nets)
+    device_min_distance: Dict[str, int] = {}
+    reachable_devices: Set[str] = set()
+
+    for device_name, nodes in device_nodes.items():
+        reachable_node_distances = [distances[node] for node in nodes if node in distances]
+        if not reachable_node_distances:
+            continue
+        reachable_devices.add(device_name)
+        device_min_distance[device_name] = min(reachable_node_distances)
+
+    feeder_end_devices = []
+    for device_name in sorted(eligible_devices):
+        if device_name not in reachable_devices:
+            continue
+        has_downstream = _find_downstream_feeder(
+            adjacency,
+            device_nodes,
+            root_nets,
+            distances,
+            device_min_distance,
+            device_name,
+            eligible_devices,
+        )
+        if not has_downstream:
+            feeder_end_devices.append(device_name)
+
+    feeder_nodes_sorted = sorted(
+        node for device in feeder_end_devices for node in device_nodes.get(device, set())
+    )
 
     for feeder_node in feeder_nodes_sorted:
         feeder_name = _device_name(feeder_node)
@@ -329,6 +512,19 @@ def compute_feeder_paths(
         "sub_root_nets": [],
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
+        "logical_edges_added": (graph_debug or {}).get("logical_edges_added", 0),
+        "logical_groups_sample": (graph_debug or {}).get("logical_groups_sample", []),
+        "logical_edge_types": (graph_debug or {}).get("logical_edge_types", {}),
+        "logical_connectivity_checks": {
+            "-F121.2_to_-F121.1": _reachable_between_devices(
+                adjacency,
+                device_nodes,
+                "-F121.2",
+                "-F121.1",
+            )
+            if "-F121.2" in device_nodes and "-F121.1" in device_nodes
+            else "not_present",
+        },
     }
 
     return feeders, aggregated, issues, debug
