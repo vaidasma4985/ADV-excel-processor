@@ -11,7 +11,7 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\\d+/(L1|L2|L3|N)$")
+_ROOT_TOKEN_PATTERN = re.compile(r"(MT|IT|LT)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -77,7 +77,7 @@ def _device_node(name: Any, cp: Any) -> Node | None:
         return None
     cp_str = _normalize_terminal(cp)
     if not cp_str:
-        return name_str
+        return None
     return f"{name_str}:{cp_str}"
 
 
@@ -93,6 +93,23 @@ def _net_name(node: Node) -> str:
     return node.replace("NET:", "", 1)
 
 
+def _strip_contact_suffix(name: str) -> str:
+    return name.split(":", 1)[0].split(".", 1)[0]
+
+
+def _base_device_name(name: Any) -> str | None:
+    name_str = _normalize_name(name)
+    if not name_str:
+        return None
+    return _strip_contact_suffix(name_str)
+
+
+def _extract_root_tokens(wireno: str | None) -> List[str]:
+    if not wireno:
+        return []
+    return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
+
+
 def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Issue]]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
@@ -100,11 +117,11 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
-        net_node = f"NET:{wireno}" if wireno else None
+        root_tokens = _extract_root_tokens(wireno)
 
-        name_a = _normalize_name(row.get("Name"))
+        name_a = _base_device_name(row.get("Name"))
         cp_a = _normalize_terminal(row.get("C.name"))
-        name_b = _normalize_name(row.get("Name.1"))
+        name_b = _base_device_name(row.get("Name.1"))
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
         from_node = _device_node(name_a, cp_a)
@@ -131,19 +148,23 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
             )
             continue
 
-        nodes = [node for node in (from_node, to_node, net_node) if node]
+        nodes = [node for node in (from_node, to_node) if node]
         for node in nodes:
             adjacency.setdefault(node, set())
 
-        if net_node and from_node:
-            adjacency[net_node].add(from_node)
-            adjacency[from_node].add(net_node)
-        if net_node and to_node:
-            adjacency[net_node].add(to_node)
-            adjacency[to_node].add(net_node)
         if from_node and to_node:
             adjacency[from_node].add(to_node)
             adjacency[to_node].add(from_node)
+
+        for root in root_tokens:
+            net_node = f"NET:{root}"
+            adjacency.setdefault(net_node, set())
+            if from_node:
+                adjacency[net_node].add(from_node)
+                adjacency[from_node].add(net_node)
+            if to_node:
+                adjacency[net_node].add(to_node)
+                adjacency[to_node].add(net_node)
 
     for device_name, terminals in device_terminals.items():
         for left, right in _PASS_THROUGH_PAIRS:
@@ -172,10 +193,6 @@ def _compress_path_names(path: List[Node]) -> List[str]:
     return collapsed
 
 
-def _strip_contact_suffix(name: str) -> str:
-    return name.split(":", 1)[0].split(".", 1)[0]
-
-
 def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
     collapsed: List[str] = []
     for name in names:
@@ -185,7 +202,7 @@ def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
 
 
 def _extract_device_names_from_path(path: List[Node]) -> List[str]:
-    # Filter out NET nodes and wire labels; keep only base device names.
+    # Filter out NET nodes and non-device labels; keep only base device names.
     names: List[str] = []
     for node in path:
         if _is_net_node(node):
@@ -244,22 +261,17 @@ def compute_feeder_paths(
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
 
-    main_root_nets = {
+    root_nets = {
         node
         for node in adjacency
         if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
-    }
-    sub_root_nets = {
-        node
-        for node in adjacency
-        if _is_net_node(node) and _SUB_ROOT_PATTERN.match(_net_name(node))
     }
 
     feeder_nodes = [
         node
         for node in adjacency
         if not _is_net_node(node)
-        and _device_name(node).startswith(("-F", "-Q"))
+        and _device_name(node).startswith(("-F", "-Q", "-X"))
         and _device_name(node) != "-Q81"
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
@@ -272,7 +284,7 @@ def compute_feeder_paths(
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
             [feeder_node],
-            main_root_nets | sub_root_nets,
+            root_nets,
         )
 
         reachable = bool(path_any)
@@ -281,7 +293,7 @@ def compute_feeder_paths(
                 _issue(
                     "ERROR",
                     "W202",
-                    "Feeder end is unreachable from any root net (main or sub).",
+                    "Feeder end is unreachable from any root net (MT/IT/LT).",
                     context={
                         "feeder_name": feeder_name,
                         "feeder_cp": feeder_cp,
@@ -313,8 +325,8 @@ def compute_feeder_paths(
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
-        "main_root_nets": sorted(_net_name(node) for node in main_root_nets),
-        "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
+        "main_root_nets": sorted(_net_name(node) for node in root_nets),
+        "sub_root_nets": [],
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
