@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 import re
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
@@ -12,6 +12,18 @@ Issue = Dict[str, Any]
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)/(L1|L2|L3|N)$")
 _SUB_ROOT_PATTERN = re.compile(r"^F\\d+/(L1|L2|L3|N)$")
+_PASS_THROUGH_PAIRS = (
+    ("1", "2"),
+    ("3", "4"),
+    ("5", "6"),
+    ("7", "8"),
+    ("9", "10"),
+    ("11", "12"),
+    ("13", "14"),
+    ("21", "22"),
+    ("31", "32"),
+    ("41", "42"),
+)
 
 
 def _is_missing(value: Any) -> bool:
@@ -45,13 +57,25 @@ def _normalize_wireno(value: Any) -> str | None:
     return normalized or None
 
 
-def _device_node(name: Any, cp: Any) -> Node | None:
-    if _is_missing(name):
+def _normalize_terminal(value: Any) -> str | None:
+    if _is_missing(value):
         return None
-    name_str = str(name).strip()
-    if _is_missing(cp):
-        return name_str
-    cp_str = str(cp).strip()
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip() or None
+
+
+def _normalize_name(value: Any) -> str | None:
+    if _is_missing(value):
+        return None
+    return str(value).strip() or None
+
+
+def _device_node(name: Any, cp: Any) -> Node | None:
+    name_str = _normalize_name(name)
+    if not name_str:
+        return None
+    cp_str = _normalize_terminal(cp)
     if not cp_str:
         return name_str
     return f"{name_str}:{cp_str}"
@@ -72,13 +96,24 @@ def _net_name(node: Node) -> str:
 def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Issue]]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
+    device_terminals: Dict[str, Set[str]] = defaultdict(set)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
         net_node = f"NET:{wireno}" if wireno else None
 
-        from_node = _device_node(row.get("Name"), row.get("C.name"))
-        to_node = _device_node(row.get("Name.1"), row.get("C.name.1"))
+        name_a = _normalize_name(row.get("Name"))
+        cp_a = _normalize_terminal(row.get("C.name"))
+        name_b = _normalize_name(row.get("Name.1"))
+        cp_b = _normalize_terminal(row.get("C.name.1"))
+
+        from_node = _device_node(name_a, cp_a)
+        to_node = _device_node(name_b, cp_b)
+
+        if name_a and cp_a:
+            device_terminals[name_a].add(cp_a)
+        if name_b and cp_b:
+            device_terminals[name_b].add(cp_b)
 
         if not from_node and not to_node:
             issues.append(
@@ -109,6 +144,14 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
         if from_node and to_node:
             adjacency[from_node].add(to_node)
             adjacency[to_node].add(from_node)
+
+    for device_name, terminals in device_terminals.items():
+        for left, right in _PASS_THROUGH_PAIRS:
+            if left in terminals and right in terminals:
+                node_left = f"{device_name}:{left}"
+                node_right = f"{device_name}:{right}"
+                adjacency.setdefault(node_left, set()).add(node_right)
+                adjacency.setdefault(node_right, set()).add(node_left)
 
     return adjacency, issues
 
@@ -172,7 +215,7 @@ def _direct_net_neighbors(adjacency: Dict[Node, Set[Node]], nodes: Iterable[Node
 
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
-) -> Tuple[List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
 
@@ -194,72 +237,106 @@ def compute_feeder_paths(
         and _device_name(node).startswith(("-F", "-Q"))
         and _device_name(node) != "-Q81"
     ]
-    feeder_names = sorted({_device_name(node) for node in feeder_nodes})
+    feeder_nodes_sorted = sorted(feeder_nodes)
 
-    for feeder_name in feeder_names:
-        candidate_nodes = [node for node in feeder_nodes if _device_name(node) == feeder_name]
-        direct_nets = _direct_net_neighbors(adjacency, candidate_nodes)
+    for feeder_node in feeder_nodes_sorted:
+        feeder_name = _device_name(feeder_node)
+        feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
+        direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
 
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
-            candidate_nodes,
+            [feeder_node],
             main_root_nets | sub_root_nets,
         )
-        path_main, supply_main = _shortest_path_to_roots(
-            adjacency,
-            candidate_nodes,
-            main_root_nets,
-        )
 
-        reachable_to_any_root = bool(path_any)
-        reachable_to_main = bool(path_main)
-
-        if not reachable_to_any_root:
+        reachable = bool(path_any)
+        if not reachable:
             issues.append(
                 _issue(
                     "ERROR",
                     "W202",
                     "Feeder end is unreachable from any root net (main or sub).",
-                    context={"feeder_name": feeder_name, "direct_nets": direct_nets},
-                )
-            )
-        elif not reachable_to_main:
-            issues.append(
-                _issue(
-                    "WARNING",
-                    "W203",
-                    "Feeder reaches downstream supply (Fxx/*) but not main (MT/IT/LT).",
-                    context={"feeder_name": feeder_name, "direct_nets": direct_nets},
+                    context={
+                        "feeder_name": feeder_name,
+                        "feeder_cp": feeder_cp,
+                        "direct_nets": direct_nets,
+                    },
                 )
             )
 
-        supply_net_any = _net_name(supply_any) if supply_any else ""
-        supply_net_main = _net_name(supply_main) if supply_main else ""
+        supply_net = _net_name(supply_any) if supply_any else ""
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
 
         feeders.append(
             {
                 "feeder_end_name": feeder_name,
-                "supply_net_any": supply_net_any,
-                "supply_net_main": supply_net_main,
-                "reachable_to_any_root": reachable_to_any_root,
-                "reachable_to_main": reachable_to_main,
+                "feeder_end_cp": feeder_cp,
+                "supply_net": supply_net,
+                "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
                 "path_len_nodes": len(path_any),
             }
         )
 
+    aggregated = _aggregate_feeder_paths(feeders)
+
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
         "main_root_nets": sorted(_net_name(node) for node in main_root_nets),
         "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
-        "feeder_ends_found": feeder_names,
-        "unreachable_feeders_count": sum(
-            1 for feeder in feeders if not feeder["reachable_to_any_root"]
-        ),
+        "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
+        "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
 
-    return feeders, issues, debug
+    return feeders, aggregated, issues, debug
+
+
+def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for feeder in feeders:
+        name = feeder["feeder_end_name"]
+        entry = grouped.setdefault(
+            name,
+            {
+                "feeder_end_name": name,
+                "feeder_end_cps": set(),
+                "supply_net": "",
+                "path_names_collapsed": "",
+                "reachable": False,
+                "path_len_nodes": 0,
+            },
+        )
+        if feeder["feeder_end_cp"]:
+            entry["feeder_end_cps"].add(feeder["feeder_end_cp"])
+
+        if feeder["reachable"]:
+            entry["reachable"] = True
+            if not entry["supply_net"]:
+                entry["supply_net"] = feeder["supply_net"]
+            if not entry["path_names_collapsed"]:
+                entry["path_names_collapsed"] = feeder["path_names_collapsed"]
+            if entry["path_len_nodes"] == 0:
+                entry["path_len_nodes"] = feeder["path_len_nodes"]
+            else:
+                entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
+
+    aggregated = []
+    for name, entry in sorted(grouped.items()):
+        cps = sorted(entry["feeder_end_cps"], key=lambda cp: (len(cp), cp))
+        aggregated.append(
+            {
+                "feeder_end_name": name,
+                "feeder_end_cps": ", ".join(cps),
+                "supply_net": entry["supply_net"],
+                "path_names_collapsed": entry["path_names_collapsed"],
+                "reachable": entry["reachable"],
+                "path_len_nodes": entry["path_len_nodes"],
+            }
+        )
+
+    return aggregated

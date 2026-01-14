@@ -57,11 +57,11 @@ def render_wire_page() -> None:
         from wire_tool.graph import build_graph, compute_feeder_paths
 
         adjacency, issues = build_graph(df_power)
-        feeders, feeder_issues, debug = compute_feeder_paths(adjacency)
+        feeders, aggregated, feeder_issues, debug = compute_feeder_paths(adjacency)
         issues.extend(feeder_issues)
 
         feeders_found = len(feeders)
-        unreachable_count = sum(1 for feeder in feeders if not feeder["reachable_to_any_root"])
+        unreachable_count = sum(1 for feeder in feeders if not feeder["reachable"])
         issues_count = len(issues)
 
         st.metric("Feeders found", feeders_found)
@@ -72,16 +72,26 @@ def render_wire_page() -> None:
 
         feeder_columns = [
             "feeder_end_name",
-            "supply_net_any",
-            "supply_net_main",
-            "reachable_to_any_root",
-            "reachable_to_main",
+            "feeder_end_cp",
+            "supply_net",
+            "reachable",
             "path_nodes_raw",
             "path_names_collapsed",
             "path_len_nodes",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
         st.dataframe(feeders_df, use_container_width=True)
+
+        aggregated_columns = [
+            "feeder_end_name",
+            "feeder_end_cps",
+            "supply_net",
+            "path_names_collapsed",
+            "reachable",
+            "path_len_nodes",
+        ]
+        aggregated_df = pd.DataFrame(aggregated, columns=aggregated_columns)
+        st.dataframe(aggregated_df, use_container_width=True)
 
         with st.expander("Debug: feeder path computation"):
             st.write(
@@ -95,16 +105,12 @@ def render_wire_page() -> None:
                 }
             )
 
-        failed_feeders = feeders_df[~feeders_df["reachable_to_main"]].copy()
-        if not failed_feeders.empty:
-            failed_feeders["reason"] = failed_feeders["reachable_to_any_root"].apply(
-                lambda reachable: "W203" if reachable else "W202"
-            )
-        failed_excel = _to_excel_bytes(failed_feeders)
+        unreachable_feeders = feeders_df[~feeders_df["reachable"]].copy()
+        unreachable_excel = _to_excel_bytes(unreachable_feeders)
         st.download_button(
-            "Download feeders missing main supply",
-            data=failed_excel,
-            file_name="feeders_missing_main_supply.xlsx",
+            "Download unreachable feeders",
+            data=unreachable_excel,
+            file_name="unreachable_feeders.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
