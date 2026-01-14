@@ -72,7 +72,8 @@ def render_wire_page() -> None:
         st.warning("No Power rows found")
         return
 
-    st.dataframe(df_power.head(50), use_container_width=True)
+    with st.expander("Preview: Power rows"):
+        st.dataframe(df_power.head(50), use_container_width=True)
 
     if st.button("Compute feeder paths"):
         from wire_tool.graph import build_graph, compute_feeder_paths
