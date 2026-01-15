@@ -104,24 +104,33 @@ def _base_device_name(name: Any) -> str | None:
     return _strip_contact_suffix(name_str)
 
 
+def _base_of(name: Any) -> str | None:
+    return _base_device_name(name)
+
+
 def _extract_root_tokens(wireno: str | None) -> List[str]:
     if not wireno:
         return []
     return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
 
 
-def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Issue]]:
+def build_graph(
+    df_power: pd.DataFrame,
+) -> Tuple[Dict[Node, Set[Node]], List[Issue], Dict[str, Set[str]], Dict[str, Set[str]]]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
+    device_parts: Dict[str, Set[str]] = defaultdict(set)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
         root_tokens = _extract_root_tokens(wireno)
 
-        name_a = _base_device_name(row.get("Name"))
+        name_a_raw = _normalize_name(row.get("Name"))
+        name_b_raw = _normalize_name(row.get("Name.1"))
+        name_a = _base_of(name_a_raw)
         cp_a = _normalize_terminal(row.get("C.name"))
-        name_b = _base_device_name(row.get("Name.1"))
+        name_b = _base_of(name_b_raw)
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
         from_node = _device_node(name_a, cp_a)
@@ -131,6 +140,10 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
             device_terminals[name_a].add(cp_a)
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
+        if name_a_raw and name_a:
+            device_parts[name_a].add(name_a_raw)
+        if name_b_raw and name_b:
+            device_parts[name_b].add(name_b_raw)
 
         if not from_node and not to_node:
             issues.append(
@@ -174,7 +187,7 @@ def build_graph(df_power: pd.DataFrame) -> Tuple[Dict[Node, Set[Node]], List[Iss
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
 
-    return adjacency, issues
+    return adjacency, issues, device_terminals, device_parts
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -255,11 +268,42 @@ def _direct_net_neighbors(adjacency: Dict[Node, Set[Node]], nodes: Iterable[Node
     return sorted(nets)
 
 
+def _device_terminals_from_nodes(adjacency: Dict[Node, Set[Node]]) -> Dict[str, Set[str]]:
+    device_terminals: Dict[str, Set[str]] = defaultdict(set)
+    for node in adjacency:
+        if _is_net_node(node):
+            continue
+        name = _device_name(node)
+        cp = node.split(":", 1)[1] if ":" in node else ""
+        if name and cp:
+            device_terminals[name].add(cp)
+    return device_terminals
+
+
+def _has_even_terminal(terminals: Iterable[str]) -> bool:
+    even_terminals = {"2", "4", "6", "8"}
+    return any(term in even_terminals for term in terminals)
+
+
+def _is_q_device(name: str) -> bool:
+    return bool(re.match(r"^-Q\d+", name)) and name != "-Q81"
+
+
+def _is_f_device(name: str) -> bool:
+    return bool(re.match(r"^-F\d+", name))
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
+    device_terminals: Dict[str, Set[str]] | None = None,
+    device_parts: Dict[str, Set[str]] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
+    if device_terminals is None:
+        device_terminals = _device_terminals_from_nodes(adjacency)
+    if device_parts is None:
+        device_parts = {}
 
     root_nets = {
         node
@@ -267,13 +311,17 @@ def compute_feeder_paths(
         if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
     }
 
-    feeder_nodes = [
-        node
-        for node in adjacency
-        if not _is_net_node(node)
-        and _device_name(node).startswith(("-F", "-Q", "-X"))
-        and _device_name(node) != "-Q81"
-    ]
+    device_nodes = [node for node in adjacency if not _is_net_node(node)]
+    device_names = {_device_name(node) for node in device_nodes}
+    feeder_f_bases = {
+        name
+        for name in device_names
+        if _is_f_device(name) and not _has_even_terminal(device_terminals.get(name, set()))
+    }
+    feeder_q_bases = {name for name in device_names if _is_q_device(name)}
+    feeder_x_bases = {name for name in device_names if name.startswith("-X")}
+    feeder_bases = feeder_f_bases | feeder_q_bases | feeder_x_bases
+    feeder_nodes = [node for node in device_nodes if _device_name(node) in feeder_bases]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
     for feeder_node in feeder_nodes_sorted:
@@ -322,12 +370,27 @@ def compute_feeder_paths(
 
     aggregated = _aggregate_feeder_paths(feeders)
 
+    feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
+    stacked_example = None
+    for base_name in sorted(device_parts):
+        parts = device_parts.get(base_name, set())
+        if len(parts) > 1:
+            stacked_example = {
+                "base": base_name,
+                "parts": sorted(parts),
+                "terminals_union": sorted(device_terminals.get(base_name, set())),
+            }
+            break
+
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
         "sub_root_nets": [],
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
+        "feeder_end_bases_count": len(feeder_end_bases),
+        "feeder_end_bases_sample": feeder_end_bases[:10],
+        "stacked_example": stacked_example,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
 
