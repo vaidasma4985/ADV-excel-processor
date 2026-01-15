@@ -247,6 +247,27 @@ def _extract_device_names_from_path(path: List[Node]) -> List[str]:
     return _collapse_consecutive_duplicates(names)
 
 
+def _extract_subroot_generators(sub_root_nets: Iterable[Node]) -> Set[str]:
+    generators: Set[str] = set()
+    for node in sub_root_nets:
+        if not _is_net_node(node):
+            continue
+        net_name = _net_name(node)
+        if _SUB_ROOT_PATTERN.match(net_name):
+            generators.add(net_name.split("/", 1)[0])
+    return generators
+
+
+def _first_subroot_generator_in_names(names: List[str], generators: Set[str]) -> str:
+    for name in names:
+        if not name.startswith("-F"):
+            continue
+        base = name[1:]
+        if base in generators:
+            return base
+    return ""
+
+
 def _logical_terminal_edges(
     terminals_a: Set[str],
     terminals_b: Set[str],
@@ -480,6 +501,7 @@ def compute_feeder_paths(
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
+    subroot_generators = _extract_subroot_generators(sub_root_nets)
     logical_base_terminals: Dict[str, Set[str]] = defaultdict(set)
     for device_name in device_names:
         logical_base_terminals[_logical_base_name(device_name)].update(
@@ -560,7 +582,18 @@ def compute_feeder_paths(
         path_with_nets = " -> ".join(path_any)
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
-        device_chain = " -> ".join(_extract_device_names_from_path(path_any))
+        device_chain_names = _extract_device_names_from_path(path_any)
+        device_chain = " -> ".join(device_chain_names)
+        subroot_inferred = False
+        if not subroot_net_used and main_supply_net and subroot_generators:
+            subroot_base = _first_subroot_generator_in_names(
+                device_chain_names,
+                subroot_generators,
+            )
+            if subroot_base and "/" in main_supply_net:
+                phase = main_supply_net.split("/", 1)[1]
+                subroot_net_used = f"{subroot_base}/{phase}"
+                subroot_inferred = True
 
         feeders.append(
             {
@@ -570,6 +603,7 @@ def compute_feeder_paths(
                 "main_supply_net": main_supply_net,
                 "subroot_net": first_subroot_token,
                 "subroot_net_used": subroot_net_used,
+                "subroot_inferred": subroot_inferred,
                 "first_join_net": first_join_net,
                 "path_main": path_main,
                 "reachable": reachable,
@@ -633,6 +667,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "main_supply_net": "",
                 "subroot_net": "",
                 "subroot_net_used": "",
+                "subroot_inferred": False,
                 "first_join_net": "",
                 "path_main": "",
                 "path_with_nets": "",
@@ -653,6 +688,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             entry["subroot_net"] = feeder["subroot_net"]
         if not entry["subroot_net_used"] and feeder.get("subroot_net_used"):
             entry["subroot_net_used"] = feeder["subroot_net_used"]
+        if feeder.get("subroot_inferred"):
+            entry["subroot_inferred"] = True
         if not entry["first_join_net"] and feeder.get("first_join_net"):
             entry["first_join_net"] = feeder["first_join_net"]
         if not entry["path_main"] and feeder.get("path_main"):
@@ -693,6 +730,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "main_supply_net": entry["main_supply_net"],
                 "subroot_net": entry["subroot_net"],
                 "subroot_net_used": entry["subroot_net_used"],
+                "subroot_inferred": entry["subroot_inferred"],
                 "first_join_net": entry["first_join_net"],
                 "path_main": entry["path_main"],
                 "path_with_nets": entry["path_with_nets"],
