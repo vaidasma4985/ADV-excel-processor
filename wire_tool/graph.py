@@ -10,8 +10,9 @@ Node = str
 Issue = Dict[str, Any]
 
 
-_MAIN_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)/(L1|L2|L3|N)$")
-_ROOT_TOKEN_PATTERN = re.compile(r"(MT|IT|LT)/(L1|L2|L3|N)")
+_MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
+_ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -67,8 +68,6 @@ def _normalize_terminal(value: Any) -> str | None:
         return None
     if re.fullmatch(r"\d+", normalized):
         return normalized
-    if "N" in normalized:
-        return "N"
     return normalized
 
 
@@ -260,8 +259,8 @@ def _logical_terminal_edges(
     evens_a = {term for term in numbers_a if int(term) % 2 == 0}
     evens_b = {term for term in numbers_b if int(term) % 2 == 0}
 
-    if "N" in terminals_a and "N" in terminals_b:
-        edges.add(("N", "N"))
+    neutral_pairs = _neutral_logical_pairs(terminals_a, terminals_b)
+    edges.update(neutral_pairs)
 
     common_numbers = numbers_a & numbers_b
     for number in sorted(common_numbers, key=lambda value: int(value)):
@@ -283,6 +282,37 @@ def _logical_terminal_edges(
                 edges.add((even, odd))
 
     return edges
+
+
+def _neutral_kind(term: str) -> str | None:
+    normalized = term.strip().upper()
+    if "'" in normalized:
+        return "end"
+    if normalized.endswith("N"):
+        return "front"
+    return None
+
+
+def _neutral_logical_pairs(
+    terminals_a: Set[str],
+    terminals_b: Set[str],
+) -> Set[Tuple[str, str]]:
+    fronts_a = sorted({term for term in terminals_a if _neutral_kind(term) == "front"})
+    ends_a = sorted({term for term in terminals_a if _neutral_kind(term) == "end"})
+    fronts_b = sorted({term for term in terminals_b if _neutral_kind(term) == "front"})
+    ends_b = sorted({term for term in terminals_b if _neutral_kind(term) == "end"})
+
+    pairs: Set[Tuple[str, str]] = set()
+    if fronts_a and fronts_b:
+        pairs.add((fronts_a[0], fronts_b[0]))
+    if ends_a and ends_b:
+        pairs.add((ends_a[0], ends_b[0]))
+    if not pairs:
+        if fronts_a and ends_b:
+            pairs.add((fronts_a[0], ends_b[0]))
+        elif ends_a and fronts_b:
+            pairs.add((ends_a[0], fronts_b[0]))
+    return pairs
 
 
 def _add_logical_edges(
@@ -345,6 +375,26 @@ def _shortest_path_to_roots(
     return [], None
 
 
+def _first_subroot_in_path(path: List[Node]) -> str:
+    for node in path:
+        if not _is_net_node(node):
+            continue
+        net_name = _net_name(node)
+        if _SUB_ROOT_PATTERN.match(net_name):
+            return net_name
+    return ""
+
+
+def _last_device_before_root(path: List[Node]) -> str:
+    if not path:
+        return ""
+    for node in reversed(path):
+        if _is_net_node(node):
+            continue
+        return _device_name(node)
+    return ""
+
+
 def _direct_net_neighbors(adjacency: Dict[Node, Set[Node]], nodes: Iterable[Node]) -> List[str]:
     nets: Set[str] = set()
     for node in nodes:
@@ -369,6 +419,10 @@ def _device_terminals_from_nodes(adjacency: Dict[Node, Set[Node]]) -> Dict[str, 
 def _has_even_terminal(terminals: Iterable[str]) -> bool:
     even_terminals = {"2", "4", "6", "8"}
     return any(term in even_terminals for term in terminals)
+
+
+def _is_neutral_terminal(term: str) -> bool:
+    return _neutral_kind(term) is not None
 
 
 def _is_q_device(name: str) -> bool:
@@ -397,6 +451,11 @@ def compute_feeder_paths(
         for node in adjacency
         if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
     }
+    sub_root_nets = {
+        node
+        for node in adjacency
+        if _is_net_node(node) and _SUB_ROOT_PATTERN.match(_net_name(node))
+    }
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
@@ -409,7 +468,10 @@ def compute_feeder_paths(
     def _is_f_end(terminals: Iterable[str]) -> bool:
         input_terms = {"1", "3", "5", "N"}
         output_terms = {"2", "4", "6", "8"}
-        has_input = any(term in input_terms for term in terminals)
+        has_input = any(
+            term in input_terms or _is_neutral_terminal(term)
+            for term in terminals
+        )
         has_output = any(term in output_terms for term in terminals)
         return has_input and not has_output
 
@@ -441,16 +503,29 @@ def compute_feeder_paths(
         )
 
         reachable = bool(path_any)
+        first_subroot_token = _first_subroot_in_path(path_any)
+        path_main = " -> ".join(_compress_path_names(path_any))
         if not reachable:
+            path_closest, closest_net = _shortest_path_to_roots(
+                adjacency,
+                [feeder_node],
+                {node for node in adjacency if _is_net_node(node)},
+            )
+            closest_net_token = _net_name(closest_net) if closest_net else ""
+            last_device_before_root = _last_device_before_root(path_closest[:-1])
+            first_subroot_token = _first_subroot_in_path(path_closest)
             issues.append(
                 _issue(
                     "ERROR",
                     "W202",
-                    "Feeder end is unreachable from any root net (MT/IT/LT).",
+                    "Feeder end is unreachable from any root net (MT/MT2/IT/LT/LT2).",
                     context={
                         "feeder_name": feeder_name,
                         "feeder_cp": feeder_cp,
                         "direct_nets": direct_nets,
+                        "closest_net_token": closest_net_token,
+                        "last_device_before_root": last_device_before_root,
+                        "first_subroot_token_seen": first_subroot_token,
                     },
                 )
             )
@@ -465,6 +540,8 @@ def compute_feeder_paths(
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
                 "supply_net": supply_net,
+                "subroot_net": first_subroot_token,
+                "path_main": path_main,
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
@@ -497,7 +574,7 @@ def compute_feeder_paths(
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
-        "sub_root_nets": [],
+        "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
@@ -522,6 +599,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
+                "subroot_net": "",
+                "path_main": "",
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
                 "device_chain_candidates": defaultdict(int),
@@ -533,6 +612,10 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             entry["feeder_end_cps"].add(feeder["feeder_end_cp"])
 
         entry["reachable"] = entry["reachable"] and feeder["reachable"]
+        if not entry["subroot_net"] and feeder.get("subroot_net"):
+            entry["subroot_net"] = feeder["subroot_net"]
+        if not entry["path_main"] and feeder.get("path_main"):
+            entry["path_main"] = feeder["path_main"]
         if not entry["path_names_collapsed"]:
             entry["path_names_collapsed"] = feeder["path_names_collapsed"]
         if feeder["device_chain"]:
@@ -564,6 +647,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
+                "subroot_net": entry["subroot_net"],
+                "path_main": entry["path_main"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
