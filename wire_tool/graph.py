@@ -25,7 +25,8 @@ _PASS_THROUGH_PAIRS = (
     ("31", "32"),
     ("41", "42"),
     ("N", "N'"),
-    ("7N", "N'"),
+    ("N", "7N"),
+    ("N'", "7N"),
 )
 
 
@@ -71,6 +72,8 @@ def _normalize_terminal(value: Any) -> str | None:
     if not normalized:
         return None
     if re.fullmatch(r"\d+", normalized):
+        return normalized
+    if normalized in {"N'", "N"}:
         return normalized
     return normalized
 
@@ -233,9 +236,8 @@ def _compress_path_names(path: List[Node]) -> List[str]:
 
     for node in path:
         if _is_net_node(node):
-            name = _net_name(node)
-        else:
-            name = _device_name(node)
+            continue
+        name = _device_name(node)
         if name != last_name:
             collapsed.append(name)
             last_name = name
@@ -411,6 +413,10 @@ def _is_end_terminal(term: str) -> bool:
     if term.isdigit():
         return int(term) % 2 == 0
     return term == "N'"
+
+
+def _is_neutral_terminal(term: str) -> bool:
+    return term in {"N", "N'", "7N"}
 
 
 def _is_q_device(name: str) -> bool:
