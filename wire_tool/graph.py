@@ -560,16 +560,30 @@ def compute_feeder_paths(
         or _device_name(node) in feeder_x_bases
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
+    net_neighbors_by_node = {
+        node: {neighbor for neighbor in adjacency.get(node, set()) if _is_net_node(neighbor)}
+        for node in device_nodes
+    }
 
     for feeder_node in feeder_nodes_sorted:
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
         feeder_base = _logical_base_name(feeder_name)
+        feeder_net_neighbors = net_neighbors_by_node.get(feeder_node, set())
+        parent_candidates = {
+            node
+            for node in feeder_nodes
+            if node != feeder_node
+            and feeder_net_neighbors
+            and feeder_net_neighbors.intersection(net_neighbors_by_node.get(node, set()))
+            and len(net_neighbors_by_node.get(node, set())) > 1
+        }
         blocked_nodes = {
             node
             for node in feeder_nodes
             if _logical_base_name(_device_name(node)) != feeder_base
+            and node not in parent_candidates
         }
 
         path_any, supply_any = _shortest_path_to_roots(
