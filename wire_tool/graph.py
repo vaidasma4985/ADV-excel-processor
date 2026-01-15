@@ -63,7 +63,7 @@ def _normalize_terminal(value: Any) -> str | None:
         return None
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    normalized = str(value).strip().upper()
+    normalized = _normalize_apostrophes(str(value).strip().upper())
     if not normalized:
         return None
     if re.fullmatch(r"\d+", normalized):
@@ -285,12 +285,24 @@ def _logical_terminal_edges(
 
 
 def _neutral_kind(term: str) -> str | None:
-    normalized = term.strip().upper()
+    normalized = _normalize_apostrophes(term.strip().upper())
     if "'" in normalized:
         return "end"
     if normalized.endswith("N"):
         return "front"
     return None
+
+
+def _normalize_apostrophes(value: str) -> str:
+    return value.translate(
+        {
+            ord("\u2019"): "'",
+            ord("\u2018"): "'",
+            ord("\u02BC"): "'",
+            ord("\u2032"): "'",
+            ord("\u00B4"): "'",
+        }
+    )
 
 
 def _neutral_logical_pairs(
@@ -382,6 +394,15 @@ def _first_subroot_in_path(path: List[Node]) -> str:
         net_name = _net_name(node)
         if _SUB_ROOT_PATTERN.match(net_name):
             return net_name
+    return ""
+
+
+def _first_join_net_in_path(path: List[Node]) -> str:
+    if len(path) < 2:
+        return ""
+    for node in path[1:]:
+        if _is_net_node(node):
+            return _net_name(node)
     return ""
 
 
@@ -504,6 +525,7 @@ def compute_feeder_paths(
 
         reachable = bool(path_any)
         first_subroot_token = _first_subroot_in_path(path_any)
+        first_join_net = _first_join_net_in_path(path_any)
         path_main = " -> ".join(_compress_path_names(path_any))
         if not reachable:
             path_closest, closest_net = _shortest_path_to_roots(
@@ -514,6 +536,8 @@ def compute_feeder_paths(
             closest_net_token = _net_name(closest_net) if closest_net else ""
             last_device_before_root = _last_device_before_root(path_closest[:-1])
             first_subroot_token = _first_subroot_in_path(path_closest)
+            if not first_join_net:
+                first_join_net = _first_join_net_in_path(path_closest)
             issues.append(
                 _issue(
                     "ERROR",
@@ -531,6 +555,9 @@ def compute_feeder_paths(
             )
 
         supply_net = _net_name(supply_any) if supply_any else ""
+        main_supply_net = supply_net
+        subroot_net_used = first_subroot_token
+        path_with_nets = " -> ".join(path_any)
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
@@ -540,9 +567,13 @@ def compute_feeder_paths(
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
                 "supply_net": supply_net,
+                "main_supply_net": main_supply_net,
                 "subroot_net": first_subroot_token,
+                "subroot_net_used": subroot_net_used,
+                "first_join_net": first_join_net,
                 "path_main": path_main,
                 "reachable": reachable,
+                "path_with_nets": path_with_nets,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
                 "device_chain": device_chain,
@@ -599,8 +630,12 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
+                "main_supply_net": "",
                 "subroot_net": "",
+                "subroot_net_used": "",
+                "first_join_net": "",
                 "path_main": "",
+                "path_with_nets": "",
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
                 "device_chain_candidates": defaultdict(int),
@@ -612,10 +647,18 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             entry["feeder_end_cps"].add(feeder["feeder_end_cp"])
 
         entry["reachable"] = entry["reachable"] and feeder["reachable"]
+        if not entry["main_supply_net"] and feeder.get("main_supply_net"):
+            entry["main_supply_net"] = feeder["main_supply_net"]
         if not entry["subroot_net"] and feeder.get("subroot_net"):
             entry["subroot_net"] = feeder["subroot_net"]
+        if not entry["subroot_net_used"] and feeder.get("subroot_net_used"):
+            entry["subroot_net_used"] = feeder["subroot_net_used"]
+        if not entry["first_join_net"] and feeder.get("first_join_net"):
+            entry["first_join_net"] = feeder["first_join_net"]
         if not entry["path_main"] and feeder.get("path_main"):
             entry["path_main"] = feeder["path_main"]
+        if not entry["path_with_nets"] and feeder.get("path_with_nets"):
+            entry["path_with_nets"] = feeder["path_with_nets"]
         if not entry["path_names_collapsed"]:
             entry["path_names_collapsed"] = feeder["path_names_collapsed"]
         if feeder["device_chain"]:
@@ -647,8 +690,12 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
+                "main_supply_net": entry["main_supply_net"],
                 "subroot_net": entry["subroot_net"],
+                "subroot_net_used": entry["subroot_net_used"],
+                "first_join_net": entry["first_join_net"],
                 "path_main": entry["path_main"],
+                "path_with_nets": entry["path_with_nets"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
