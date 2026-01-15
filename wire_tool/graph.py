@@ -23,6 +23,8 @@ _PASS_THROUGH_PAIRS = (
     ("21", "22"),
     ("31", "32"),
     ("41", "42"),
+    ("N", "N'"),
+    ("7N", "N'"),
 )
 
 
@@ -67,8 +69,6 @@ def _normalize_terminal(value: Any) -> str | None:
         return None
     if re.fullmatch(r"\d+", normalized):
         return normalized
-    if "N" in normalized:
-        return "N"
     return normalized
 
 
@@ -185,8 +185,10 @@ def build_graph(
             adjacency.setdefault(node, set())
 
         if from_node and to_node:
-            adjacency[from_node].add(to_node)
-            adjacency[to_node].add(from_node)
+            suppress_bus_edge = bool(root_tokens) and _is_front_terminal(cp_a) and _is_front_terminal(cp_b)
+            if not suppress_bus_edge:
+                adjacency[from_node].add(to_node)
+                adjacency[to_node].add(from_node)
 
         for root in root_tokens:
             net_node = f"NET:{root}"
@@ -377,6 +379,24 @@ def _has_even_terminal(terminals: Iterable[str]) -> bool:
 
 def _is_even_terminal(term: str) -> bool:
     return term.isdigit() and int(term) % 2 == 0
+
+
+def _is_front_terminal(term: str) -> bool:
+    if term.isdigit():
+        return int(term) % 2 == 1
+    if term == "N":
+        return True
+    if term == "N'":
+        return False
+    if term.endswith("N") and "'" not in term:
+        return True
+    return False
+
+
+def _is_end_terminal(term: str) -> bool:
+    if term.isdigit():
+        return int(term) % 2 == 0
+    return term == "N'"
 
 
 def _is_q_device(name: str) -> bool:
