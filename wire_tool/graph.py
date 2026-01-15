@@ -271,6 +271,12 @@ def _extract_device_names_from_path(path: List[Node]) -> List[str]:
     return _collapse_consecutive_duplicates(names)
 
 
+def _neutral_rep(terminals: Set[str]) -> Tuple[str | None, str | None]:
+    front = next((t for t in sorted(terminals) if _is_neutral_terminal(t) and "'" not in t), None)
+    end = next((t for t in sorted(terminals) if _is_neutral_terminal(t) and "'" in t), None)
+    return front, end
+
+
 def _logical_terminal_edges(
     terminals_a: Set[str],
     terminals_b: Set[str],
@@ -283,8 +289,16 @@ def _logical_terminal_edges(
     evens_a = {term for term in numbers_a if int(term) % 2 == 0}
     evens_b = {term for term in numbers_b if int(term) % 2 == 0}
 
-    if "N" in terminals_a and "N" in terminals_b:
-        edges.add(("N", "N"))
+    front_a, end_a = _neutral_rep(terminals_a)
+    front_b, end_b = _neutral_rep(terminals_b)
+    if front_a and front_b:
+        edges.add((front_a, front_b))
+    if end_a and end_b:
+        edges.add((end_a, end_b))
+    if front_a and end_b:
+        edges.add((front_a, end_b))
+    if end_a and front_b:
+        edges.add((end_a, front_b))
 
     common_numbers = numbers_a & numbers_b
     for number in sorted(common_numbers, key=lambda value: int(value)):
@@ -421,7 +435,7 @@ def _is_end_terminal(term: str) -> bool:
 
 
 def _is_neutral_terminal(term: str) -> bool:
-    return term in {"N", "N'", "7N"}
+    return term.endswith("N")
 
 
 def _is_q_device(name: str) -> bool:
@@ -510,6 +524,14 @@ def compute_feeder_paths(
         node: base for base, nodes in base_to_nodes.items() for node in nodes
     }
 
+    def _first_subroot_token(path: List[Node]) -> str:
+        for node in path:
+            if _is_net_node(node):
+                net_name = _net_name(node)
+                if _SUB_ROOT_PATTERN.match(net_name):
+                    return net_name
+        return ""
+
     for feeder_node in feeder_nodes_sorted:
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
@@ -519,6 +541,7 @@ def compute_feeder_paths(
         blocked = blocked_nodes_all - allowed_nodes
         closest_net_token = ""
         last_device_before_root = ""
+        first_subroot_token_seen = ""
 
         direct_root_neighbors = sorted(
             neighbor
@@ -546,6 +569,7 @@ def compute_feeder_paths(
             if net_any:
                 closest_net_token = _net_name(net_any)
             if path_to_net:
+                first_subroot_token_seen = _first_subroot_token(path_to_net)
                 last_devices = [
                     _device_name(node)
                     for node in path_to_net
@@ -554,6 +578,7 @@ def compute_feeder_paths(
                 if last_devices:
                     last_device_before_root = last_devices[-1]
         else:
+            first_subroot_token_seen = _first_subroot_token(path_any)
             last_devices = [
                 _device_name(node) for node in path_any if not _is_net_node(node)
             ]
@@ -587,14 +612,17 @@ def compute_feeder_paths(
                 _issue(
                     "ERROR",
                     "W202",
-                    "Feeder end is unreachable from any root net (MT/IT/LT).",
-                    context={
-                        "feeder_name": feeder_name,
-                        "feeder_cp": feeder_cp,
-                        "direct_nets": direct_nets,
-                    },
-                )
+                "Feeder end is unreachable from any root net (MT/IT/LT).",
+                context={
+                    "feeder_name": feeder_name,
+                    "feeder_cp": feeder_cp,
+                    "direct_nets": direct_nets,
+                    "closest_net_token": closest_net_token,
+                    "last_device_before_root": last_device_before_root,
+                    "first_subroot_token_seen": first_subroot_token_seen,
+                },
             )
+        )
 
         supply_net = _net_name(supply_any) if supply_any else ""
         if not reachable:
@@ -618,6 +646,7 @@ def compute_feeder_paths(
                 "supply_net": supply_net,
                 "closest_net_token": closest_net_token,
                 "last_device_before_root": last_device_before_root,
+                "first_subroot_token_seen": first_subroot_token_seen,
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
@@ -680,6 +709,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
         supply_net = feeder["supply_net"]
         closest_net_token = feeder.get("closest_net_token", "")
         last_device_before_root = feeder.get("last_device_before_root", "")
+        first_subroot_token_seen = feeder.get("first_subroot_token_seen", "")
         entry = grouped.setdefault(
             (name, supply_net),
             {
@@ -688,6 +718,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "supply_net": supply_net,
                 "closest_net_token": closest_net_token,
                 "last_device_before_root": last_device_before_root,
+                "first_subroot_token_seen": first_subroot_token_seen,
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
                 "device_chain_candidates": defaultdict(int),
@@ -732,6 +763,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "supply_net": entry["supply_net"],
                 "closest_net_token": entry["closest_net_token"],
                 "last_device_before_root": entry["last_device_before_root"],
+                "first_subroot_token_seen": entry["first_subroot_token_seen"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
