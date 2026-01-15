@@ -64,7 +64,9 @@ def _normalize_terminal(value: Any) -> str | None:
         return None
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    normalized = str(value).strip().upper()
+    normalized = str(value).strip()
+    normalized = normalized.replace("’", "'").replace("‘", "'").replace("´", "'").replace("`", "'")
+    normalized = normalized.upper()
     if not normalized:
         return None
     if re.fullmatch(r"\d+", normalized):
@@ -127,6 +129,16 @@ def _extract_root_tokens(wireno: str | None) -> List[str]:
     return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
 
 
+def _extract_wireno_tokens(wireno: str | None) -> List[str]:
+    if not wireno:
+        return []
+    cleaned = wireno.strip().rstrip(",")
+    if not cleaned:
+        return []
+    tokens = [token.strip() for token in re.split(r"[;,]", cleaned)]
+    return [token for token in tokens if token]
+
+
 def build_graph(
     df_power: pd.DataFrame,
 ) -> Tuple[
@@ -143,6 +155,7 @@ def build_graph(
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
+        wireno_tokens = _extract_wireno_tokens(wireno)
         root_tokens = _extract_root_tokens(wireno)
 
         name_a_raw = _normalize_name(row.get("Name"))
@@ -190,8 +203,8 @@ def build_graph(
                 adjacency[from_node].add(to_node)
                 adjacency[to_node].add(from_node)
 
-        for root in root_tokens:
-            net_node = f"NET:{root}"
+        for token in wireno_tokens:
+            net_node = f"NET:{token}"
             adjacency.setdefault(net_node, set())
             if from_node:
                 adjacency[net_node].add(from_node)
@@ -420,11 +433,13 @@ def compute_feeder_paths(
     if device_parts is None:
         device_parts = {}
 
-    root_nets = {
-        node
-        for node in adjacency
-        if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
-    }
+    net_nodes = {node for node in adjacency if _is_net_node(node)}
+    root_nets = {node for node in net_nodes if _MAIN_ROOT_PATTERN.match(_net_name(node))}
+    sub_root_nets = sorted(
+        _net_name(node)
+        for node in net_nodes
+        if not _MAIN_ROOT_PATTERN.match(_net_name(node))
+    )
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
@@ -587,7 +602,9 @@ def compute_feeder_paths(
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
-        "sub_root_nets": [],
+        "sub_root_nets": sub_root_nets[:25],
+        "sub_root_nets_count": len(sub_root_nets),
+        "net_nodes_from_wireno_count": len(net_nodes),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
