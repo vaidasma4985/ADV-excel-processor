@@ -297,21 +297,25 @@ def _neutral_logical_pairs(
     terminals_a: Set[str],
     terminals_b: Set[str],
 ) -> Set[Tuple[str, str]]:
-    fronts_a = sorted({term for term in terminals_a if _neutral_kind(term) == "front"})
-    ends_a = sorted({term for term in terminals_a if _neutral_kind(term) == "end"})
-    fronts_b = sorted({term for term in terminals_b if _neutral_kind(term) == "front"})
-    ends_b = sorted({term for term in terminals_b if _neutral_kind(term) == "end"})
+    neutral_family = {"N", "N'", "7N"}
+    neutrals_a = [
+        term
+        for term in terminals_a
+        if term.strip().upper() in neutral_family
+    ]
+    neutrals_b = [
+        term
+        for term in terminals_b
+        if term.strip().upper() in neutral_family
+    ]
 
     pairs: Set[Tuple[str, str]] = set()
-    if fronts_a and fronts_b:
-        pairs.add((fronts_a[0], fronts_b[0]))
-    if ends_a and ends_b:
-        pairs.add((ends_a[0], ends_b[0]))
-    if not pairs:
-        if fronts_a and ends_b:
-            pairs.add((fronts_a[0], ends_b[0]))
-        elif ends_a and fronts_b:
-            pairs.add((ends_a[0], fronts_b[0]))
+    if neutrals_a and neutrals_b:
+        # Neutral terminals can be split across stacked parts (e.g., 7N ↔ N'),
+        # so connect every observed neutral variant to keep traversal intact.
+        for left in neutrals_a:
+            for right in neutrals_b:
+                pairs.add((left, right))
     return pairs
 
 
@@ -382,6 +386,35 @@ def _first_subroot_in_path(path: List[Node]) -> str:
         net_name = _net_name(node)
         if _SUB_ROOT_PATTERN.match(net_name):
             return net_name
+    return ""
+
+
+def _extract_subroot_generators(
+    device_names: Iterable[str],
+    subroot_bases: Set[str],
+) -> Set[str]:
+    generators: Set[str] = set()
+    for name in device_names:
+        base = _logical_base_name(_strip_contact_suffix(name))
+        if not base.startswith("-F"):
+            continue
+        token = base[1:]
+        if token in subroot_bases:
+            generators.add(token)
+    return generators
+
+
+def _first_subroot_generator_in_names(
+    names: Iterable[str],
+    generators: Set[str],
+) -> str:
+    for name in names:
+        base = _logical_base_name(_strip_contact_suffix(name))
+        if not base.startswith("-F"):
+            continue
+        token = base[1:]
+        if token in generators:
+            return token
     return ""
 
 
@@ -456,9 +489,11 @@ def compute_feeder_paths(
         for node in adjacency
         if _is_net_node(node) and _SUB_ROOT_PATTERN.match(_net_name(node))
     }
+    subroot_bases = {(_net_name(node).split("/", 1)[0]) for node in sub_root_nets}
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
+    subroot_generators = _extract_subroot_generators(device_names, subroot_bases)
     logical_base_terminals: Dict[str, Set[str]] = defaultdict(set)
     for device_name in device_names:
         logical_base_terminals[_logical_base_name(device_name)].update(
@@ -531,6 +566,17 @@ def compute_feeder_paths(
             )
 
         supply_net = _net_name(supply_any) if supply_any else ""
+        subroot_net_used = first_subroot_token
+        subroot_inferred = False
+        if not subroot_net_used and supply_net:
+            generator_base = _first_subroot_generator_in_names(
+                _extract_device_names_from_path(path_any),
+                subroot_generators,
+            )
+            if generator_base and "/" in supply_net:
+                phase = supply_net.split("/", 1)[1]
+                subroot_net_used = f"{generator_base}/{phase}"
+                subroot_inferred = True
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
@@ -540,7 +586,9 @@ def compute_feeder_paths(
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
                 "supply_net": supply_net,
-                "subroot_net": first_subroot_token,
+                "subroot_net": subroot_net_used,
+                "subroot_net_used": subroot_net_used,
+                "subroot_inferred": subroot_inferred,
                 "path_main": path_main,
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
@@ -569,6 +617,16 @@ def compute_feeder_paths(
         for base_name, parts in sorted(device_parts.items())
         if len(parts) > 1
     ][:3]
+    inferred_subroots = [
+        {
+            "feeder_end_name": feeder["feeder_end_name"],
+            "feeder_end_cp": feeder["feeder_end_cp"],
+            "supply_net": feeder["supply_net"],
+            "subroot_net": feeder["subroot_net"],
+        }
+        for feeder in feeders
+        if feeder.get("subroot_inferred")
+    ]
 
     debug = {
         "total_nodes": len(adjacency),
@@ -582,6 +640,8 @@ def compute_feeder_paths(
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
+        "subroot_inferred_count": len(inferred_subroots),
+        "subroot_inferred_examples": inferred_subroots[:5],
     }
 
     return feeders, aggregated, issues, debug
@@ -600,6 +660,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
                 "subroot_net": "",
+                "subroot_net_used": "",
+                "subroot_inferred": False,
                 "path_main": "",
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
@@ -614,6 +676,11 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
         entry["reachable"] = entry["reachable"] and feeder["reachable"]
         if not entry["subroot_net"] and feeder.get("subroot_net"):
             entry["subroot_net"] = feeder["subroot_net"]
+        if not entry["subroot_net_used"] and feeder.get("subroot_net_used"):
+            entry["subroot_net_used"] = feeder["subroot_net_used"]
+        entry["subroot_inferred"] = entry["subroot_inferred"] or bool(
+            feeder.get("subroot_inferred")
+        )
         if not entry["path_main"] and feeder.get("path_main"):
             entry["path_main"] = feeder["path_main"]
         if not entry["path_names_collapsed"]:
@@ -648,6 +715,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
                 "subroot_net": entry["subroot_net"],
+                "subroot_net_used": entry["subroot_net_used"],
+                "subroot_inferred": entry["subroot_inferred"],
                 "path_main": entry["path_main"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
