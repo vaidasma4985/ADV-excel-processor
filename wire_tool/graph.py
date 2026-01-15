@@ -317,6 +317,7 @@ def _shortest_path_to_roots(
     adjacency: Dict[Node, Set[Node]],
     start_nodes: Iterable[Node],
     root_nodes: Set[Node],
+    blocked_nodes: Set[Node] | None = None,
 ) -> Tuple[List[Node], Node | None]:
     start_list = sorted(start_nodes)
     if not start_list:
@@ -325,6 +326,7 @@ def _shortest_path_to_roots(
     visited: Set[Node] = set(start_list)
     parent: Dict[Node, Node] = {}
     queue: deque[Node] = deque(start_list)
+    blocked = blocked_nodes or set()
 
     while queue:
         current = queue.popleft()
@@ -337,6 +339,8 @@ def _shortest_path_to_roots(
             return path_nodes, path_nodes[-1]
         for neighbor in sorted(adjacency.get(current, set())):
             if neighbor in visited:
+                continue
+            if neighbor in blocked:
                 continue
             visited.add(neighbor)
             parent[neighbor] = current
@@ -429,16 +433,73 @@ def compute_feeder_paths(
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
+    def _feeder_base_for_node(node: Node) -> str | None:
+        name = _device_name(node)
+        logical_base = _logical_base_name(name)
+        if logical_base in feeder_f_bases:
+            return logical_base
+        if name in feeder_q_bases or name in feeder_x_bases:
+            return name
+        return None
+
+    base_to_nodes: Dict[str, Set[Node]] = defaultdict(set)
+    for node in feeder_nodes_sorted:
+        base = _feeder_base_for_node(node)
+        if base:
+            base_to_nodes[base].add(node)
+
+    feeder_end_bases = sorted(base_to_nodes)
+    blocked_nodes_all: Set[Node] = set()
+    for nodes in base_to_nodes.values():
+        blocked_nodes_all.update(nodes)
+    node_to_feeder_base = {
+        node: base for base, nodes in base_to_nodes.items() for node in nodes
+    }
+
     for feeder_node in feeder_nodes_sorted:
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
+        feeder_base = _feeder_base_for_node(feeder_node)
+        allowed_nodes = base_to_nodes.get(feeder_base, set()) if feeder_base else set()
+        blocked = blocked_nodes_all - allowed_nodes
 
-        path_any, supply_any = _shortest_path_to_roots(
-            adjacency,
-            [feeder_node],
-            root_nets,
+        direct_root_neighbors = sorted(
+            neighbor
+            for neighbor in adjacency.get(feeder_node, set())
+            if neighbor in root_nets
         )
+        if direct_root_neighbors:
+            path_any = [feeder_node, direct_root_neighbors[0]]
+            supply_any = direct_root_neighbors[0]
+        else:
+            path_any, supply_any = _shortest_path_to_roots(
+                adjacency,
+                [feeder_node],
+                root_nets,
+                blocked_nodes=blocked,
+            )
+
+        if path_any and feeder_base:
+            traversed_bases = {
+                node_to_feeder_base[node]
+                for node in path_any
+                if node in node_to_feeder_base
+            }
+            traversed_bases.discard(feeder_base)
+            if traversed_bases:
+                issues.append(
+                    _issue(
+                        "WARNING",
+                        "W220",
+                        "Feeder path traverses another feeder end base.",
+                        context={
+                            "feeder_name": feeder_name,
+                            "feeder_base": feeder_base,
+                            "other_bases": sorted(traversed_bases),
+                        },
+                    )
+                )
 
         reachable = bool(path_any)
         if not reachable:
@@ -475,7 +536,6 @@ def compute_feeder_paths(
 
     aggregated = _aggregate_feeder_paths(feeders)
 
-    feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
     stacked_example = None
     for base_name in sorted(device_parts):
         parts = device_parts.get(base_name, set())
@@ -501,6 +561,8 @@ def compute_feeder_paths(
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
+        "blocked_nodes_count": len(blocked_nodes_all),
+        "example_blocked_bases": feeder_end_bases[:5],
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
