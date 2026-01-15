@@ -78,11 +78,18 @@ def render_wire_page() -> None:
     if st.button("Compute feeder paths"):
         from wire_tool.graph import build_graph, compute_feeder_paths
 
-        adjacency, issues, device_terminals, device_parts = build_graph(df_power)
+        (
+            adjacency,
+            issues,
+            device_terminals,
+            device_parts,
+            logical_edges_added,
+        ) = build_graph(df_power)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
+            logical_edges_added=logical_edges_added,
         )
         issues.extend(feeder_issues)
 
@@ -176,6 +183,8 @@ def render_wire_page() -> None:
                         "feeder_end_bases_count": debug["feeder_end_bases_count"],
                         "feeder_end_bases_sample": debug["feeder_end_bases_sample"],
                         "stacked_example": debug["stacked_example"],
+                        "stacked_groups_sample": debug["stacked_groups_sample"],
+                        "logical_edges_added": debug["logical_edges_added"],
                         "unreachable_feeders_count": debug["unreachable_feeders_count"],
                     }
                 )

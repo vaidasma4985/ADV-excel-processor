@@ -62,7 +62,14 @@ def _normalize_terminal(value: Any) -> str | None:
         return None
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return str(value).strip() or None
+    normalized = str(value).strip().upper()
+    if not normalized:
+        return None
+    if re.fullmatch(r"\d+", normalized):
+        return normalized
+    if "N" in normalized:
+        return "N"
+    return normalized
 
 
 def _normalize_name(value: Any) -> str | None:
@@ -94,7 +101,13 @@ def _net_name(node: Node) -> str:
 
 
 def _strip_contact_suffix(name: str) -> str:
-    return name.split(":", 1)[0].split(".", 1)[0]
+    return name.split(":", 1)[0]
+
+
+def _logical_base_name(name: str) -> str:
+    if re.search(r"\.\d+$", name):
+        return name.rsplit(".", 1)[0]
+    return name
 
 
 def _base_device_name(name: Any) -> str | None:
@@ -116,7 +129,13 @@ def _extract_root_tokens(wireno: str | None) -> List[str]:
 
 def build_graph(
     df_power: pd.DataFrame,
-) -> Tuple[Dict[Node, Set[Node]], List[Issue], Dict[str, Set[str]], Dict[str, Set[str]]]:
+) -> Tuple[
+    Dict[Node, Set[Node]],
+    List[Issue],
+    Dict[str, Set[str]],
+    Dict[str, Set[str]],
+    int,
+]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
@@ -141,9 +160,9 @@ def build_graph(
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
         if name_a_raw and name_a:
-            device_parts[name_a].add(name_a_raw)
+            device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
-            device_parts[name_b].add(name_b_raw)
+            device_parts[_logical_base_name(name_b)].add(name_b)
 
         if not from_node and not to_node:
             issues.append(
@@ -187,7 +206,9 @@ def build_graph(
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
 
-    return adjacency, issues, device_terminals, device_parts
+    logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
+
+    return adjacency, issues, device_terminals, device_parts, logical_edges_added
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -225,6 +246,71 @@ def _extract_device_names_from_path(path: List[Node]) -> List[str]:
             continue
         names.append(device_name)
     return _collapse_consecutive_duplicates(names)
+
+
+def _logical_terminal_edges(
+    terminals_a: Set[str],
+    terminals_b: Set[str],
+) -> Set[Tuple[str, str]]:
+    edges: Set[Tuple[str, str]] = set()
+    numbers_a = {term for term in terminals_a if term.isdigit()}
+    numbers_b = {term for term in terminals_b if term.isdigit()}
+    odds_a = {term for term in numbers_a if int(term) % 2 == 1}
+    odds_b = {term for term in numbers_b if int(term) % 2 == 1}
+    evens_a = {term for term in numbers_a if int(term) % 2 == 0}
+    evens_b = {term for term in numbers_b if int(term) % 2 == 0}
+
+    if "N" in terminals_a and "N" in terminals_b:
+        edges.add(("N", "N"))
+
+    common_numbers = numbers_a & numbers_b
+    for number in sorted(common_numbers, key=lambda value: int(value)):
+        edges.add((number, number))
+
+    if not common_numbers:
+        if odds_a and odds_b:
+            edges.add((min(odds_a, key=int), min(odds_b, key=int)))
+        if evens_a and evens_b:
+            edges.add((min(evens_a, key=int), min(evens_b, key=int)))
+
+    if not evens_a and evens_b:
+        for odd, even in (("1", "2"), ("3", "4"), ("5", "6")):
+            if odd in numbers_a and even in numbers_b:
+                edges.add((odd, even))
+    if not evens_b and evens_a:
+        for odd, even in (("1", "2"), ("3", "4"), ("5", "6")):
+            if odd in numbers_b and even in numbers_a:
+                edges.add((even, odd))
+
+    return edges
+
+
+def _add_logical_edges(
+    adjacency: Dict[Node, Set[Node]],
+    device_terminals: Dict[str, Set[str]],
+    logical_groups: Dict[str, Set[str]],
+) -> int:
+    logical_edges_added = 0
+    for base_name in sorted(logical_groups):
+        parts = sorted(logical_groups[base_name])
+        if len(parts) < 2:
+            continue
+        for left, right in zip(parts, parts[1:]):
+            terminals_left = device_terminals.get(left, set())
+            terminals_right = device_terminals.get(right, set())
+            for term_left, term_right in _logical_terminal_edges(
+                terminals_left,
+                terminals_right,
+            ):
+                node_left = f"{left}:{term_left}"
+                node_right = f"{right}:{term_right}"
+                adjacency.setdefault(node_left, set())
+                adjacency.setdefault(node_right, set())
+                if node_right not in adjacency[node_left]:
+                    adjacency[node_left].add(node_right)
+                    adjacency[node_right].add(node_left)
+                    logical_edges_added += 1
+    return logical_edges_added
 
 
 def _shortest_path_to_roots(
@@ -297,6 +383,7 @@ def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
+    logical_edges_added: int | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -313,15 +400,33 @@ def compute_feeder_paths(
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
+    logical_base_terminals: Dict[str, Set[str]] = defaultdict(set)
+    for device_name in device_names:
+        logical_base_terminals[_logical_base_name(device_name)].update(
+            device_terminals.get(device_name, set())
+        )
+
+    def _is_f_end(terminals: Iterable[str]) -> bool:
+        input_terms = {"1", "3", "5", "N"}
+        output_terms = {"2", "4", "6", "8"}
+        has_input = any(term in input_terms for term in terminals)
+        has_output = any(term in output_terms for term in terminals)
+        return has_input and not has_output
+
     feeder_f_bases = {
-        name
-        for name in device_names
-        if _is_f_device(name) and not _has_even_terminal(device_terminals.get(name, set()))
+        base
+        for base, terminals in logical_base_terminals.items()
+        if _is_f_device(base) and _is_f_end(terminals)
     }
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
-    feeder_bases = feeder_f_bases | feeder_q_bases | feeder_x_bases
-    feeder_nodes = [node for node in device_nodes if _device_name(node) in feeder_bases]
+    feeder_nodes = [
+        node
+        for node in device_nodes
+        if _logical_base_name(_device_name(node)) in feeder_f_bases
+        or _device_name(node) in feeder_q_bases
+        or _device_name(node) in feeder_x_bases
+    ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
     for feeder_node in feeder_nodes_sorted:
@@ -378,9 +483,15 @@ def compute_feeder_paths(
             stacked_example = {
                 "base": base_name,
                 "parts": sorted(parts),
-                "terminals_union": sorted(device_terminals.get(base_name, set())),
+                "terminals_union": sorted(logical_base_terminals.get(base_name, set())),
             }
             break
+
+    stacked_groups_sample = [
+        {"base": base_name, "parts": sorted(parts)}
+        for base_name, parts in sorted(device_parts.items())
+        if len(parts) > 1
+    ][:3]
 
     debug = {
         "total_nodes": len(adjacency),
@@ -391,6 +502,8 @@ def compute_feeder_paths(
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
         "stacked_example": stacked_example,
+        "stacked_groups_sample": stacked_groups_sample,
+        "logical_edges_added": logical_edges_added or 0,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
 
