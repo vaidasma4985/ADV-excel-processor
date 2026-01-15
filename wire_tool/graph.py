@@ -12,7 +12,7 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+(?:\.\d+)?/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
