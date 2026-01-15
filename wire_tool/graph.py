@@ -375,6 +375,10 @@ def _has_even_terminal(terminals: Iterable[str]) -> bool:
     return any(term in even_terminals for term in terminals)
 
 
+def _is_even_terminal(term: str) -> bool:
+    return term.isdigit() and int(term) % 2 == 0
+
+
 def _is_q_device(name: str) -> bool:
     return bool(re.match(r"^-Q\d+", name)) and name != "-Q81"
 
@@ -410,16 +414,17 @@ def compute_feeder_paths(
             device_terminals.get(device_name, set())
         )
 
+    base_to_terminals_union: Dict[str, Set[str]] = defaultdict(set)
+    for device_name in device_names:
+        base_name = _logical_base_name(device_name)
+        base_to_terminals_union[base_name].update(device_terminals.get(device_name, set()))
+
     def _is_f_end(terminals: Iterable[str]) -> bool:
-        input_terms = {"1", "3", "5", "N"}
-        output_terms = {"2", "4", "6", "8"}
-        has_input = any(term in input_terms for term in terminals)
-        has_output = any(term in output_terms for term in terminals)
-        return has_input and not has_output
+        return not any(_is_even_terminal(term) for term in terminals)
 
     feeder_f_bases = {
         base
-        for base, terminals in logical_base_terminals.items()
+        for base, terminals in base_to_terminals_union.items()
         if _is_f_device(base) and _is_f_end(terminals)
     }
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
@@ -552,6 +557,11 @@ def compute_feeder_paths(
         for base_name, parts in sorted(device_parts.items())
         if len(parts) > 1
     ][:3]
+    bases_with_even_terminals_sample = [
+        base
+        for base, terminals in sorted(base_to_terminals_union.items())
+        if any(_is_even_terminal(term) for term in terminals)
+    ][:10]
 
     debug = {
         "total_nodes": len(adjacency),
@@ -561,6 +571,7 @@ def compute_feeder_paths(
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
+        "bases_with_even_terminals_sample": bases_with_even_terminals_sample,
         "blocked_nodes_count": len(blocked_nodes_all),
         "example_blocked_bases": feeder_end_bases[:5],
         "stacked_example": stacked_example,
