@@ -10,9 +10,9 @@ Node = str
 Issue = Dict[str, Any]
 
 
-_TOP_LEVEL_ROOT_PATTERN = re.compile(r"^(MT|IT|LT)\d*/(L1|L2|L3|N)$")
-_SUPPLY_NODE_PATTERN = re.compile(r"^(?:(?:MT|IT|LT)\d*|F\d+)/(L1|L2|L3|N)$")
-_ROOT_TOKEN_PATTERN = re.compile(r"(?:(?:MT|IT|LT)\d*|F\d+)/(?:L1|L2|L3|N)")
+_MAIN_ROOT_PATTERN = re.compile(r"^(MT2?|IT|LT2?)/(L1|L2|L3|N)$")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
+_ROOT_TOKEN_PATTERN = re.compile(r"(?:(?:MT2?|IT|LT2?)|F\d+)/(?:L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -101,11 +101,6 @@ def _is_net_node(node: Node) -> bool:
 
 def _net_name(node: Node) -> str:
     return node.replace("NET:", "", 1)
-
-
-def _net_phase(net_name: str) -> str | None:
-    match = re.search(r"/(L1|L2|L3|N)$", net_name)
-    return match.group(1) if match else None
 
 
 def _strip_contact_suffix(name: str) -> str:
@@ -440,43 +435,14 @@ def compute_feeder_paths(
         device_parts = {}
 
     net_nodes = {node for node in adjacency if _is_net_node(node)}
-    top_level_root_nets = {
-        node for node in net_nodes if _TOP_LEVEL_ROOT_PATTERN.match(_net_name(node))
+    main_root_nets = {
+        node for node in net_nodes if _MAIN_ROOT_PATTERN.match(_net_name(node))
     }
-    all_supply_nets = {
-        node for node in net_nodes if _SUPPLY_NODE_PATTERN.match(_net_name(node))
-    }
-    subroot_nets = sorted(
+    sub_root_nets = sorted(
         _net_name(node)
-        for node in all_supply_nets
-        if node not in top_level_root_nets
+        for node in net_nodes
+        if _SUB_ROOT_PATTERN.match(_net_name(node))
     )
-    canonical_map: Dict[Node, Tuple[Node, int]] = {}
-    for phase in ("L1", "L2", "L3", "N"):
-        phase_roots = sorted(
-            node
-            for node in top_level_root_nets
-            if _net_phase(_net_name(node)) == phase
-        )
-        if not phase_roots:
-            continue
-        visited: Dict[Node, int] = {root: 0 for root in phase_roots}
-        nearest_root: Dict[Node, Node] = {root: root for root in phase_roots}
-        queue: deque[Node] = deque(phase_roots)
-        while queue:
-            current = queue.popleft()
-            for neighbor in sorted(adjacency.get(current, set())):
-                if neighbor in visited:
-                    continue
-                visited[neighbor] = visited[current] + 1
-                nearest_root[neighbor] = nearest_root[current]
-                queue.append(neighbor)
-        for node, root in nearest_root.items():
-            if not _is_net_node(node):
-                continue
-            if _net_phase(_net_name(node)) != phase:
-                continue
-            canonical_map[node] = (root, visited[node])
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
@@ -544,7 +510,7 @@ def compute_feeder_paths(
         direct_root_neighbors = sorted(
             neighbor
             for neighbor in adjacency.get(feeder_node, set())
-            if neighbor in all_supply_nets
+            if neighbor in main_root_nets
         )
         if direct_root_neighbors:
             path_any = [feeder_node, direct_root_neighbors[0]]
@@ -553,7 +519,7 @@ def compute_feeder_paths(
             path_any, supply_any = _shortest_path_to_roots(
                 adjacency,
                 [feeder_node],
-                all_supply_nets,
+                main_root_nets,
                 blocked_nodes=blocked,
             )
 
@@ -593,11 +559,7 @@ def compute_feeder_paths(
                 )
             )
 
-        supply_net_raw = _net_name(supply_any) if supply_any else ""
-        canonical_entry = canonical_map.get(supply_any) if supply_any else None
-        supply_net = (
-            _net_name(canonical_entry[0]) if canonical_entry else supply_net_raw
-        )
+        supply_net = _net_name(supply_any) if supply_any else ""
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
@@ -606,7 +568,6 @@ def compute_feeder_paths(
             {
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
-                "supply_net_raw": supply_net_raw,
                 "supply_net": supply_net,
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
@@ -639,28 +600,13 @@ def compute_feeder_paths(
         for base, terminals in sorted(base_to_terminals_union.items())
         if any(_is_even_terminal(term) for term in terminals)
     ][:10]
-    canonical_map_sample = []
-    for net_node, (root_node, distance) in sorted(
-        canonical_map.items(),
-        key=lambda item: _net_name(item[0]),
-    ):
-        if net_node in top_level_root_nets:
-            continue
-        canonical_map_sample.append(
-            f"{_net_name(net_node)} -> {_net_name(root_node)} ({distance})"
-        )
-        if len(canonical_map_sample) >= 10:
-            break
-
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
-        "main_root_nets": sorted(_net_name(node) for node in top_level_root_nets),
-        "sub_root_nets": subroot_nets[:25],
-        "sub_root_nets_count": len(subroot_nets),
-        "top_level_root_nets": sorted(_net_name(node) for node in top_level_root_nets),
-        "subroot_nets": subroot_nets[:25],
-        "canonical_map_sample": canonical_map_sample,
+        "main_root_nets": sorted(_net_name(node) for node in main_root_nets),
+        "sub_root_nets": sub_root_nets[:25],
+        "main_root_nets_count": len(main_root_nets),
+        "sub_root_nets_count": len(sub_root_nets),
         "net_nodes_from_wireno_count": len(net_nodes),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
@@ -683,14 +629,12 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
     for feeder in feeders:
         name = feeder["feeder_end_name"]
         supply_net = feeder["supply_net"]
-        supply_net_raw = feeder.get("supply_net_raw", "")
         entry = grouped.setdefault(
             (name, supply_net),
             {
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
-                "supply_net_raw": supply_net_raw,
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
                 "device_chain_candidates": defaultdict(int),
@@ -733,7 +677,6 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
-                "supply_net_raw": entry["supply_net_raw"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
