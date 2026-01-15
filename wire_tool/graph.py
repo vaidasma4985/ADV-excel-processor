@@ -11,8 +11,9 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2?|IT|LT2?)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
-_ROOT_TOKEN_PATTERN = re.compile(r"(?:(?:MT2?|IT|LT2?)|F\d+)/(?:L1|L2|L3|N)")
+_SUB_ROOT_PATTERN = re.compile(r"^(F\d+)/(L1|L2|L3|N)$")
+_SUB_ROOT_TOKEN_PATTERN = re.compile(r"(F\d+)/(L1|L2|L3|N)")
+_ROOT_TOKEN_PATTERN = re.compile(r"(MT2?|IT|LT2?)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -130,7 +131,11 @@ def _base_of(name: Any) -> str | None:
 def _extract_root_tokens(wireno: str | None) -> List[str]:
     if not wireno:
         return []
-    return _ROOT_TOKEN_PATTERN.findall(wireno)
+    main_tokens = [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
+    sub_tokens = [
+        f"{match[0]}/{match[1]}" for match in _SUB_ROOT_TOKEN_PATTERN.findall(wireno)
+    ]
+    return main_tokens + sub_tokens
 
 
 def _extract_wireno_tokens(wireno: str | None) -> List[str]:
@@ -512,6 +517,8 @@ def compute_feeder_paths(
         feeder_base = _feeder_base_for_node(feeder_node)
         allowed_nodes = base_to_nodes.get(feeder_base, set()) if feeder_base else set()
         blocked = blocked_nodes_all - allowed_nodes
+        closest_net_token = ""
+        last_device_before_root = ""
 
         direct_root_neighbors = sorted(
             neighbor
@@ -528,6 +535,30 @@ def compute_feeder_paths(
                 main_root_nets,
                 blocked_nodes=blocked,
             )
+
+        if not path_any:
+            path_to_net, net_any = _shortest_path_to_roots(
+                adjacency,
+                [feeder_node],
+                net_nodes,
+                blocked_nodes=blocked,
+            )
+            if net_any:
+                closest_net_token = _net_name(net_any)
+            if path_to_net:
+                last_devices = [
+                    _device_name(node)
+                    for node in path_to_net
+                    if not _is_net_node(node)
+                ]
+                if last_devices:
+                    last_device_before_root = last_devices[-1]
+        else:
+            last_devices = [
+                _device_name(node) for node in path_any if not _is_net_node(node)
+            ]
+            if last_devices:
+                last_device_before_root = last_devices[-1]
 
         if path_any and feeder_base:
             traversed_bases = {
@@ -566,6 +597,16 @@ def compute_feeder_paths(
             )
 
         supply_net = _net_name(supply_any) if supply_any else ""
+        if not reachable:
+            details = []
+            if last_device_before_root:
+                details.append(f"last={last_device_before_root}")
+            if closest_net_token:
+                details.append(f"net={closest_net_token}")
+            if details:
+                supply_net = f"UNRESOLVED ({', '.join(details)})"
+            else:
+                supply_net = "UNRESOLVED"
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any))
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
@@ -575,6 +616,8 @@ def compute_feeder_paths(
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
                 "supply_net": supply_net,
+                "closest_net_token": closest_net_token,
+                "last_device_before_root": last_device_before_root,
                 "reachable": reachable,
                 "path_nodes_raw": path_nodes_raw,
                 "path_names_collapsed": path_names_collapsed,
@@ -635,12 +678,16 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
     for feeder in feeders:
         name = feeder["feeder_end_name"]
         supply_net = feeder["supply_net"]
+        closest_net_token = feeder.get("closest_net_token", "")
+        last_device_before_root = feeder.get("last_device_before_root", "")
         entry = grouped.setdefault(
             (name, supply_net),
             {
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
                 "supply_net": supply_net,
+                "closest_net_token": closest_net_token,
+                "last_device_before_root": last_device_before_root,
                 "path_names_collapsed": "",
                 "device_chain_grouped": "",
                 "device_chain_candidates": defaultdict(int),
@@ -683,6 +730,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
                 "supply_net": entry["supply_net"],
+                "closest_net_token": entry["closest_net_token"],
+                "last_device_before_root": entry["last_device_before_root"],
                 "path_names_collapsed": entry["path_names_collapsed"],
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
