@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
+import heapq
 import re
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
@@ -24,6 +25,9 @@ _PASS_THROUGH_PAIRS = (
     ("21", "22"),
     ("31", "32"),
     ("41", "42"),
+    ("N", "N'"),
+    ("N", "7N"),
+    ("7N", "N'"),
 )
 
 
@@ -64,6 +68,12 @@ def _normalize_terminal(value: Any) -> str | None:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     normalized = str(value).strip().upper()
+    normalized = (
+        normalized.replace("’", "'")
+        .replace("‘", "'")
+        .replace("`", "'")
+        .replace("´", "'")
+    )
     if not normalized:
         return None
     if re.fullmatch(r"\d+", normalized):
@@ -126,6 +136,25 @@ def _extract_root_tokens(wireno: str | None) -> List[str]:
     return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
 
 
+def _extract_wireno_tokens(wireno: str | None) -> List[str]:
+    if not wireno:
+        return []
+    tokens = [token for token in re.split(r"[;,]", wireno) if token]
+    return [token.strip() for token in tokens if token.strip()]
+
+
+def _is_front_terminal(term: str | None) -> bool:
+    if not term:
+        return False
+    if term.isdigit():
+        return int(term) % 2 == 1
+    return _neutral_kind(term) == "front"
+
+
+def _is_bus_token(token: str) -> bool:
+    return bool(_MAIN_ROOT_PATTERN.match(token) or _SUB_ROOT_PATTERN.match(token))
+
+
 def build_graph(
     df_power: pd.DataFrame,
 ) -> Tuple[
@@ -142,7 +171,7 @@ def build_graph(
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
-        root_tokens = _extract_root_tokens(wireno)
+        wireno_tokens = _extract_wireno_tokens(wireno)
 
         name_a_raw = _normalize_name(row.get("Name"))
         name_b_raw = _normalize_name(row.get("Name.1"))
@@ -184,11 +213,15 @@ def build_graph(
             adjacency.setdefault(node, set())
 
         if from_node and to_node:
-            adjacency[from_node].add(to_node)
-            adjacency[to_node].add(from_node)
+            suppress_direct = False
+            if wireno_tokens and _is_front_terminal(cp_a) and _is_front_terminal(cp_b):
+                suppress_direct = any(_is_bus_token(token) for token in wireno_tokens)
+            if not suppress_direct:
+                adjacency[from_node].add(to_node)
+                adjacency[to_node].add(from_node)
 
-        for root in root_tokens:
-            net_node = f"NET:{root}"
+        for token in wireno_tokens:
+            net_node = f"NET:{token}"
             adjacency.setdefault(net_node, set())
             if from_node:
                 adjacency[net_node].add(from_node)
@@ -216,9 +249,8 @@ def _compress_path_names(path: List[Node]) -> List[str]:
 
     for node in path:
         if _is_net_node(node):
-            name = _net_name(node)
-        else:
-            name = _device_name(node)
+            continue
+        name = _device_name(node)
         if name != last_name:
             collapsed.append(name)
             last_name = name
@@ -286,9 +318,11 @@ def _logical_terminal_edges(
 
 def _neutral_kind(term: str) -> str | None:
     normalized = term.strip().upper()
-    if "'" in normalized:
+    if not _is_neutral_terminal(normalized):
+        return None
+    if normalized == "N'":
         return "end"
-    if normalized.endswith("N"):
+    if normalized in {"N", "7N"}:
         return "front"
     return None
 
@@ -347,17 +381,32 @@ def _shortest_path_to_roots(
     adjacency: Dict[Node, Set[Node]],
     start_nodes: Iterable[Node],
     root_nodes: Set[Node],
+    blocked_nodes: Set[Node] | None = None,
 ) -> Tuple[List[Node], Node | None]:
     start_list = sorted(start_nodes)
     if not start_list:
         return [], None
 
-    visited: Set[Node] = set(start_list)
+    blocked_nodes = blocked_nodes or set()
+    best_cost: Dict[Node, Tuple[int, int]] = {}
     parent: Dict[Node, Node] = {}
-    queue: deque[Node] = deque(start_list)
+
+    def _device_count(node: Node) -> int:
+        return 0 if _is_net_node(node) else 1
+
+    queue: List[Tuple[int, int, Node]] = []
+    for start in start_list:
+        if start in blocked_nodes:
+            continue
+        cost = (0, _device_count(start))
+        best_cost[start] = cost
+        heapq.heappush(queue, (cost[0], cost[1], start))
 
     while queue:
-        current = queue.popleft()
+        distance, device_count, current = heapq.heappop(queue)
+        current_cost = (distance, device_count)
+        if current_cost > best_cost.get(current, current_cost):
+            continue
         if current in root_nodes:
             path_nodes: List[Node] = [current]
             while current not in start_list:
@@ -365,12 +414,22 @@ def _shortest_path_to_roots(
                 path_nodes.append(current)
             path_nodes.reverse()
             return path_nodes, path_nodes[-1]
-        for neighbor in sorted(adjacency.get(current, set())):
-            if neighbor in visited:
+
+        neighbors = sorted(adjacency.get(current, set()))
+        if _is_net_node(current):
+            neighbors = sorted(
+                neighbors,
+                key=lambda neighbor: (neighbor in blocked_nodes, neighbor),
+            )
+        for neighbor in neighbors:
+            if neighbor in blocked_nodes:
                 continue
-            visited.add(neighbor)
+            next_cost = (distance + 1, device_count + _device_count(neighbor))
+            if neighbor in best_cost and next_cost >= best_cost[neighbor]:
+                continue
+            best_cost[neighbor] = next_cost
             parent[neighbor] = current
-            queue.append(neighbor)
+            heapq.heappush(queue, (next_cost[0], next_cost[1], neighbor))
 
     return [], None
 
@@ -381,6 +440,16 @@ def _first_subroot_in_path(path: List[Node]) -> str:
             continue
         net_name = _net_name(node)
         if _SUB_ROOT_PATTERN.match(net_name):
+            return net_name
+    return ""
+
+
+def _first_main_root_in_path(path: List[Node]) -> str:
+    for node in path:
+        if not _is_net_node(node):
+            continue
+        net_name = _net_name(node)
+        if _MAIN_ROOT_PATTERN.match(net_name):
             return net_name
     return ""
 
@@ -422,7 +491,8 @@ def _has_even_terminal(terminals: Iterable[str]) -> bool:
 
 
 def _is_neutral_terminal(term: str) -> bool:
-    return _neutral_kind(term) is not None
+    normalized = term.strip().upper()
+    return normalized in {"N", "N'", "7N"}
 
 
 def _is_q_device(name: str) -> bool:
@@ -495,11 +565,18 @@ def compute_feeder_paths(
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
+        feeder_base = _logical_base_name(feeder_name)
+        blocked_nodes = {
+            node
+            for node in feeder_nodes
+            if _logical_base_name(_device_name(node)) != feeder_base
+        }
 
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
             [feeder_node],
             root_nets,
+            blocked_nodes=blocked_nodes,
         )
 
         reachable = bool(path_any)
@@ -510,6 +587,7 @@ def compute_feeder_paths(
                 adjacency,
                 [feeder_node],
                 {node for node in adjacency if _is_net_node(node)},
+                blocked_nodes=blocked_nodes,
             )
             closest_net_token = _net_name(closest_net) if closest_net else ""
             last_device_before_root = _last_device_before_root(path_closest[:-1])
@@ -530,9 +608,13 @@ def compute_feeder_paths(
                 )
             )
 
-        supply_net = _net_name(supply_any) if supply_any else ""
+        supply_net = _first_main_root_in_path(path_any)
+        if not reachable:
+            supply_net = f"UNRESOLVED (last={last_device_before_root}, net={closest_net_token})"
         path_nodes_raw = " -> ".join(path_any)
-        path_names_collapsed = " -> ".join(_compress_path_names(path_any))
+        path_names_collapsed = " -> ".join(
+            _compress_path_names(path_any) + ([supply_net] if supply_net else [])
+        )
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
 
         feeders.append(
