@@ -519,8 +519,8 @@ def cable_feeder_end_bases(df_cable: pd.DataFrame) -> Set[str]:
     # In Advansor projects, Cable rows indicate field loads; cabinet-side devices with field cables are treated as feeder ends.
     feeder_bases: Set[str] = set()
     for _row_index, row in df_cable.iterrows():
-        name_a = _base_of(row.get("Name"))
-        name_b = _base_of(row.get("Name.1"))
+        name_a = _logical_base_name(_base_of(row.get("Name")) or "")
+        name_b = _logical_base_name(_base_of(row.get("Name.1")) or "")
 
         a_is_field = _is_field_device(name_a)
         b_is_field = _is_field_device(name_b)
@@ -585,12 +585,28 @@ def compute_feeder_paths(
     }
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
-    feeder_end_bases = set(feeder_f_bases)
-    feeder_end_bases.update(_logical_base_name(name) for name in feeder_q_bases)
-    feeder_end_bases.update(_logical_base_name(name) for name in feeder_x_bases)
-    if cable_feeder_end_bases:
-        feeder_end_bases.update(
-            _logical_base_name(base) for base in cable_feeder_end_bases
+    power_feeder_end_bases = set(feeder_f_bases)
+    power_feeder_end_bases.update(_logical_base_name(name) for name in feeder_q_bases)
+    power_feeder_end_bases.update(_logical_base_name(name) for name in feeder_x_bases)
+    cable_feeder_end_bases = cable_feeder_end_bases or set()
+    cable_feeder_end_bases = {
+        _logical_base_name(base) for base in cable_feeder_end_bases if base
+    }
+    feeder_end_bases = power_feeder_end_bases | cable_feeder_end_bases
+    dotted_feeder_end_bases = sorted(
+        {base for base in feeder_end_bases if "." in base}
+    )
+    if dotted_feeder_end_bases:
+        issues.append(
+            _issue(
+                "ERROR",
+                "W203",
+                "Feeder end bases contain dotted suffix after normalization.",
+                context={
+                    "count": len(dotted_feeder_end_bases),
+                    "samples": dotted_feeder_end_bases[:10],
+                },
+            )
         )
     feeder_nodes = [
         node
@@ -672,7 +688,7 @@ def compute_feeder_paths(
 
     aggregated = _aggregate_feeder_paths(feeders)
 
-    feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
+    feeder_end_bases_sorted = sorted(feeder_end_bases)
     stacked_example = None
     for base_name in sorted(device_parts):
         parts = device_parts.get(base_name, set())
@@ -696,8 +712,12 @@ def compute_feeder_paths(
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
         "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
+        "power_feeder_end_bases_count": len(power_feeder_end_bases),
+        "cable_feeder_end_bases_count": len(cable_feeder_end_bases),
+        "cable_feeder_end_bases_sample": sorted(cable_feeder_end_bases)[:10],
         "feeder_end_bases_count": len(feeder_end_bases),
-        "feeder_end_bases_sample": feeder_end_bases[:10],
+        "feeder_end_bases_sample": feeder_end_bases_sorted[:20],
+        "feeder_end_bases_dotted_count": len(dotted_feeder_end_bases),
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
