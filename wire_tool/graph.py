@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 import heapq
 import re
 from typing import Any, Dict, Iterable, List, Set, Tuple
@@ -37,6 +37,10 @@ def _is_missing(value: Any) -> bool:
     if isinstance(value, str) and not value.strip():
         return True
     return False
+
+
+def _normalize_column_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
 def _issue(
@@ -153,6 +157,195 @@ def _is_front_terminal(term: str | None) -> bool:
 
 def _is_bus_token(token: str) -> bool:
     return bool(_MAIN_ROOT_PATTERN.match(token) or _SUB_ROOT_PATTERN.match(token))
+
+
+def _find_column(columns: Iterable[str], keys: Iterable[str]) -> str | None:
+    normalized = {_normalize_column_key(column): column for column in columns}
+    for key in keys:
+        column = normalized.get(_normalize_column_key(key))
+        if column:
+            return column
+    return None
+
+
+def _classify_endpoint(name: str | None) -> str:
+    if not name:
+        return "unknown"
+    if name.startswith(("-F", "-Q", "-X")):
+        return "cabinet"
+    if name.startswith(("-M", "-T", "-B")):
+        return "field"
+    return "unknown"
+
+
+def parse_cable_endpoints(df: pd.DataFrame) -> pd.DataFrame:
+    columns = df.columns.tolist()
+    line_function_col = _find_column(
+        columns,
+        [
+            "Line-Function",
+            "Line- Funct",
+            "Line_Funct",
+            "LineFunction",
+            "LineFunct",
+        ],
+    )
+    if not line_function_col:
+        return pd.DataFrame(
+            columns=[
+                "row_idx",
+                "a_name",
+                "a_cp",
+                "a_type",
+                "b_name",
+                "b_cp",
+                "b_type",
+                "cabinet_name",
+                "cabinet_cp",
+                "field_name",
+                "field_cp",
+                "reason",
+            ]
+        )
+
+    wireno_col = _find_column(columns, ["Wireno", "WireNo", "Wire-No"])
+    name_a_col = _find_column(columns, ["Name", "NameA", "Name A"])
+    name_b_col = _find_column(columns, ["Name.1", "Name1", "NameB", "Name B"])
+    cp_a_col = _find_column(columns, ["C.name", "Cname", "C.name A", "CP A", "CPA"])
+    cp_b_col = _find_column(columns, ["C.name.1", "Cname1", "C.name B", "CP B", "CPB"])
+
+    rows: List[Dict[str, Any]] = []
+    for row_idx, row in df.iterrows():
+        line_function = row.get(line_function_col)
+        if _is_missing(line_function):
+            continue
+        line_function_value = str(line_function).strip().lower()
+        if line_function_value != "cable":
+            continue
+
+        wireno = _normalize_wireno(row.get(wireno_col)) if wireno_col else None
+        if not wireno:
+            continue
+
+        a_name = _normalize_name(row.get(name_a_col)) if name_a_col else None
+        a_cp = _normalize_terminal(row.get(cp_a_col)) if cp_a_col else None
+        b_name = _normalize_name(row.get(name_b_col)) if name_b_col else None
+        b_cp = _normalize_terminal(row.get(cp_b_col)) if cp_b_col else None
+
+        a_type = _classify_endpoint(a_name)
+        b_type = _classify_endpoint(b_name)
+
+        cabinet_name = None
+        cabinet_cp = None
+        field_name = None
+        field_cp = None
+        reason = "unknown_endpoint"
+
+        if a_type == "cabinet" and b_type == "field":
+            cabinet_name, cabinet_cp = a_name, a_cp
+            field_name, field_cp = b_name, b_cp
+            reason = "ok"
+        elif a_type == "field" and b_type == "cabinet":
+            cabinet_name, cabinet_cp = b_name, b_cp
+            field_name, field_cp = a_name, a_cp
+            reason = "ok"
+        elif a_type == "cabinet" and b_type == "cabinet":
+            reason = "both_cabinet"
+        elif a_type == "field" and b_type == "field":
+            reason = "both_field"
+
+        rows.append(
+            {
+                "row_idx": row_idx,
+                "a_name": a_name,
+                "a_cp": a_cp,
+                "a_type": a_type,
+                "b_name": b_name,
+                "b_cp": b_cp,
+                "b_type": b_type,
+                "cabinet_name": cabinet_name,
+                "cabinet_cp": cabinet_cp,
+                "field_name": field_name,
+                "field_cp": field_cp,
+                "reason": reason,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def cable_feeder_candidates(
+    cable_df: pd.DataFrame,
+) -> tuple[Set[str], pd.DataFrame]:
+    if cable_df.empty:
+        return set(), pd.DataFrame(
+            columns=["cabinet_name", "cabinet_cp", "field_name", "field_cp"]
+        )
+    ok_rows = cable_df[cable_df["reason"] == "ok"].copy()
+    raw_set = {
+        _logical_base_name(name)
+        for name in ok_rows["cabinet_name"].dropna().astype(str)
+    }
+    example_df = ok_rows[
+        ["cabinet_name", "cabinet_cp", "field_name", "field_cp"]
+    ].head(20)
+    return raw_set, example_df
+
+
+def _bfs_reachable(
+    adjacency: Dict[Node, Set[Node]],
+    start_nodes: Iterable[Node],
+) -> Set[Node]:
+    visited: Set[Node] = set()
+    queue = deque()
+    for node in start_nodes:
+        visited.add(node)
+        queue.append(node)
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency.get(current, set()):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            queue.append(neighbor)
+    return visited
+
+
+def _reverse_adjacency(adjacency: Dict[Node, Set[Node]]) -> Dict[Node, Set[Node]]:
+    reversed_adj: Dict[Node, Set[Node]] = {node: set() for node in adjacency}
+    for node, neighbors in adjacency.items():
+        for neighbor in neighbors:
+            reversed_adj.setdefault(neighbor, set()).add(node)
+    return reversed_adj
+
+
+def filter_reachable_candidates(
+    adjacency: Dict[Node, Set[Node]],
+    candidates: Set[str],
+    main_roots: Set[Node],
+) -> Set[str]:
+    if not candidates or not main_roots:
+        return set()
+
+    base_to_nodes: Dict[str, Set[Node]] = defaultdict(set)
+    for node in adjacency:
+        if _is_net_node(node):
+            continue
+        base = _logical_base_name(_device_name(node))
+        base_to_nodes[base].add(node)
+
+    reachable_from_roots = _bfs_reachable(adjacency, main_roots)
+    reverse_adj = _reverse_adjacency(adjacency)
+    reachable_to_roots = _bfs_reachable(reverse_adj, main_roots)
+
+    reachable: Set[str] = set()
+    for candidate in candidates:
+        candidate_nodes = base_to_nodes.get(candidate, set())
+        if not candidate_nodes:
+            continue
+        if candidate_nodes & reachable_from_roots or candidate_nodes & reachable_to_roots:
+            reachable.add(candidate)
+    return reachable
 
 
 def build_graph(
@@ -508,6 +701,7 @@ def compute_feeder_paths(
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: int | None = None,
+    cable_candidates_raw: Set[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -552,13 +746,46 @@ def compute_feeder_paths(
     }
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
-    feeder_nodes = [
+    internal_feeder_nodes = [
         node
         for node in device_nodes
         if _logical_base_name(_device_name(node)) in feeder_f_bases
         or _device_name(node) in feeder_q_bases
         or _device_name(node) in feeder_x_bases
     ]
+    internal_feeder_bases = {
+        _logical_base_name(_device_name(node)) for node in internal_feeder_nodes
+    }
+
+    cable_candidates_raw = cable_candidates_raw or set()
+    cable_candidates_reachable = filter_reachable_candidates(
+        adjacency,
+        cable_candidates_raw,
+        root_nets,
+    )
+    cable_feeder_nodes = [
+        node
+        for node in device_nodes
+        if _logical_base_name(_device_name(node)) in cable_candidates_reachable
+    ]
+
+    if cable_candidates_raw and not cable_candidates_reachable and len(cable_candidates_raw) >= 20:
+        device_bases = {_logical_base_name(_device_name(node)) for node in device_nodes}
+        missing_candidates = [
+            candidate
+            for candidate in sorted(cable_candidates_raw)
+            if candidate not in device_bases
+        ]
+        issues.append(
+            _issue(
+                "WARNING",
+                "W301",
+                "Cable candidates were not found in graph nodes; check naming or base name normalization.",
+                context={"missing_candidates": missing_candidates[:5]},
+            )
+        )
+
+    feeder_nodes = sorted(set(internal_feeder_nodes) | set(cable_feeder_nodes))
     feeder_nodes_sorted = sorted(feeder_nodes)
 
     for feeder_node in feeder_nodes_sorted:
@@ -566,6 +793,14 @@ def compute_feeder_paths(
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
         feeder_base = _logical_base_name(feeder_name)
+        has_internal = feeder_base in internal_feeder_bases
+        has_cable = feeder_base in cable_candidates_reachable
+        if has_internal and has_cable:
+            feeder_source = "cable+internal"
+        elif has_cable:
+            feeder_source = "cable"
+        else:
+            feeder_source = "internal"
         blocked_nodes = {
             node
             for node in feeder_nodes
@@ -621,6 +856,7 @@ def compute_feeder_paths(
             {
                 "feeder_end_name": feeder_name,
                 "feeder_end_cp": feeder_cp,
+                "feeder_end_source": feeder_source,
                 "supply_net": supply_net,
                 "subroot_net": first_subroot_token,
                 "path_main": path_main,
@@ -660,6 +896,7 @@ def compute_feeder_paths(
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
+        "cable_candidates_reachable": sorted(cable_candidates_reachable),
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
@@ -680,6 +917,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             {
                 "feeder_end_name": name,
                 "feeder_end_cps": set(),
+                "feeder_end_source": feeder.get("feeder_end_source", "internal"),
                 "supply_net": supply_net,
                 "subroot_net": "",
                 "path_main": "",
@@ -690,6 +928,9 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "path_len_nodes": 0,
             },
         )
+        feeder_source = feeder.get("feeder_end_source", "internal")
+        if entry["feeder_end_source"] != feeder_source:
+            entry["feeder_end_source"] = "cable+internal"
         if feeder["feeder_end_cp"]:
             entry["feeder_end_cps"].add(feeder["feeder_end_cp"])
 
@@ -728,6 +969,7 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             {
                 "feeder_end_name": entry["feeder_end_name"],
                 "feeder_end_cps": ", ".join(cps),
+                "feeder_end_source": entry["feeder_end_source"],
                 "supply_net": entry["supply_net"],
                 "subroot_net": entry["subroot_net"],
                 "path_main": entry["path_main"],

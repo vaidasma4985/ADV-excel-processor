@@ -76,7 +76,12 @@ def render_wire_page() -> None:
         st.dataframe(df_power.head(50), use_container_width=True)
 
     if st.button("Compute feeder paths"):
-        from wire_tool.graph import build_graph, compute_feeder_paths
+        from wire_tool.graph import (
+            build_graph,
+            cable_feeder_candidates,
+            compute_feeder_paths,
+            parse_cable_endpoints,
+        )
 
         (
             adjacency,
@@ -85,11 +90,14 @@ def render_wire_page() -> None:
             device_parts,
             logical_edges_added,
         ) = build_graph(df_power)
+        cable_df = parse_cable_endpoints(df)
+        cable_candidates_raw, cable_example_df = cable_feeder_candidates(cable_df)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
+            cable_candidates_raw=cable_candidates_raw,
         )
         issues.extend(feeder_issues)
 
@@ -98,6 +106,7 @@ def render_wire_page() -> None:
         feeder_columns = [
             "feeder_end_name",
             "feeder_end_cp",
+            "feeder_end_source",
             "supply_net",
             "subroot_net",
             "path_main",
@@ -112,6 +121,7 @@ def render_wire_page() -> None:
         aggregated_columns = [
             "feeder_end_name",
             "feeder_end_cps",
+            "feeder_end_source",
             "supply_net",
             "subroot_net",
             "path_main",
@@ -127,6 +137,7 @@ def render_wire_page() -> None:
         simplified_columns = [
             "feeder_end_name",
             "feeder_end_cps",
+            "feeder_end_source",
             "supply_net",
             "subroot_net",
             "path_main",
@@ -136,6 +147,16 @@ def render_wire_page() -> None:
             "path_len_nodes",
         ]
         simplified_df = aggregated_df[simplified_columns].copy()
+
+        debug.update(
+            {
+                "cable_rows_count": len(cable_df),
+                "cable_endpoints_preview": cable_df[cable_df["reason"] == "ok"].head(20),
+                "cable_candidates_raw": sorted(cable_candidates_raw),
+                "cable_candidates_reachable": sorted(debug.get("cable_candidates_reachable", [])),
+                "cable_example_df": cable_example_df,
+            }
+        )
 
         # Store computed data in session_state so downloads/tables persist on rerun.
         st.session_state.update(
@@ -194,6 +215,31 @@ def render_wire_page() -> None:
                         "unreachable_feeders_count": debug["unreachable_feeders_count"],
                     }
                 )
+
+            with st.expander("Debug: cable parsing"):
+                import pandas as pd
+
+                st.write({"cable_rows_count": debug.get("cable_rows_count", 0)})
+                preview_df = debug.get("cable_endpoints_preview")
+                if not isinstance(preview_df, pd.DataFrame):
+                    preview_df = pd.DataFrame()
+                st.dataframe(preview_df.copy(), use_container_width=True)
+                st.write({"cable_candidates_raw": debug.get("cable_candidates_raw", [])})
+                st.write(
+                    {
+                        "cable_candidates_reachable": debug.get(
+                            "cable_candidates_reachable",
+                            [],
+                        )
+                    }
+                )
+                if debug.get("cable_candidates_raw") and not debug.get(
+                    "cable_candidates_reachable"
+                ):
+                    st.warning(
+                        "Graph has no nodes matching cabinet device names; check node naming "
+                        "/ base name normalization."
+                    )
 
             with st.expander("Downloads"):
                 if unreachable_count > 0:
