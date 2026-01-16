@@ -394,6 +394,11 @@ def _shortest_path_to_roots(
     def _device_count(node: Node) -> int:
         return 0 if _is_net_node(node) else 1
 
+    def _logical_base(node: Node) -> str | None:
+        if _is_net_node(node):
+            return None
+        return _logical_base_name(_device_name(node))
+
     queue: List[Tuple[int, int, Node]] = []
     for start in start_list:
         if start in blocked_nodes:
@@ -421,8 +426,13 @@ def _shortest_path_to_roots(
                 neighbors,
                 key=lambda neighbor: (neighbor in blocked_nodes, neighbor),
             )
+        previous = parent.get(current)
+        previous_base = _logical_base(previous) if previous else None
+        current_base = _logical_base(current)
         for neighbor in neighbors:
             if neighbor in blocked_nodes:
+                continue
+            if _is_net_node(neighbor) and current_base and previous_base == current_base:
                 continue
             next_cost = (distance + 1, device_count + _device_count(neighbor))
             if neighbor in best_cost and next_cost >= best_cost[neighbor]:
