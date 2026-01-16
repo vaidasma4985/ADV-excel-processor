@@ -157,6 +157,7 @@ def _is_bus_token(token: str) -> bool:
 
 def build_graph(
     df_power: pd.DataFrame,
+    device_templates: Dict[str, Dict[str, Any]] | None = None,
 ) -> Tuple[
     Dict[Node, Set[Node]],
     List[Issue],
@@ -237,6 +238,9 @@ def build_graph(
                 node_right = f"{device_name}:{right}"
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
+
+    if device_templates:
+        _add_template_edges(adjacency, device_terminals, device_templates)
 
     logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
 
@@ -488,6 +492,69 @@ def _device_terminals_from_nodes(adjacency: Dict[Node, Set[Node]]) -> Dict[str, 
 def _has_even_terminal(terminals: Iterable[str]) -> bool:
     even_terminals = {"2", "4", "6", "8"}
     return any(term in even_terminals for term in terminals)
+
+
+def _add_template_edges(
+    adjacency: Dict[Node, Set[Node]],
+    device_terminals: Dict[str, Set[str]],
+    device_templates: Dict[str, Dict[str, Any]],
+) -> int:
+    edges_added = 0
+    for device_name, template in device_templates.items():
+        terminals = device_terminals.get(device_name, set())
+        if not terminals:
+            continue
+        if template.get("front_only") and not template.get("back_pins"):
+            continue
+
+        front_pins = [str(pin) for pin in template.get("front_pins", [])]
+        back_pins = [str(pin) for pin in template.get("back_pins", [])]
+        neutral_front = template.get("neutral_front_token")
+        neutral_back = template.get("neutral_back_token")
+
+        front_numbers = sorted([pin for pin in front_pins if pin.isdigit()], key=int)
+        back_numbers = sorted([pin for pin in back_pins if pin.isdigit()], key=int)
+
+        for left, right in zip(front_numbers, back_numbers):
+            if left in terminals and right in terminals:
+                node_left = f"{device_name}:{left}"
+                node_right = f"{device_name}:{right}"
+                adjacency.setdefault(node_left, set()).add(node_right)
+                adjacency.setdefault(node_right, set()).add(node_left)
+                edges_added += 1
+
+        if neutral_front and neutral_back:
+            if neutral_front in terminals and neutral_back in terminals:
+                node_left = f"{device_name}:{neutral_front}"
+                node_right = f"{device_name}:{neutral_back}"
+                adjacency.setdefault(node_left, set()).add(node_right)
+                adjacency.setdefault(node_right, set()).add(node_left)
+                edges_added += 1
+    return edges_added
+
+
+def identify_root_devices(adjacency: Dict[Node, Set[Node]]) -> Set[str]:
+    root_nets = {
+        node
+        for node in adjacency
+        if _is_net_node(node) and _MAIN_ROOT_PATTERN.match(_net_name(node))
+    }
+    device_nodes = [node for node in adjacency if not _is_net_node(node)]
+    root_devices: Set[str] = set()
+    for node in device_nodes:
+        name = _device_name(node)
+        if not any(net in root_nets for net in adjacency.get(node, set())):
+            continue
+        has_external_device_neighbor = False
+        for neighbor in adjacency.get(node, set()):
+            if _is_net_node(neighbor):
+                continue
+            if _device_name(neighbor) != name:
+                has_external_device_neighbor = True
+                break
+        if not has_external_device_neighbor:
+            root_devices.add(name)
+    return root_devices
 
 
 def _is_neutral_terminal(term: str) -> bool:
