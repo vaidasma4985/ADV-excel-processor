@@ -163,7 +163,7 @@ def build_graph(
     List[Issue],
     Dict[str, Set[str]],
     Dict[str, Set[str]],
-    int,
+    Dict[str, int],
 ]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
@@ -242,9 +242,9 @@ def build_graph(
     if device_templates:
         _add_template_edges(adjacency, device_terminals, device_templates)
 
-    logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
+    logical_edges_stats = _add_logical_edges(adjacency, device_terminals, device_parts)
 
-    return adjacency, issues, device_terminals, device_parts, logical_edges_added
+    return adjacency, issues, device_terminals, device_parts, logical_edges_stats
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -324,7 +324,7 @@ def _neutral_kind(term: str) -> str | None:
     normalized = term.strip().upper()
     if not _is_neutral_terminal(normalized):
         return None
-    if normalized == "N'":
+    if normalized in {"N'", "8N"}:
         return "end"
     if normalized in {"N", "7N"}:
         return "front"
@@ -353,12 +353,29 @@ def _neutral_logical_pairs(
     return pairs
 
 
+def _stacked_split_role(terminals: Set[str]) -> str | None:
+    front_neutrals = {"N", "7N"}
+    back_neutrals = {"N'", "8N"}
+    has_odd = any(term.isdigit() and int(term) % 2 == 1 for term in terminals)
+    has_even = any(term.isdigit() and int(term) % 2 == 0 for term in terminals)
+    has_front_neutral = any(term in front_neutrals for term in terminals)
+    has_back_neutral = any(term in back_neutrals for term in terminals)
+    has_front = has_odd or has_front_neutral
+    has_back = has_even or has_back_neutral
+    if has_front and not has_back:
+        return "front"
+    if has_back and not has_front:
+        return "back"
+    return None
+
+
 def _add_logical_edges(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]],
     logical_groups: Dict[str, Set[str]],
-) -> int:
+) -> Dict[str, int]:
     logical_edges_added = 0
+    logical_edges_skipped = 0
     for base_name in sorted(logical_groups):
         parts = sorted(logical_groups[base_name])
         if len(parts) < 2:
@@ -366,6 +383,11 @@ def _add_logical_edges(
         for left, right in zip(parts, parts[1:]):
             terminals_left = device_terminals.get(left, set())
             terminals_right = device_terminals.get(right, set())
+            role_left = _stacked_split_role(terminals_left)
+            role_right = _stacked_split_role(terminals_right)
+            if not role_left or not role_right or role_left == role_right:
+                logical_edges_skipped += 1
+                continue
             for term_left, term_right in _logical_terminal_edges(
                 terminals_left,
                 terminals_right,
@@ -378,7 +400,10 @@ def _add_logical_edges(
                     adjacency[node_left].add(node_right)
                     adjacency[node_right].add(node_left)
                     logical_edges_added += 1
-    return logical_edges_added
+    return {
+        "added": logical_edges_added,
+        "skipped": logical_edges_skipped,
+    }
 
 
 def _shortest_path_to_roots(
@@ -559,7 +584,7 @@ def identify_root_devices(adjacency: Dict[Node, Set[Node]]) -> Set[str]:
 
 def _is_neutral_terminal(term: str) -> bool:
     normalized = term.strip().upper()
-    return normalized in {"N", "N'", "7N"}
+    return normalized in {"N", "N'", "7N", "8N"}
 
 
 def _is_q_device(name: str) -> bool:
@@ -574,7 +599,7 @@ def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
-    logical_edges_added: int | None = None,
+    logical_edges_added: Dict[str, int] | int | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -627,6 +652,8 @@ def compute_feeder_paths(
         or _device_name(node) in feeder_x_bases
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
+    q_heuristic_applied = 0
+    q_heuristic_blocked_nodes = 0
 
     for feeder_node in feeder_nodes_sorted:
         feeder_name = _device_name(feeder_node)
@@ -638,6 +665,30 @@ def compute_feeder_paths(
             for node in feeder_nodes
             if _logical_base_name(_device_name(node)) != feeder_base
         }
+        q_blocked_nodes = set()
+        q_match = re.match(r"^-Q(\d+)$", feeder_name)
+        if q_match and feeder_name != "-Q81":
+            q_digits = q_match.group(1)
+            if len(q_digits) >= 3:
+                f_prefix = q_digits[:-1]
+                preferred_prefix = f"-F{f_prefix}"
+                preferred_devices = {
+                    name for name in device_names if name.startswith(preferred_prefix)
+                }
+                if preferred_devices:
+                    group_prefix = q_digits[:-2]
+                    for name in device_names:
+                        if not name.startswith(f"-F{group_prefix}"):
+                            continue
+                        if name.startswith(preferred_prefix):
+                            continue
+                        for node in device_nodes:
+                            if _device_name(node) == name:
+                                q_blocked_nodes.add(node)
+                    if q_blocked_nodes:
+                        q_heuristic_applied += 1
+                        q_heuristic_blocked_nodes += len(q_blocked_nodes)
+                        blocked_nodes |= q_blocked_nodes
 
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
@@ -719,6 +770,11 @@ def compute_feeder_paths(
         if len(parts) > 1
     ][:3]
 
+    if isinstance(logical_edges_added, dict):
+        logical_edges_stats = logical_edges_added
+    else:
+        logical_edges_stats = {"added": logical_edges_added or 0, "skipped": 0}
+
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
@@ -729,7 +785,10 @@ def compute_feeder_paths(
         "feeder_end_bases_sample": feeder_end_bases[:10],
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
-        "logical_edges_added": logical_edges_added or 0,
+        "logical_edges_added": logical_edges_stats.get("added", 0),
+        "logical_edges_skipped": logical_edges_stats.get("skipped", 0),
+        "q_branch_heuristic_applied_count": q_heuristic_applied,
+        "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
 
