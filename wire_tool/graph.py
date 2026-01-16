@@ -503,11 +503,44 @@ def _is_f_device(name: str) -> bool:
     return bool(re.match(r"^-F\d+", name))
 
 
+def _is_field_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return bool(re.match(r"^-(M|T|B)", name))
+
+
+def _is_cabinet_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return bool(re.match(r"^-(F|Q|X)", name))
+
+
+def cable_feeder_end_bases(df_cable: pd.DataFrame) -> Set[str]:
+    # In Advansor projects, Cable rows indicate field loads; cabinet-side devices with field cables are treated as feeder ends.
+    feeder_bases: Set[str] = set()
+    for _row_index, row in df_cable.iterrows():
+        name_a = _base_of(row.get("Name"))
+        name_b = _base_of(row.get("Name.1"))
+
+        a_is_field = _is_field_device(name_a)
+        b_is_field = _is_field_device(name_b)
+        a_is_cabinet = _is_cabinet_device(name_a)
+        b_is_cabinet = _is_cabinet_device(name_b)
+
+        if a_is_field and b_is_cabinet:
+            feeder_bases.add(name_b)
+        elif b_is_field and a_is_cabinet:
+            feeder_bases.add(name_a)
+
+    return feeder_bases
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: int | None = None,
+    cable_feeder_end_bases: Set[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -552,12 +585,17 @@ def compute_feeder_paths(
     }
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
+    feeder_end_bases = set(feeder_f_bases)
+    feeder_end_bases.update(_logical_base_name(name) for name in feeder_q_bases)
+    feeder_end_bases.update(_logical_base_name(name) for name in feeder_x_bases)
+    if cable_feeder_end_bases:
+        feeder_end_bases.update(
+            _logical_base_name(base) for base in cable_feeder_end_bases
+        )
     feeder_nodes = [
         node
         for node in device_nodes
-        if _logical_base_name(_device_name(node)) in feeder_f_bases
-        or _device_name(node) in feeder_q_bases
-        or _device_name(node) in feeder_x_bases
+        if _logical_base_name(_device_name(node)) in feeder_end_bases
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
