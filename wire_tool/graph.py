@@ -503,11 +503,48 @@ def _is_f_device(name: str) -> bool:
     return bool(re.match(r"^-F\d+", name))
 
 
+def _is_field_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return bool(re.match(r"^-(M|T|B)", name))
+
+
+def _is_cabinet_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return bool(re.match(r"^-(F|Q|X)", name))
+
+
+def cable_feeder_end_bases(df_cable: pd.DataFrame) -> Set[str]:
+    # In Advansor projects, Cable rows indicate field loads; cabinet-side devices with field cables are treated as feeder ends.
+    feeder_bases: Set[str] = set()
+    if "Line-Function" in df_cable.columns:
+        df_cable = df_cable[
+            df_cable["Line-Function"].astype(str).str.lower() == "cable"
+        ]
+    for _row_index, row in df_cable.iterrows():
+        name_a = _logical_base_name(_base_of(row.get("Name")) or "")
+        name_b = _logical_base_name(_base_of(row.get("Name.1")) or "")
+
+        a_is_field = _is_field_device(name_a)
+        b_is_field = _is_field_device(name_b)
+        a_is_cabinet = _is_cabinet_device(name_a)
+        b_is_cabinet = _is_cabinet_device(name_b)
+
+        if a_is_field and b_is_cabinet:
+            feeder_bases.add(name_b)
+        elif b_is_field and a_is_cabinet:
+            feeder_bases.add(name_a)
+
+    return feeder_bases
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: int | None = None,
+    cable_feeder_end_bases: Set[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -529,6 +566,9 @@ def compute_feeder_paths(
 
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
+    device_node_to_base = {
+        node: _logical_base_name(_device_name(node)) for node in device_nodes
+    }
     logical_base_terminals: Dict[str, Set[str]] = defaultdict(set)
     for device_name in device_names:
         logical_base_terminals[_logical_base_name(device_name)].update(
@@ -545,19 +585,90 @@ def compute_feeder_paths(
         has_output = any(term in output_terms for term in terminals)
         return has_input and not has_output
 
-    feeder_f_bases = {
-        base
-        for base, terminals in logical_base_terminals.items()
-        if _is_f_device(base) and _is_f_end(terminals)
+    def _device_adjacency_from_power() -> Dict[str, Set[str]]:
+        device_adjacency: Dict[str, Set[str]] = defaultdict(set)
+        for node in device_nodes:
+            base = device_node_to_base[node]
+            device_adjacency.setdefault(base, set())
+        for node in device_nodes:
+            base = device_node_to_base[node]
+            for neighbor in adjacency.get(node, set()):
+                if _is_net_node(neighbor):
+                    for net_neighbor in adjacency.get(neighbor, set()):
+                        if _is_net_node(net_neighbor):
+                            continue
+                        neighbor_base = device_node_to_base[net_neighbor]
+                        if neighbor_base != base:
+                            device_adjacency[base].add(neighbor_base)
+                else:
+                    neighbor_base = device_node_to_base[neighbor]
+                    if neighbor_base != base:
+                        device_adjacency[base].add(neighbor_base)
+        return device_adjacency
+
+    def _reachable_bases_from_roots(
+        device_adjacency: Dict[str, Set[str]],
+    ) -> Tuple[Dict[str, int], Set[str]]:
+        start_bases: Set[str] = set()
+        for root in root_nets:
+            for neighbor in adjacency.get(root, set()):
+                if _is_net_node(neighbor):
+                    continue
+                start_bases.add(device_node_to_base[neighbor])
+        dist: Dict[str, int] = {}
+        queue: List[str] = []
+        for base in sorted(start_bases):
+            dist[base] = 0
+            queue.append(base)
+        for base in queue:
+            current_distance = dist[base]
+            for neighbor in sorted(device_adjacency.get(base, set())):
+                if neighbor in dist:
+                    continue
+                dist[neighbor] = current_distance + 1
+                queue.append(neighbor)
+        return dist, set(dist)
+
+    device_adjacency = _device_adjacency_from_power()
+    dist_from_root, reachable_bases = _reachable_bases_from_roots(device_adjacency)
+
+    cable_feeder_end_bases_raw = {
+        _logical_base_name(base) for base in (cable_feeder_end_bases or set()) if base
     }
-    feeder_q_bases = {name for name in device_names if _is_q_device(name)}
-    feeder_x_bases = {name for name in device_names if name.startswith("-X")}
+    cable_feeder_end_bases_reachable = {
+        base for base in cable_feeder_end_bases_raw if base in reachable_bases
+    }
+
+    internal_feeder_end_bases: Set[str] = set()
+    for base in reachable_bases:
+        neighbors = device_adjacency.get(base, set())
+        has_downstream = any(
+            dist_from_root.get(neighbor, -1) > dist_from_root.get(base, -1)
+            for neighbor in neighbors
+        )
+        if not has_downstream:
+            internal_feeder_end_bases.add(base)
+
+    feeder_end_bases = internal_feeder_end_bases | cable_feeder_end_bases_reachable
+    dotted_feeder_end_bases = sorted(
+        {base for base in feeder_end_bases if "." in base}
+    )
+    if dotted_feeder_end_bases:
+        issues.append(
+            _issue(
+                "ERROR",
+                "W203",
+                "Feeder end bases contain dotted suffix after normalization.",
+                context={
+                    "count": len(dotted_feeder_end_bases),
+                    "samples": dotted_feeder_end_bases[:10],
+                },
+            )
+        )
     feeder_nodes = [
         node
         for node in device_nodes
-        if _logical_base_name(_device_name(node)) in feeder_f_bases
-        or _device_name(node) in feeder_q_bases
-        or _device_name(node) in feeder_x_bases
+        if device_node_to_base[node] in feeder_end_bases
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
@@ -634,7 +745,7 @@ def compute_feeder_paths(
 
     aggregated = _aggregate_feeder_paths(feeders)
 
-    feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
+    feeder_end_bases_sorted = sorted(feeder_end_bases)
     stacked_example = None
     for base_name in sorted(device_parts):
         parts = device_parts.get(base_name, set())
@@ -658,8 +769,19 @@ def compute_feeder_paths(
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
         "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
+        "cable_feeder_end_bases_raw_count": len(cable_feeder_end_bases_raw),
+        "cable_feeder_end_bases_raw_sample": sorted(cable_feeder_end_bases_raw)[:10],
+        "cable_feeder_end_bases_reachable_count": len(
+            cable_feeder_end_bases_reachable
+        ),
+        "cable_feeder_end_bases_reachable_sample": sorted(
+            cable_feeder_end_bases_reachable
+        )[:10],
+        "internal_feeder_end_bases_count": len(internal_feeder_end_bases),
+        "internal_feeder_end_bases_sample": sorted(internal_feeder_end_bases)[:10],
         "feeder_end_bases_count": len(feeder_end_bases),
-        "feeder_end_bases_sample": feeder_end_bases[:10],
+        "feeder_end_bases_sample": feeder_end_bases_sorted[:20],
+        "feeder_end_bases_dotted_count": len(dotted_feeder_end_bases),
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,

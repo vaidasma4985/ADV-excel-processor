@@ -65,8 +65,10 @@ def render_wire_page() -> None:
         st.stop()
 
     df_power = df[df["Line-Function"] == "Power"].copy()
+    df_cable = df[df["Line-Function"] == "Cable"].copy()
     st.metric("Total rows", len(df))
     st.metric("Power rows", len(df_power))
+    st.metric("Cable rows", len(df_cable))
 
     if df_power.empty:
         st.warning("No Power rows found")
@@ -76,7 +78,11 @@ def render_wire_page() -> None:
         st.dataframe(df_power.head(50), use_container_width=True)
 
     if st.button("Compute feeder paths"):
-        from wire_tool.graph import build_graph, compute_feeder_paths
+        from wire_tool.graph import (
+            build_graph,
+            cable_feeder_end_bases,
+            compute_feeder_paths,
+        )
 
         (
             adjacency,
@@ -85,11 +91,13 @@ def render_wire_page() -> None:
             device_parts,
             logical_edges_added,
         ) = build_graph(df_power)
+        cable_feeder_bases = cable_feeder_end_bases(df_cable)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
+            cable_feeder_end_bases=cable_feeder_bases,
         )
         issues.extend(feeder_issues)
 
