@@ -14,6 +14,7 @@ Issue = Dict[str, Any]
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
 _SUB_ROOT_PATTERN = re.compile(r"^F\d+(?:\.\d+)?/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+(?:\.\d+)?)/(L1|L2|L3|N)")
+_CABLE_LINKS: Dict[str, Set[str]] = defaultdict(set)
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -130,6 +131,16 @@ def _base_of(name: Any) -> str | None:
     return _base_device_name(name)
 
 
+def _line_function_value(row: pd.Series) -> str | None:
+    raw = row.get("Line-Function")
+    if _is_missing(raw):
+        raw = row.get("Line-Funct")
+    normalized = _normalize_name(raw)
+    if not normalized:
+        return None
+    return normalized.strip().lower()
+
+
 def _extract_root_tokens(wireno: str | None) -> List[str]:
     if not wireno:
         return []
@@ -169,7 +180,11 @@ def build_graph(
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
 
+    cable_links: Dict[str, Set[str]] = defaultdict(set)
+
     for row_index, row in df_power.iterrows():
+        line_function = _line_function_value(row)
+        is_cable = line_function == "cable"
         wireno = _normalize_wireno(row.get("Wireno"))
         wireno_tokens = _extract_wireno_tokens(wireno)
 
@@ -220,15 +235,42 @@ def build_graph(
                 adjacency[from_node].add(to_node)
                 adjacency[to_node].add(from_node)
 
-        for token in wireno_tokens:
-            net_node = f"NET:{token}"
-            adjacency.setdefault(net_node, set())
-            if from_node:
-                adjacency[net_node].add(from_node)
-                adjacency[from_node].add(net_node)
-            if to_node:
-                adjacency[net_node].add(to_node)
-                adjacency[to_node].add(net_node)
+        if not is_cable:
+            for token in wireno_tokens:
+                net_node = f"NET:{token}"
+                adjacency.setdefault(net_node, set())
+                if from_node:
+                    adjacency[net_node].add(from_node)
+                    adjacency[from_node].add(net_node)
+                if to_node:
+                    adjacency[net_node].add(to_node)
+                    adjacency[to_node].add(net_node)
+        else:
+            cabinet_name = None
+            cabinet_cp = None
+            if _is_cabinet_device(name_a) and _is_field_device(name_b):
+                cabinet_name = name_a
+                cabinet_cp = cp_a
+            elif _is_cabinet_device(name_b) and _is_field_device(name_a):
+                cabinet_name = name_b
+                cabinet_cp = cp_b
+            if cabinet_name and cabinet_cp:
+                cable_links[_logical_base_name(cabinet_name)].add(cabinet_cp)
+            else:
+                issues.append(
+                    _issue(
+                        "WARNING",
+                        "W311",
+                        "Cable row cabinet side could not be detected.",
+                        row_index=row_index,
+                        context={
+                            "name_a": name_a_raw,
+                            "cp_a": cp_a,
+                            "name_b": name_b_raw,
+                            "cp_b": cp_b,
+                        },
+                    )
+                )
 
     for device_name, terminals in device_terminals.items():
         for left, right in _PASS_THROUGH_PAIRS:
@@ -239,6 +281,8 @@ def build_graph(
                 adjacency.setdefault(node_right, set()).add(node_left)
 
     logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
+    _CABLE_LINKS.clear()
+    _CABLE_LINKS.update(cable_links)
 
     return adjacency, issues, device_terminals, device_parts, logical_edges_added
 
@@ -503,6 +547,18 @@ def _is_f_device(name: str) -> bool:
     return bool(re.match(r"^-F\d+", name))
 
 
+def _is_cabinet_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return name.startswith(("-F", "-Q", "-X"))
+
+
+def _is_field_device(name: str | None) -> bool:
+    if not name:
+        return False
+    return name.startswith(("-M", "-T", "-B"))
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
@@ -516,6 +572,7 @@ def compute_feeder_paths(
     if device_parts is None:
         device_parts = {}
 
+    cable_links = _CABLE_LINKS
     root_nets = {
         node
         for node in adjacency
@@ -535,29 +592,108 @@ def compute_feeder_paths(
             device_terminals.get(device_name, set())
         )
 
-    def _is_f_end(terminals: Iterable[str]) -> bool:
-        input_terms = {"1", "3", "5", "N"}
-        output_terms = {"2", "4", "6", "8"}
-        has_input = any(
-            term in input_terms or _is_neutral_terminal(term)
-            for term in terminals
-        )
-        has_output = any(term in output_terms for term in terminals)
-        return has_input and not has_output
+    def _infer_output_terminals(base: str, terminals: Iterable[str]) -> Set[str] | None:
+        primary_terms: Set[str] = set()
+        output_terms: Set[str] = set()
+        unknown_terms: Set[str] = set()
 
-    feeder_f_bases = {
-        base
-        for base, terminals in logical_base_terminals.items()
-        if _is_f_device(base) and _is_f_end(terminals)
-    }
+        for term in terminals:
+            if term.isdigit():
+                if int(term) % 2 == 1:
+                    primary_terms.add(term)
+                else:
+                    output_terms.add(term)
+                continue
+            if _neutral_kind(term) == "front":
+                primary_terms.add(term)
+                continue
+            if _neutral_kind(term) == "end":
+                output_terms.add(term)
+                continue
+            unknown_terms.add(term)
+
+        if unknown_terms:
+            issues.append(
+                _issue(
+                    "WARNING",
+                    "W310",
+                    f"Unknown terminal pattern for base {base}: {sorted(unknown_terms)}. "
+                    "Cannot infer primary/output terminals.",
+                    context={"base": base, "terminals": sorted(terminals)},
+                )
+            )
+            return None
+
+        if not primary_terms and not output_terms:
+            issues.append(
+                _issue(
+                    "WARNING",
+                    "W310",
+                    f"Unknown terminal pattern for base {base}: {sorted(terminals)}. "
+                    "Cannot infer primary/output terminals.",
+                    context={"base": base, "terminals": sorted(terminals)},
+                )
+            )
+            return None
+
+        return output_terms
+
+    def _is_output_dangling(base: str, device_name: str, cp: str) -> bool:
+        node = f"{device_name}:{cp}"
+        for neighbor in adjacency.get(node, set()):
+            if _is_net_node(neighbor):
+                continue
+            neighbor_name = _device_name(neighbor)
+            if not _is_cabinet_device(neighbor_name):
+                continue
+            if _logical_base_name(neighbor_name) == base:
+                continue
+            return False
+        return True
+
+    def _parts_for_base(base: str) -> Set[str]:
+        parts = set(device_parts.get(base, set()))
+        if not parts:
+            parts = {name for name in device_names if _logical_base_name(name) == base}
+        return parts
+
+    feeder_f_bases: Set[str] = set()
+    for base, terminals in logical_base_terminals.items():
+        if not _is_f_device(base):
+            continue
+        output_terms = _infer_output_terminals(base, terminals)
+        if not output_terms:
+            continue
+        has_cable_output = bool(cable_links.get(base, set()) & output_terms)
+        has_dangling_output = False
+        for part_name in _parts_for_base(base):
+            part_terminals = device_terminals.get(part_name, set())
+            for output_term in output_terms:
+                if output_term not in part_terminals:
+                    continue
+                if _is_output_dangling(base, part_name, output_term):
+                    has_dangling_output = True
+                    break
+            if has_dangling_output:
+                break
+        if has_cable_output or has_dangling_output:
+            feeder_f_bases.add(base)
+
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
+    feeder_candidate_bases = set(feeder_f_bases)
+    feeder_candidate_bases.update({_logical_base_name(name) for name in feeder_q_bases})
+    feeder_candidate_bases.update({_logical_base_name(name) for name in feeder_x_bases})
+
+    representative_devices: Set[str] = set()
+    for base in feeder_candidate_bases:
+        parts = _parts_for_base(base)
+        if not parts:
+            continue
+        representative_devices.add(base if base in parts else sorted(parts)[0])
+
     feeder_nodes = [
-        node
-        for node in device_nodes
-        if _logical_base_name(_device_name(node)) in feeder_f_bases
-        or _device_name(node) in feeder_q_bases
-        or _device_name(node) in feeder_x_bases
+        node for node in device_nodes if _device_name(node) in representative_devices
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
@@ -635,29 +771,22 @@ def compute_feeder_paths(
     aggregated = _aggregate_feeder_paths(feeders)
 
     feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
-    cable_feeder_end_bases_raw = sorted(
-        {
-            feeder["feeder_end_name"]
-            for feeder in feeders
-            if feeder["feeder_end_name"].startswith("-X")
-        }
-    )
-    cable_feeder_end_bases_reachable = sorted(
-        {
-            feeder["feeder_end_name"]
-            for feeder in feeders
-            if feeder["feeder_end_name"].startswith("-X") and feeder["reachable"]
-        }
-    )
-    cable_feeder_examples = cable_feeder_end_bases_raw[:5]
+    cable_feeder_candidates = sorted(cable_links.keys())
+    cable_feeder_examples = cable_feeder_candidates[:5]
     issues.append(
         _issue(
             "INFO",
             "W301",
             "Cable feeder candidates summary.",
             context={
-                "candidates": len(cable_feeder_end_bases_raw),
-                "reachable": len(cable_feeder_end_bases_reachable),
+                "candidates": len(cable_feeder_candidates),
+                "reachable": len(
+                    {
+                        base
+                        for base in cable_feeder_candidates
+                        if base in feeder_f_bases
+                    }
+                ),
                 "examples": cable_feeder_examples,
             },
         )
@@ -687,10 +816,16 @@ def compute_feeder_paths(
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
-        "cable_feeder_end_bases_raw_count": len(cable_feeder_end_bases_raw),
-        "cable_feeder_end_bases_raw_sample": cable_feeder_end_bases_raw[:10],
-        "cable_feeder_end_bases_reachable_count": len(cable_feeder_end_bases_reachable),
-        "cable_feeder_end_bases_reachable_sample": cable_feeder_end_bases_reachable[:10],
+        "cable_feeder_end_bases_raw_count": len(cable_feeder_candidates),
+        "cable_feeder_end_bases_raw_sample": cable_feeder_candidates[:10],
+        "cable_feeder_end_bases_reachable_count": len(
+            [base for base in cable_feeder_candidates if base in feeder_f_bases]
+        ),
+        "cable_feeder_end_bases_reachable_sample": [
+            base for base in cable_feeder_candidates if base in feeder_f_bases
+        ][:10],
+        "cable_feeder_candidates_count": len(cable_feeder_candidates),
+        "cable_feeder_candidates_sample": cable_feeder_candidates[:10],
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
