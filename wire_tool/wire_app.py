@@ -84,12 +84,14 @@ def render_wire_page() -> None:
             device_terminals,
             device_parts,
             logical_edges_added,
+            explicit_series_links,
         ) = build_graph(df_power)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
+            explicit_series_links=explicit_series_links,
         )
         issues.extend(feeder_issues)
 

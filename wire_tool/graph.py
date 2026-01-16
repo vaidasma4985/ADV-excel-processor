@@ -12,7 +12,7 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+(?:\.\d+)?/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
@@ -163,11 +163,13 @@ def build_graph(
     Dict[str, Set[str]],
     Dict[str, Set[str]],
     int,
+    Dict[str, Set[str]],
 ]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
+    explicit_series_links: Dict[str, Set[str]] = defaultdict(set)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -179,6 +181,15 @@ def build_graph(
         cp_a = _normalize_terminal(row.get("C.name"))
         name_b = _base_of(name_b_raw)
         cp_b = _normalize_terminal(row.get("C.name.1"))
+
+        if name_a and name_b:
+            base_a = _logical_base_name(name_a)
+            base_b = _logical_base_name(name_b)
+            if base_a == base_b and name_a != name_b:
+                if name_a == base_a:
+                    explicit_series_links[name_b].add(name_a)
+                if name_b == base_b:
+                    explicit_series_links[name_a].add(name_b)
 
         from_node = _device_node(name_a, cp_a)
         to_node = _device_node(name_b, cp_b)
@@ -240,7 +251,14 @@ def build_graph(
 
     logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
 
-    return adjacency, issues, device_terminals, device_parts, logical_edges_added
+    return (
+        adjacency,
+        issues,
+        device_terminals,
+        device_parts,
+        logical_edges_added,
+        explicit_series_links,
+    )
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -266,7 +284,10 @@ def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
     return collapsed
 
 
-def _extract_device_names_from_path(path: List[Node]) -> List[str]:
+def _extract_device_names_from_path(
+    path: List[Node],
+    explicit_series_links: Dict[str, Set[str]] | None = None,
+) -> List[str]:
     # Filter out NET nodes and non-device labels; keep only base device names.
     names: List[str] = []
     for node in path:
@@ -276,7 +297,20 @@ def _extract_device_names_from_path(path: List[Node]) -> List[str]:
         if not device_name.startswith("-"):
             continue
         names.append(device_name)
-    return _collapse_consecutive_duplicates(names)
+    names = _collapse_consecutive_duplicates(names)
+    if not explicit_series_links:
+        return names
+
+    enriched: List[str] = []
+    for name in names:
+        base_names = explicit_series_links.get(name)
+        if base_names:
+            base_name = sorted(base_names)[0]
+            if base_name != name and (not enriched or enriched[-1] != base_name):
+                # Enrich series chains with explicit Power row connectivity.
+                enriched.append(base_name)
+        enriched.append(name)
+    return enriched
 
 
 def _logical_terminal_edges(
@@ -508,6 +542,7 @@ def compute_feeder_paths(
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: int | None = None,
+    explicit_series_links: Dict[str, Set[str]] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -615,7 +650,9 @@ def compute_feeder_paths(
         path_names_collapsed = " -> ".join(
             _compress_path_names(path_any) + ([supply_net] if supply_net else [])
         )
-        device_chain = " -> ".join(_extract_device_names_from_path(path_any))
+        device_chain = " -> ".join(
+            _extract_device_names_from_path(path_any, explicit_series_links)
+        )
 
         feeders.append(
             {
