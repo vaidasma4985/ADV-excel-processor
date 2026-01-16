@@ -7,6 +7,11 @@ from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import pandas as pd
 
+from wire_tool.pin_logic import (
+    canonicalize_pin_token,
+    load_pin_templates,
+    resolve_pin_template,
+)
 Node = str
 Issue = Dict[str, Any]
 
@@ -14,21 +19,8 @@ Issue = Dict[str, Any]
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
 _SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
-_PASS_THROUGH_PAIRS = (
-    ("1", "2"),
-    ("3", "4"),
-    ("5", "6"),
-    ("7", "8"),
-    ("9", "10"),
-    ("11", "12"),
-    ("13", "14"),
-    ("21", "22"),
-    ("31", "32"),
-    ("41", "42"),
-    ("N", "N'"),
-    ("N", "7N"),
-    ("7N", "N'"),
-)
+_PIN_PAIR_ORDER = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
+_NEUTRAL_PAIRS = (("N", "N'"), ("7N", "8N"), ("N", "7N"))
 
 
 def _is_missing(value: Any) -> bool:
@@ -79,6 +71,12 @@ def _normalize_terminal(value: Any) -> str | None:
     if re.fullmatch(r"\d+", normalized):
         return normalized
     return normalized
+
+
+def _pin_sort_key(token: str) -> tuple[int, int | str]:
+    if token.isdigit():
+        return (0, int(token))
+    return (1, token)
 
 
 def _normalize_name(value: Any) -> str | None:
@@ -143,6 +141,17 @@ def _extract_wireno_tokens(wireno: str | None) -> List[str]:
     return [token.strip() for token in tokens if token.strip()]
 
 
+def _extract_pindata_tokens(value: Any) -> List[str]:
+    if _is_missing(value):
+        return []
+    raw = str(value).replace("\u00a0", " ").strip()
+    if not raw:
+        return []
+    tokens = [token for token in re.split(r"[;,]", raw) if token]
+    normalized = [canonicalize_pin_token(token) for token in tokens]
+    return [token for token in normalized if token]
+
+
 def _is_front_terminal(term: str | None) -> bool:
     if not term:
         return False
@@ -157,6 +166,8 @@ def _is_bus_token(token: str) -> bool:
 
 def build_graph(
     df_power: pd.DataFrame,
+    templates: dict | None = None,
+    templates_path: str = "pin_templates.json",
 ) -> Tuple[
     Dict[Node, Set[Node]],
     List[Issue],
@@ -168,6 +179,9 @@ def build_graph(
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
+    device_pinsets: Dict[str, Set[str]] = defaultdict(set)
+    if templates is None:
+        templates = load_pin_templates(templates_path)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -185,12 +199,17 @@ def build_graph(
 
         if name_a and cp_a:
             device_terminals[name_a].add(cp_a)
+            device_pinsets[name_a].add(canonicalize_pin_token(cp_a))
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
+            device_pinsets[name_b].add(canonicalize_pin_token(cp_b))
         if name_a_raw and name_a:
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
             device_parts[_logical_base_name(name_b)].add(name_b)
+        if name_a:
+            for token in _extract_pindata_tokens(row.get("PINDATA")):
+                device_pinsets[name_a].add(token)
 
         if not from_node and not to_node:
             issues.append(
@@ -230,17 +249,72 @@ def build_graph(
                 adjacency[net_node].add(to_node)
                 adjacency[to_node].add(net_node)
 
-    for device_name, terminals in device_terminals.items():
-        for left, right in _PASS_THROUGH_PAIRS:
-            if left in terminals and right in terminals:
-                node_left = f"{device_name}:{left}"
-                node_right = f"{device_name}:{right}"
-                adjacency.setdefault(node_left, set()).add(node_right)
-                adjacency.setdefault(node_right, set()).add(node_left)
-
-    logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
+    pin_edges_added, _ = _add_pin_template_edges(
+        adjacency,
+        device_pinsets,
+        templates,
+    )
+    logical_edges_added = pin_edges_added + _add_logical_edges(
+        adjacency,
+        device_terminals,
+        device_parts,
+    )
 
     return adjacency, issues, device_terminals, device_parts, logical_edges_added
+
+
+def scan_pin_templates(
+    df_power: pd.DataFrame,
+    templates: dict | None = None,
+    templates_path: str = "pin_templates.json",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if templates is None:
+        templates = load_pin_templates(templates_path)
+
+    device_pinsets: Dict[str, Set[str]] = defaultdict(set)
+    for _, row in df_power.iterrows():
+        name_a = _base_of(_normalize_name(row.get("Name")))
+        name_b = _base_of(_normalize_name(row.get("Name.1")))
+        cp_a = _normalize_terminal(row.get("C.name"))
+        cp_b = _normalize_terminal(row.get("C.name.1"))
+
+        if name_a and cp_a:
+            device_pinsets[name_a].add(canonicalize_pin_token(cp_a))
+        if name_b and cp_b:
+            device_pinsets[name_b].add(canonicalize_pin_token(cp_b))
+        if name_a:
+            for token in _extract_pindata_tokens(row.get("PINDATA")):
+                device_pinsets[name_a].add(token)
+
+    pinset_devices: Dict[str, List[str]] = defaultdict(list)
+    pinset_pins: Dict[str, List[str]] = {}
+    resolved_devices = 0
+    for device, pins in device_pinsets.items():
+        template, key = resolve_pin_template(pins, templates)
+        if template is None:
+            pinset_devices[key].append(device)
+            pinset_pins.setdefault(key, sorted(pins, key=_pin_sort_key))
+        else:
+            resolved_devices += 1
+
+    templates_needed: List[Dict[str, Any]] = []
+    for key in sorted(pinset_devices):
+        devices = sorted(pinset_devices[key])
+        templates_needed.append(
+            {
+                "device": devices[0] if devices else "",
+                "devices": devices,
+                "pinset_key": key,
+                "pins": pinset_pins.get(key, []),
+            }
+        )
+
+    debug = {
+        "devices_total": len(device_pinsets),
+        "resolved_devices": resolved_devices,
+        "unknown_pinsets": len(pinset_devices),
+    }
+    return templates_needed, debug
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -314,6 +388,62 @@ def _logical_terminal_edges(
                 edges.add((even, odd))
 
     return edges
+
+
+def _template_pairs(mapping: dict, pins: Set[str]) -> List[Tuple[str, str]]:
+    pairs: List[Tuple[str, str]] = []
+    front_set = set(mapping.get("front", []))
+    back_set = set(mapping.get("back", []))
+
+    for left, right in _PIN_PAIR_ORDER:
+        if left in pins and right in pins and left in front_set and right in back_set:
+            pairs.append((left, right))
+
+    for left, right in _NEUTRAL_PAIRS:
+        if left in pins and right in pins and left in front_set and right in back_set:
+            pairs.append((left, right))
+
+    for neutral in mapping.get("neutral_map", []) or []:
+        left = neutral.get("front")
+        right = neutral.get("back")
+        if not left or not right:
+            continue
+        if left in pins and right in pins and left in front_set and right in back_set:
+            pairs.append((left, right))
+
+    return pairs
+
+
+def _add_pin_template_edges(
+    adjacency: Dict[Node, Set[Node]],
+    device_pinsets: Dict[str, Set[str]],
+    templates: dict,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    edges_added = 0
+    templates_needed: List[Dict[str, Any]] = []
+
+    for device_name, pins in sorted(device_pinsets.items()):
+        mapping, key = resolve_pin_template(pins, templates)
+        if mapping is None:
+            templates_needed.append(
+                {
+                    "device": device_name,
+                    "pinset_key": key,
+                    "pins": sorted(pins, key=_pin_sort_key),
+                }
+            )
+            continue
+
+        for left, right in _template_pairs(mapping, pins):
+            node_left = f"{device_name}:{left}"
+            node_right = f"{device_name}:{right}"
+            adjacency.setdefault(node_left, set())
+            adjacency.setdefault(node_right, set())
+            if node_right not in adjacency[node_left]:
+                adjacency[node_left].add(node_right)
+                edges_added += 1
+
+    return edges_added, templates_needed
 
 
 def _neutral_kind(term: str) -> str | None:

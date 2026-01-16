@@ -32,9 +32,19 @@ def _clear_results():
         st.session_state.pop(key, None)
 
 
+def _preview_reason_ok(df) -> None:
+    if "reason" in df.columns:
+        st.dataframe(df[df["reason"] == "ok"].head(20), use_container_width=True)
+    else:
+        st.warning("Reason column not present; showing the first 20 rows instead.")
+        st.dataframe(df.head(20), use_container_width=True)
+
+
 def render_wire_page() -> None:
     from wire_tool.io import load_connection_list
     from wire_tool.validators import validate_required_columns
+    from wire_tool.graph import scan_pin_templates
+    from wire_tool.pin_logic import load_pin_templates, save_pin_templates
 
     st.subheader(_TITLE)
     uploaded_file = st.file_uploader(
@@ -75,6 +85,136 @@ def render_wire_page() -> None:
     with st.expander("Preview: Power rows"):
         st.dataframe(df_power.head(50), use_container_width=True)
 
+    st.subheader("Pin template resolver")
+    templates_path = "pin_templates.json"
+    templates = load_pin_templates(templates_path)
+    templates_needed, scan_debug = scan_pin_templates(df_power, templates=templates)
+
+    if not templates_needed:
+        st.success("All pinsets resolved by built-ins or saved templates.")
+    else:
+        st.info(
+            f"{len(templates_needed)} unknown pinset(s) detected. "
+            "Define FRONT/BACK pins to persist templates for future runs."
+        )
+
+        grouped: dict[str, dict[str, object]] = {}
+        for entry in templates_needed:
+            pinset_key = entry["pinset_key"]
+            grouped.setdefault(
+                pinset_key,
+                {
+                    "pins": entry.get("pins", []),
+                    "devices": [],
+                },
+            )
+            devices = entry.get("devices") or [entry["device"]]
+            grouped[pinset_key]["devices"].extend(devices)
+
+        for pinset_key, data in grouped.items():
+            pins = data["pins"] or pinset_key.split(",")
+            devices = data["devices"]
+            st.markdown(f"**Pinset `{pinset_key}`**")
+            if devices:
+                st.caption(f"Example devices: {', '.join(devices[:5])}")
+
+            front_key = f"pin_front_{pinset_key}"
+            back_key = f"pin_back_{pinset_key}"
+            neutral_front_key = f"pin_neutral_front_{pinset_key}"
+            neutral_back_key = f"pin_neutral_back_{pinset_key}"
+
+            front_selection = st.multiselect(
+                "FRONT pins",
+                options=pins,
+                key=front_key,
+            )
+            remaining = [pin for pin in pins if pin not in front_selection]
+            st.multiselect(
+                "BACK pins",
+                options=remaining,
+                key=back_key,
+            )
+            st.text_input(
+                "Neutral front token (optional)",
+                key=neutral_front_key,
+            )
+            st.text_input(
+                "Neutral back token (optional)",
+                key=neutral_back_key,
+            )
+
+        if st.button("Save pin templates"):
+            errors: list[str] = []
+            for pinset_key, data in grouped.items():
+                pins = data["pins"] or pinset_key.split(",")
+                front_selection = st.session_state.get(f"pin_front_{pinset_key}", [])
+                back_selection = st.session_state.get(f"pin_back_{pinset_key}", [])
+                neutral_front = st.session_state.get(
+                    f"pin_neutral_front_{pinset_key}",
+                    "",
+                ).strip()
+                neutral_back = st.session_state.get(
+                    f"pin_neutral_back_{pinset_key}",
+                    "",
+                ).strip()
+
+                if not front_selection:
+                    errors.append(f"{pinset_key}: select at least one FRONT pin.")
+                if set(front_selection) & set(back_selection):
+                    errors.append(f"{pinset_key}: FRONT and BACK pins must be disjoint.")
+                if (neutral_front and not neutral_back) or (neutral_back and not neutral_front):
+                    errors.append(
+                        f"{pinset_key}: provide both neutral tokens or leave both blank."
+                    )
+                if neutral_front and neutral_front not in pins:
+                    errors.append(
+                        f"{pinset_key}: neutral front token '{neutral_front}' is not in pinset."
+                    )
+                if neutral_back and neutral_back not in pins:
+                    errors.append(
+                        f"{pinset_key}: neutral back token '{neutral_back}' is not in pinset."
+                    )
+
+            if errors:
+                st.error("\n".join(errors))
+            else:
+                for pinset_key, data in grouped.items():
+                    pins = data["pins"] or pinset_key.split(",")
+                    front_selection = st.session_state.get(
+                        f"pin_front_{pinset_key}",
+                        [],
+                    )
+                    back_selection = st.session_state.get(
+                        f"pin_back_{pinset_key}",
+                        [],
+                    )
+                    neutral_front = st.session_state.get(
+                        f"pin_neutral_front_{pinset_key}",
+                        "",
+                    ).strip()
+                    neutral_back = st.session_state.get(
+                        f"pin_neutral_back_{pinset_key}",
+                        "",
+                    ).strip()
+
+                    mapping: dict[str, object] = {
+                        "front": front_selection,
+                        "back": back_selection,
+                    }
+                    if neutral_front and neutral_back:
+                        mapping["neutral_map"] = [
+                            {"front": neutral_front, "back": neutral_back}
+                        ]
+                    templates[pinset_key] = mapping
+
+                save_pin_templates(templates, templates_path)
+                st.success("Pin templates saved. Rerun the graph to apply changes.")
+
+    st.caption(
+        "Scan stats: devices={devices_total}, resolved={resolved_devices}, "
+        "unknown pinsets={unknown_pinsets}".format(**scan_debug)
+    )
+
     if st.button("Compute feeder paths"):
         from wire_tool.graph import build_graph, compute_feeder_paths
 
@@ -84,7 +224,7 @@ def render_wire_page() -> None:
             device_terminals,
             device_parts,
             logical_edges_added,
-        ) = build_graph(df_power)
+        ) = build_graph(df_power, templates=templates, templates_path=templates_path)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
@@ -174,6 +314,9 @@ def render_wire_page() -> None:
         with detailed_tab:
             with st.expander("Details: per-contact paths (raw)"):
                 st.dataframe(feeders_df, use_container_width=True)
+
+            with st.expander("Preview: reason == ok (if available)"):
+                _preview_reason_ok(feeders_df)
 
             with st.expander("Details: grouped summary"):
                 st.dataframe(aggregated_df, use_container_width=True)
