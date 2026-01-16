@@ -130,6 +130,21 @@ def _base_of(name: Any) -> str | None:
     return _base_device_name(name)
 
 
+def _part_suffix(name: str) -> str | None:
+    if "." not in name:
+        return None
+    base, suffix = name.rsplit(".", 1)
+    if not base or not suffix:
+        return None
+    return suffix
+
+
+def _part_base(name: str) -> str:
+    if "." not in name:
+        return name
+    return name.rsplit(".", 1)[0]
+
+
 def _extract_root_tokens(wireno: str | None) -> List[str]:
     if not wireno:
         return []
@@ -169,6 +184,7 @@ def build_graph(
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
+    wired_between_parts: Set[str] = set()
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -192,6 +208,17 @@ def build_graph(
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
             device_parts[_logical_base_name(name_b)].add(name_b)
+
+        if name_a_raw and name_b_raw:
+            part_a_suffix = _part_suffix(name_a_raw)
+            part_b_suffix = _part_suffix(name_b_raw)
+            if (
+                part_a_suffix
+                and part_b_suffix
+                and part_a_suffix != part_b_suffix
+                and _part_base(name_a_raw) == _part_base(name_b_raw)
+            ):
+                wired_between_parts.add(_part_base(name_a_raw))
 
         if not from_node and not to_node:
             issues.append(
@@ -242,7 +269,13 @@ def build_graph(
     if device_templates:
         _add_template_edges(adjacency, device_terminals, device_templates)
 
-    logical_edges_stats = _add_logical_edges(adjacency, device_terminals, device_parts)
+    logical_edges_stats = _add_logical_edges(
+        adjacency,
+        device_terminals,
+        device_parts,
+        device_templates or {},
+        wired_between_parts,
+    )
 
     return adjacency, issues, device_terminals, device_parts, logical_edges_stats
 
@@ -353,18 +386,22 @@ def _neutral_logical_pairs(
     return pairs
 
 
-def _stacked_split_role(terminals: Set[str]) -> str | None:
-    front_neutrals = {"N", "7N"}
-    back_neutrals = {"N'", "8N"}
-    has_odd = any(term.isdigit() and int(term) % 2 == 1 for term in terminals)
-    has_even = any(term.isdigit() and int(term) % 2 == 0 for term in terminals)
-    has_front_neutral = any(term in front_neutrals for term in terminals)
-    has_back_neutral = any(term in back_neutrals for term in terminals)
-    has_front = has_odd or has_front_neutral
-    has_back = has_even or has_back_neutral
-    if has_front and not has_back:
+def _stacked_split_role(terminals: Set[str], template: Dict[str, Any] | None) -> str | None:
+    if not terminals or not template:
+        return None
+    front_pins = {str(pin) for pin in template.get("front_pins", [])}
+    back_pins = {str(pin) for pin in template.get("back_pins", [])}
+    if not front_pins and not back_pins:
+        return None
+
+    front_matches = {pin for pin in terminals if pin in front_pins}
+    back_matches = {pin for pin in terminals if pin in back_pins}
+    unmatched = terminals - front_matches - back_matches
+    if unmatched:
+        return None
+    if front_matches and not back_matches:
         return "front"
-    if has_back and not has_front:
+    if back_matches and not front_matches:
         return "back"
     return None
 
@@ -373,36 +410,58 @@ def _add_logical_edges(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]],
     logical_groups: Dict[str, Set[str]],
+    device_templates: Dict[str, Dict[str, Any]],
+    wired_between_parts: Set[str],
 ) -> Dict[str, int]:
     logical_edges_added = 0
     logical_edges_skipped = 0
+    stacked_candidates = 0
+    stacked_applied = 0
+    stacked_rejected_wired = 0
+    stacked_rejected_pin_mismatch = 0
     for base_name in sorted(logical_groups):
-        parts = sorted(logical_groups[base_name])
-        if len(parts) < 2:
+        parts = logical_groups[base_name]
+        candidates = []
+        for part in parts:
+            suffix = _part_suffix(part)
+            if suffix in {"1", "2"}:
+                candidates.append(part)
+        if len(candidates) != 2:
             continue
-        for left, right in zip(parts, parts[1:]):
-            terminals_left = device_terminals.get(left, set())
-            terminals_right = device_terminals.get(right, set())
-            role_left = _stacked_split_role(terminals_left)
-            role_right = _stacked_split_role(terminals_right)
-            if not role_left or not role_right or role_left == role_right:
-                logical_edges_skipped += 1
-                continue
-            for term_left, term_right in _logical_terminal_edges(
-                terminals_left,
-                terminals_right,
-            ):
-                node_left = f"{left}:{term_left}"
-                node_right = f"{right}:{term_right}"
-                adjacency.setdefault(node_left, set())
-                adjacency.setdefault(node_right, set())
-                if node_right not in adjacency[node_left]:
-                    adjacency[node_left].add(node_right)
-                    adjacency[node_right].add(node_left)
-                    logical_edges_added += 1
+        stacked_candidates += 1
+        base_part_name = _part_base(candidates[0])
+        if base_part_name in wired_between_parts:
+            stacked_rejected_wired += 1
+            continue
+        left, right = sorted(candidates)
+        terminals_left = device_terminals.get(left, set())
+        terminals_right = device_terminals.get(right, set())
+        role_left = _stacked_split_role(terminals_left, device_templates.get(left))
+        role_right = _stacked_split_role(terminals_right, device_templates.get(right))
+        if not role_left or not role_right or role_left == role_right:
+            stacked_rejected_pin_mismatch += 1
+            logical_edges_skipped += 1
+            continue
+        for term_left, term_right in _logical_terminal_edges(
+            terminals_left,
+            terminals_right,
+        ):
+            node_left = f"{left}:{term_left}"
+            node_right = f"{right}:{term_right}"
+            adjacency.setdefault(node_left, set())
+            adjacency.setdefault(node_right, set())
+            if node_right not in adjacency[node_left]:
+                adjacency[node_left].add(node_right)
+                adjacency[node_right].add(node_left)
+                logical_edges_added += 1
+        stacked_applied += 1
     return {
         "added": logical_edges_added,
         "skipped": logical_edges_skipped,
+        "stacked_candidates": stacked_candidates,
+        "stacked_applied": stacked_applied,
+        "stacked_rejected_wired": stacked_rejected_wired,
+        "stacked_rejected_pin_mismatch": stacked_rejected_pin_mismatch,
     }
 
 
@@ -669,13 +728,20 @@ def compute_feeder_paths(
         q_match = re.match(r"^-Q(\d+)$", feeder_name)
         if q_match and feeder_name != "-Q81":
             q_digits = q_match.group(1)
-            if len(q_digits) >= 3:
-                f_prefix = q_digits[:-1]
-                preferred_prefix = f"-F{f_prefix}"
+            if len(q_digits) >= 3 and q_digits[-1] in {"7", "8"}:
+                base_digits = q_digits[:-1]
+                try:
+                    preferred_number = int(base_digits) + (0 if q_digits[-1] == "7" else 1)
+                except ValueError:
+                    preferred_number = None
+                if preferred_number is None:
+                    preferred_prefix = ""
+                else:
+                    preferred_prefix = f"-F{preferred_number}"
                 preferred_devices = {
                     name for name in device_names if name.startswith(preferred_prefix)
                 }
-                if preferred_devices:
+                if preferred_prefix and preferred_devices:
                     group_prefix = q_digits[:-2]
                     for name in device_names:
                         if not name.startswith(f"-F{group_prefix}"):
@@ -787,6 +853,12 @@ def compute_feeder_paths(
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_stats.get("added", 0),
         "logical_edges_skipped": logical_edges_stats.get("skipped", 0),
+        "stacked_candidates_count": logical_edges_stats.get("stacked_candidates", 0),
+        "stacked_applied_count": logical_edges_stats.get("stacked_applied", 0),
+        "stacked_rejected_wired_count": logical_edges_stats.get("stacked_rejected_wired", 0),
+        "stacked_rejected_pin_mismatch_count": logical_edges_stats.get(
+            "stacked_rejected_pin_mismatch", 0
+        ),
         "q_branch_heuristic_applied_count": q_heuristic_applied,
         "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
