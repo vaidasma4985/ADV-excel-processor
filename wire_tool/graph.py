@@ -377,6 +377,79 @@ def _add_logical_edges(
     return logical_edges_added
 
 
+def _compute_dist_to_roots(
+    adjacency: Dict[Node, Set[Node]],
+    root_nodes: Set[Node],
+) -> Dict[Node, int]:
+    dist: Dict[Node, int] = {}
+    queue: List[Node] = []
+    for node in sorted(root_nodes):
+        dist[node] = 0
+        queue.append(node)
+
+    index = 0
+    while index < len(queue):
+        current = queue[index]
+        index += 1
+        current_dist = dist[current]
+        for neighbor in adjacency.get(current, set()):
+            if neighbor in dist:
+                continue
+            dist[neighbor] = current_dist + 1
+            queue.append(neighbor)
+    return dist
+
+
+def _monotonic_path_to_roots(
+    adjacency: Dict[Node, Set[Node]],
+    start_nodes: Iterable[Node],
+    root_nodes: Set[Node],
+    dist_to_root: Dict[Node, int],
+    blocked_nodes: Set[Node] | None = None,
+) -> Tuple[List[Node], Node | None]:
+    start_list = sorted(start_nodes)
+    if not start_list:
+        return [], None
+
+    blocked_nodes = blocked_nodes or set()
+    parent: Dict[Node, Node] = {}
+    visited: Set[Node] = set()
+    queue: List[Node] = []
+    for start in start_list:
+        if start in blocked_nodes or start not in dist_to_root:
+            continue
+        queue.append(start)
+        visited.add(start)
+
+    index = 0
+    while index < len(queue):
+        current = queue[index]
+        index += 1
+        if current in root_nodes:
+            path_nodes: List[Node] = [current]
+            while current not in start_list:
+                current = parent[current]
+                path_nodes.append(current)
+            path_nodes.reverse()
+            return path_nodes, path_nodes[-1]
+
+        current_dist = dist_to_root[current]
+        for neighbor in sorted(adjacency.get(current, set())):
+            if neighbor in blocked_nodes:
+                continue
+            if neighbor not in dist_to_root:
+                continue
+            if dist_to_root[neighbor] >= current_dist:
+                continue
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            parent[neighbor] = current
+            queue.append(neighbor)
+
+    return [], None
+
+
 def _shortest_path_to_roots(
     adjacency: Dict[Node, Set[Node]],
     start_nodes: Iterable[Node],
@@ -527,6 +600,8 @@ def compute_feeder_paths(
         if _is_net_node(node) and _SUB_ROOT_PATTERN.match(_net_name(node))
     }
 
+    dist_to_root = _compute_dist_to_roots(adjacency, root_nets)
+
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
     logical_base_terminals: Dict[str, Set[str]] = defaultdict(set)
@@ -535,29 +610,50 @@ def compute_feeder_paths(
             device_terminals.get(device_name, set())
         )
 
-    def _is_f_end(terminals: Iterable[str]) -> bool:
-        input_terms = {"1", "3", "5", "N"}
-        output_terms = {"2", "4", "6", "8"}
-        has_input = any(
-            term in input_terms or _is_neutral_terminal(term)
-            for term in terminals
-        )
-        has_output = any(term in output_terms for term in terminals)
-        return has_input and not has_output
+    base_to_nodes: Dict[str, Set[Node]] = defaultdict(set)
+    for node in device_nodes:
+        name = _device_name(node)
+        if not name.startswith("-"):
+            continue
+        base_name = _logical_base_name(name)
+        base_to_nodes[base_name].add(node)
 
-    feeder_f_bases = {
-        base
-        for base, terminals in logical_base_terminals.items()
-        if _is_f_device(base) and _is_f_end(terminals)
-    }
-    feeder_q_bases = {name for name in device_names if _is_q_device(name)}
-    feeder_x_bases = {name for name in device_names if name.startswith("-X")}
+    def _has_downstream_device_neighbor(base_name: str) -> bool:
+        for node in base_to_nodes.get(base_name, set()):
+            if node not in dist_to_root:
+                continue
+            node_dist = dist_to_root[node]
+            for neighbor in adjacency.get(node, set()):
+                if neighbor not in dist_to_root:
+                    continue
+                if dist_to_root[neighbor] <= node_dist:
+                    continue
+                if _is_net_node(neighbor):
+                    for net_neighbor in adjacency.get(neighbor, set()):
+                        if _is_net_node(net_neighbor):
+                            continue
+                        if net_neighbor not in dist_to_root:
+                            continue
+                        if dist_to_root[net_neighbor] <= node_dist:
+                            continue
+                        if _logical_base_name(_device_name(net_neighbor)) != base_name:
+                            return True
+                    continue
+                if _logical_base_name(_device_name(neighbor)) != base_name:
+                    return True
+        return False
+
+    feeder_bases = sorted(
+        base_name
+        for base_name, nodes in base_to_nodes.items()
+        if any(node in dist_to_root for node in nodes)
+        and not _has_downstream_device_neighbor(base_name)
+    )
+
     feeder_nodes = [
         node
         for node in device_nodes
-        if _logical_base_name(_device_name(node)) in feeder_f_bases
-        or _device_name(node) in feeder_q_bases
-        or _device_name(node) in feeder_x_bases
+        if _logical_base_name(_device_name(node)) in feeder_bases
     ]
     feeder_nodes_sorted = sorted(feeder_nodes)
 
@@ -572,10 +668,13 @@ def compute_feeder_paths(
             if _logical_base_name(_device_name(node)) != feeder_base
         }
 
-        path_any, supply_any = _shortest_path_to_roots(
+        # We orient the graph using dist_to_root and only traverse edges that strictly decrease dist,
+        # to prevent sideways bus hops and loops.
+        path_any, supply_any = _monotonic_path_to_roots(
             adjacency,
             [feeder_node],
             root_nets,
+            dist_to_root,
             blocked_nodes=blocked_nodes,
         )
 
