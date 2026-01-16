@@ -44,7 +44,7 @@ def render_wire_page() -> None:
     from wire_tool.io import load_connection_list
     from wire_tool.validators import validate_required_columns
     from wire_tool.graph import scan_pin_templates
-    from wire_tool.pin_templates import load_templates, save_templates
+    from wire_tool.pin_templates import is_front_only_pinset, load_templates, save_templates
 
     st.subheader(_TITLE)
     uploaded_file = st.file_uploader(
@@ -86,7 +86,7 @@ def render_wire_page() -> None:
         st.dataframe(df_power.head(50), use_container_width=True)
 
     st.subheader("Pin template resolver")
-    templates_path = "data/pin_templates.yaml"
+    templates_path = "data/pin_templates.json"
     templates = load_templates(templates_path)
     templates_needed, inconsistent_devices, scan_debug = scan_pin_templates(
         df_power,
@@ -109,20 +109,26 @@ def render_wire_page() -> None:
             "Define FRONT/BACK pins to persist templates for future runs."
         )
 
-        grouped: dict[str, dict[str, object]] = {}
+        grouped: dict[tuple[str, str], dict[str, object]] = {}
         for entry in templates_needed:
             pinset_key = entry["pinset_key"]
-            grouped[pinset_key] = {
+            type_signature = entry.get("type_signature", "")
+            grouped[(pinset_key, type_signature)] = {
                 "pins": entry.get("pins", []),
                 "example_devices": entry.get("example_devices", []),
                 "example_device_context": entry.get("example_device_context", []),
+                "type_signature": type_signature,
             }
 
-        for pinset_key, data in grouped.items():
+        for (pinset_key, _type_signature), data in grouped.items():
             pins = data["pins"] or pinset_key.split(",")
             devices = data.get("example_devices", [])
             context_rows = data.get("example_device_context", [])
+            type_signature = data.get("type_signature") or ""
+            group_label = type_signature or "(unknown)"
+            group_id = f"{pinset_key}__{group_label}".replace("|", "_")
             st.markdown(f"**Pinset `{pinset_key}`**")
+            st.caption(f"Type signature: {group_label}")
             if devices:
                 st.caption(f"Example devices: {', '.join(devices[:5])}")
             if pins:
@@ -130,11 +136,10 @@ def render_wire_page() -> None:
             if context_rows:
                 st.dataframe(context_rows, use_container_width=True)
 
-            front_key = f"pin_front_{pinset_key}"
-            back_key = f"pin_back_{pinset_key}"
-            neutral_front_key = f"pin_neutral_front_{pinset_key}"
-            neutral_back_key = f"pin_neutral_back_{pinset_key}"
-            allow_unmapped_key = f"pin_allow_unmapped_{pinset_key}"
+            front_key = f"pin_front_{group_id}"
+            back_key = f"pin_back_{group_id}"
+            neutral_front_key = f"pin_neutral_front_{group_id}"
+            neutral_back_key = f"pin_neutral_back_{group_id}"
 
             front_selection = st.multiselect(
                 "FRONT pins",
@@ -155,41 +160,36 @@ def render_wire_page() -> None:
                 "Neutral back token (optional)",
                 key=neutral_back_key,
             )
-            st.checkbox(
-                "Allow unmapped pins",
-                key=allow_unmapped_key,
-                help="Enable this if some pins should remain unmapped.",
-            )
 
         if st.button("Save pin templates"):
             errors: list[str] = []
-            for pinset_key, data in grouped.items():
+            for (pinset_key, _type_signature), data in grouped.items():
+                type_signature = data.get("type_signature") or ""
+                group_label = type_signature or "(unknown)"
+                group_id = f"{pinset_key}__{group_label}".replace("|", "_")
                 pins = data["pins"] or pinset_key.split(",")
-                front_selection = st.session_state.get(f"pin_front_{pinset_key}", [])
-                back_selection = st.session_state.get(f"pin_back_{pinset_key}", [])
+                front_selection = st.session_state.get(f"pin_front_{group_id}", [])
+                back_selection = st.session_state.get(f"pin_back_{group_id}", [])
                 neutral_front = st.session_state.get(
-                    f"pin_neutral_front_{pinset_key}",
+                    f"pin_neutral_front_{group_id}",
                     "",
                 ).strip()
                 neutral_back = st.session_state.get(
-                    f"pin_neutral_back_{pinset_key}",
+                    f"pin_neutral_back_{group_id}",
                     "",
                 ).strip()
-                allow_unmapped = st.session_state.get(
-                    f"pin_allow_unmapped_{pinset_key}",
-                    False,
-                )
+                front_only_allowed = is_front_only_pinset(pinset_key)
 
                 if not front_selection:
                     errors.append(f"{pinset_key}: select at least one FRONT pin.")
                 if set(front_selection) & set(back_selection):
                     errors.append(f"{pinset_key}: FRONT and BACK pins must be disjoint.")
-                if not allow_unmapped:
-                    if set(front_selection) | set(back_selection) != set(pins):
-                        errors.append(
-                            f"{pinset_key}: FRONT+BACK must cover all pins unless "
-                            "unmapped pins are allowed."
-                        )
+                if not back_selection and not front_only_allowed:
+                    errors.append(
+                        f"{pinset_key}: BACK pins are empty; only allowed for front-only pinsets."
+                    )
+                if back_selection and set(front_selection) | set(back_selection) != set(pins):
+                    errors.append(f"{pinset_key}: FRONT+BACK must cover all pins.")
                 if (neutral_front and not neutral_back) or (neutral_back and not neutral_front):
                     errors.append(
                         f"{pinset_key}: provide both neutral tokens or leave both blank."
@@ -206,42 +206,51 @@ def render_wire_page() -> None:
             if errors:
                 st.error("\n".join(errors))
             else:
-                for pinset_key, data in grouped.items():
+                for (pinset_key, _type_signature), data in grouped.items():
+                    type_signature = data.get("type_signature") or ""
+                    group_label = type_signature or "(unknown)"
+                    group_id = f"{pinset_key}__{group_label}".replace("|", "_")
                     pins = data["pins"] or pinset_key.split(",")
                     front_selection = st.session_state.get(
-                        f"pin_front_{pinset_key}",
+                        f"pin_front_{group_id}",
                         [],
                     )
                     back_selection = st.session_state.get(
-                        f"pin_back_{pinset_key}",
+                        f"pin_back_{group_id}",
                         [],
                     )
                     neutral_front = st.session_state.get(
-                        f"pin_neutral_front_{pinset_key}",
+                        f"pin_neutral_front_{group_id}",
                         "",
                     ).strip()
                     neutral_back = st.session_state.get(
-                        f"pin_neutral_back_{pinset_key}",
+                        f"pin_neutral_back_{group_id}",
                         "",
                     ).strip()
+                    front_only = False
+                    if not back_selection and is_front_only_pinset(pinset_key):
+                        front_only = True
 
                     mapping: dict[str, object] = {
-                        "front": front_selection,
-                        "back": back_selection,
+                        "front_pins": front_selection,
+                        "back_pins": back_selection,
+                        "front_only": front_only,
                     }
                     if neutral_front and neutral_back:
-                        mapping["neutral"] = {
-                            "front": neutral_front,
-                            "back": neutral_back,
-                        }
-                    templates.setdefault("pinsets", {})[pinset_key] = mapping
+                        mapping["neutral_front_token"] = neutral_front
+                        mapping["neutral_back_token"] = neutral_back
+                    pinset_entry = templates.setdefault("pinsets", {})
+                    pinset_entry.setdefault(pinset_key, {})
+                    type_signature_key = type_signature or "*"
+                    pinset_entry[pinset_key][type_signature_key] = mapping
 
                 save_templates(templates_path, templates)
                 st.success("Pin templates saved. Rerun the graph to apply changes.")
 
     st.caption(
         "Scan stats: devices={devices_total}, resolved={resolved_devices}, "
-        "unknown pinsets={unknown_pinsets}, inconsistent={inconsistent_devices}".format(
+        "unknown pinsets={unknown_pinsets}, inconsistent={inconsistent_devices}, "
+        "root excluded={root_devices_excluded}".format(
             **scan_debug
         )
     )
@@ -251,7 +260,8 @@ def render_wire_page() -> None:
                 "devices_in_power_rows": scan_debug["devices_total"],
                 "pinsets_total": scan_debug["pinsets_total"],
                 "pinsets_unknown": scan_debug["unknown_pinsets"],
-                "pinsets_resolved": scan_debug["resolved_devices"],
+                "pinsets_resolved": scan_debug["resolved_groups"],
+                "root_devices_excluded": scan_debug["root_devices_excluded"],
             }
         )
         if templates_needed:

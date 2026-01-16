@@ -12,7 +12,7 @@ from wire_tool.pin_templates import (
     load_templates,
     normalize_pin_token,
     pinset_key,
-    resolve_mapping,
+    resolve_template_for_pinset,
 )
 Node = str
 Issue = Dict[str, Any]
@@ -23,6 +23,8 @@ _SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
 _PIN_PAIR_ORDER = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
 _NEUTRAL_PAIRS = (("N", "N'"), ("7N", "8N"))
+_ROOT_DEVICE_DENYLIST = {"-Q81"}
+_ROOT_TYPE_DENYLIST = {"C125S4FM"}
 
 
 def _is_missing(value: Any) -> bool:
@@ -82,6 +84,12 @@ def _pin_sort_key(token: str) -> tuple[int, int | str]:
 
 
 def _normalize_name(value: Any) -> str | None:
+    if _is_missing(value):
+        return None
+    return str(value).strip() or None
+
+
+def _normalize_type(value: Any) -> str | None:
     if _is_missing(value):
         return None
     return str(value).strip() or None
@@ -163,6 +171,11 @@ def _power_pin_token(value: str | None) -> str | None:
     return None
 
 
+def _type_signature(types: Iterable[str]) -> str:
+    unique = sorted({value for value in types if value})
+    return "|".join(unique)
+
+
 def _is_front_terminal(term: str | None) -> bool:
     if not term:
         return False
@@ -178,7 +191,7 @@ def _is_bus_token(token: str) -> bool:
 def build_graph(
     df_power: pd.DataFrame,
     templates: dict | None = None,
-    templates_path: str = "data/pin_templates.yaml",
+    templates_path: str = "data/pin_templates.json",
 ) -> Tuple[
     Dict[Node, Set[Node]],
     List[Issue],
@@ -191,6 +204,7 @@ def build_graph(
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
     device_pinsets: Dict[str, Set[str]] = defaultdict(set)
+    device_type_signatures: Dict[str, Set[str]] = defaultdict(set)
     if templates is None:
         templates = load_templates(templates_path)
 
@@ -204,6 +218,8 @@ def build_graph(
         cp_a = _normalize_terminal(row.get("C.name"))
         name_b = _base_of(name_b_raw)
         cp_b = _normalize_terminal(row.get("C.name.1"))
+        type_a = _normalize_type(row.get("Type"))
+        type_b = _normalize_type(row.get("Type.1"))
 
         from_node = _device_node(name_a, cp_a)
         to_node = _device_node(name_b, cp_b)
@@ -213,11 +229,15 @@ def build_graph(
             power_pin = _power_pin_token(cp_a)
             if power_pin:
                 device_pinsets[name_a].add(power_pin)
+            if type_a:
+                device_type_signatures[name_a].add(type_a)
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
             power_pin = _power_pin_token(cp_b)
             if power_pin:
                 device_pinsets[name_b].add(power_pin)
+            if type_b:
+                device_type_signatures[name_b].add(type_b)
         if name_a_raw and name_a:
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
@@ -266,6 +286,7 @@ def build_graph(
     pin_edges_added, _ = _add_pin_template_edges(
         adjacency,
         device_pinsets,
+        device_type_signatures,
         templates,
     )
     logical_edges_added = pin_edges_added + _add_logical_edges(
@@ -280,7 +301,7 @@ def build_graph(
 def scan_pin_templates(
     df_power: pd.DataFrame,
     templates: dict | None = None,
-    templates_path: str = "data/pin_templates.yaml",
+    templates_path: str = "data/pin_templates.json",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     if templates is None:
         templates = load_templates(templates_path)
@@ -288,6 +309,8 @@ def scan_pin_templates(
     device_pinsets: Dict[str, Set[str]] = defaultdict(set)
     device_pinset_keys_seen: Dict[str, Set[str]] = defaultdict(set)
     device_power_nets: Dict[str, Set[str]] = defaultdict(set)
+    device_neighbors: Dict[str, Set[str]] = defaultdict(set)
+    device_type_signatures: Dict[str, Set[str]] = defaultdict(set)
     for _, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
         row_nets = _extract_root_tokens(wireno)
@@ -295,15 +318,21 @@ def scan_pin_templates(
         name_b = _base_of(_normalize_name(row.get("Name.1")))
         cp_a = _normalize_terminal(row.get("C.name"))
         cp_b = _normalize_terminal(row.get("C.name.1"))
+        type_a = _normalize_type(row.get("Type"))
+        type_b = _normalize_type(row.get("Type.1"))
 
         if name_a and cp_a:
             power_pin = _power_pin_token(cp_a)
             if power_pin:
                 device_pinsets[name_a].add(power_pin)
+            if type_a:
+                device_type_signatures[name_a].add(type_a)
         if name_b and cp_b:
             power_pin = _power_pin_token(cp_b)
             if power_pin:
                 device_pinsets[name_b].add(power_pin)
+            if type_b:
+                device_type_signatures[name_b].add(type_b)
         if name_a:
             pindata_tokens = _extract_pindata_tokens(row.get("PINDATA"))
             filtered_pindata = [token for token in pindata_tokens if is_power_pin(token)]
@@ -313,12 +342,27 @@ def scan_pin_templates(
         for device in (name_a, name_b):
             if device and row_nets:
                 device_power_nets[device].update(row_nets)
+        if name_a and name_b:
+            device_neighbors[name_a].add(name_b)
+            device_neighbors[name_b].add(name_a)
 
-    pinset_devices: Dict[str, List[str]] = defaultdict(list)
-    pinset_pins: Dict[str, List[str]] = {}
+    pinset_devices: Dict[tuple[str, str], List[str]] = defaultdict(list)
+    pinset_pins: Dict[tuple[str, str], List[str]] = {}
     inconsistent_devices: List[Dict[str, Any]] = []
-    resolved_pinsets: Set[str] = set()
+    resolved_pinsets: Set[tuple[str, str]] = set()
+    root_devices: Set[str] = set()
     resolved_devices = 0
+    for device, nets in device_power_nets.items():
+        type_signature = _type_signature(device_type_signatures.get(device, set()))
+        if device in _ROOT_DEVICE_DENYLIST or any(
+            token in _ROOT_TYPE_DENYLIST for token in type_signature.split("|") if token
+        ):
+            root_devices.add(device)
+            continue
+        if not device_neighbors.get(device) and any(
+            _MAIN_ROOT_PATTERN.match(net) for net in nets
+        ):
+            root_devices.add(device)
     for device, pins in device_pinsets.items():
         pinset_keys = device_pinset_keys_seen.get(device, set())
         if len(pinset_keys) > 1:
@@ -329,19 +373,24 @@ def scan_pin_templates(
                 }
             )
             continue
+        if device in root_devices:
+            continue
         device_key = pinset_key(pins)
         if not device_key:
             continue
-        template = resolve_mapping(device_key, templates)
+        type_signature = _type_signature(device_type_signatures.get(device, set()))
+        template = resolve_template_for_pinset(device_key, type_signature, templates)
+        group_key = (device_key, type_signature)
         if template is None:
-            pinset_devices[device_key].append(device)
-            pinset_pins.setdefault(device_key, sorted(pins, key=_pin_sort_key))
+            pinset_devices[group_key].append(device)
+            pinset_pins.setdefault(group_key, sorted(pins, key=_pin_sort_key))
         else:
             resolved_devices += 1
-            resolved_pinsets.add(device_key)
+            resolved_pinsets.add(group_key)
 
     templates_needed: List[Dict[str, Any]] = []
     for key in sorted(pinset_devices):
+        pinset_value, type_signature = key
         devices = sorted(pinset_devices[key])
         example_devices = devices[:10]
         example_context = []
@@ -351,11 +400,13 @@ def scan_pin_templates(
                     "device": device,
                     "nets": sorted(device_power_nets.get(device, set())),
                     "pins": sorted(device_pinsets.get(device, set()), key=_pin_sort_key),
+                    "type_signature": _type_signature(device_type_signatures.get(device, set())),
                 }
             )
         templates_needed.append(
             {
-                "pinset_key": key,
+                "pinset_key": pinset_value,
+                "type_signature": type_signature,
                 "pins": pinset_pins.get(key, []),
                 "example_devices": example_devices,
                 "example_device_context": example_context,
@@ -368,6 +419,8 @@ def scan_pin_templates(
         "unknown_pinsets": len(pinset_devices),
         "inconsistent_devices": len(inconsistent_devices),
         "pinsets_total": len(pinset_devices) + len(resolved_pinsets),
+        "root_devices_excluded": len(root_devices),
+        "resolved_groups": len(resolved_pinsets),
     }
     return templates_needed, inconsistent_devices, debug
 
@@ -447,8 +500,8 @@ def _logical_terminal_edges(
 
 def _template_pairs(mapping: dict, pins: Set[str]) -> List[Tuple[str, str]]:
     pairs: List[Tuple[str, str]] = []
-    front_set = set(mapping.get("front", []))
-    back_set = set(mapping.get("back", []))
+    front_set = set(mapping.get("front_pins", mapping.get("front", [])))
+    back_set = set(mapping.get("back_pins", mapping.get("back", [])))
 
     for left, right in _PIN_PAIR_ORDER:
         if left in pins and right in pins and left in front_set and right in back_set:
@@ -458,19 +511,12 @@ def _template_pairs(mapping: dict, pins: Set[str]) -> List[Tuple[str, str]]:
         if left in pins and right in pins and left in front_set and right in back_set:
             pairs.append((left, right))
 
-    neutral_mapping = mapping.get("neutral")
-    if isinstance(neutral_mapping, dict):
-        left = neutral_mapping.get("front")
-        right = neutral_mapping.get("back")
-        if left and right and left in pins and right in pins:
-            if left in front_set and right in back_set:
-                pairs.append((left, right))
-    for neutral in mapping.get("neutral_map", []) or []:
-        left = neutral.get("front")
-        right = neutral.get("back")
-        if left and right and left in pins and right in pins:
-            if left in front_set and right in back_set:
-                pairs.append((left, right))
+    neutral_front = mapping.get("neutral_front_token")
+    neutral_back = mapping.get("neutral_back_token")
+    if neutral_front and neutral_back:
+        if neutral_front in pins and neutral_back in pins:
+            if neutral_front in front_set and neutral_back in back_set:
+                pairs.append((neutral_front, neutral_back))
 
     return pairs
 
@@ -478,6 +524,7 @@ def _template_pairs(mapping: dict, pins: Set[str]) -> List[Tuple[str, str]]:
 def _add_pin_template_edges(
     adjacency: Dict[Node, Set[Node]],
     device_pinsets: Dict[str, Set[str]],
+    device_type_signatures: Dict[str, Set[str]],
     templates: dict,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     edges_added = 0
@@ -487,12 +534,14 @@ def _add_pin_template_edges(
         key = pinset_key(pins)
         if not key:
             continue
-        mapping = resolve_mapping(key, templates)
+        type_signature = _type_signature(device_type_signatures.get(device_name, set()))
+        mapping = resolve_template_for_pinset(key, type_signature, templates)
         if mapping is None:
             templates_needed.append(
                 {
                     "device": device_name,
                     "pinset_key": key,
+                    "type_signature": type_signature,
                     "pins": sorted(pins, key=_pin_sort_key),
                 }
             )
