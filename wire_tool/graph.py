@@ -536,21 +536,29 @@ def compute_feeder_paths(
             device_terminals.get(device_name, set())
         )
 
-    def _is_f_end(terminals: Iterable[str]) -> bool:
-        input_terms = {"1", "3", "5", "N"}
-        output_terms = {"2", "4", "6", "8"}
-        has_input = any(
-            term in input_terms or _is_neutral_terminal(term)
-            for term in terminals
-        )
-        has_output = any(term in output_terms for term in terminals)
-        return has_input and not has_output
+    def _base_net_tokens(base: str) -> Set[str]:
+        net_tokens: Set[str] = set()
+        for node in device_nodes:
+            if _logical_base_name(_device_name(node)) != base:
+                continue
+            for neighbor in adjacency.get(node, set()):
+                if _is_net_node(neighbor):
+                    net_tokens.add(_net_name(neighbor))
+        return net_tokens
 
-    feeder_f_bases = {
-        base
-        for base, terminals in logical_base_terminals.items()
-        if _is_f_device(base) and _is_f_end(terminals)
-    }
+    # MCB/fuse feeders can have both input/output terminals, so detect them via topology:
+    # a feeder touches at least one bus net (root/subroot) and a non-bus net token.
+    feeder_f_bases = set()
+    for base in logical_base_terminals:
+        if not _is_f_device(base):
+            continue
+        net_tokens = _base_net_tokens(base)
+        if not net_tokens:
+            continue
+        has_bus = any(_is_bus_token(token) for token in net_tokens)
+        has_non_bus = any(not _is_bus_token(token) for token in net_tokens)
+        if has_bus and has_non_bus:
+            feeder_f_bases.add(base)
     feeder_q_bases = {name for name in device_names if _is_q_device(name)}
     feeder_x_bases = {name for name in device_names if name.startswith("-X")}
     feeder_nodes = [
