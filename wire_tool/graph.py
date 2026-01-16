@@ -12,8 +12,8 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
-_ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+(?:\.\d+)?/(L1|L2|L3|N)$")
+_ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+(?:\.\d+)?)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -565,12 +565,23 @@ def compute_feeder_paths(
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
+        subroot_direct_nets = [
+            net for net in direct_nets if _SUB_ROOT_PATTERN.match(net)
+        ]
         feeder_base = _logical_base_name(feeder_name)
         blocked_nodes = {
             node
             for node in feeder_nodes
             if _logical_base_name(_device_name(node)) != feeder_base
         }
+        for subroot_net in subroot_direct_nets:
+            net_node = f"NET:{subroot_net}"
+            for neighbor in adjacency.get(net_node, set()):
+                if _is_net_node(neighbor):
+                    continue
+                if _logical_base_name(_device_name(neighbor)) == feeder_base:
+                    continue
+                blocked_nodes.add(neighbor)
 
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
@@ -633,6 +644,10 @@ def compute_feeder_paths(
         )
 
     aggregated = _aggregate_feeder_paths(feeders)
+    parallel_groups = _group_feeders_by_subroot(
+        feeders,
+        adjacency,
+    )
 
     feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
     stacked_example = None
@@ -664,9 +679,42 @@ def compute_feeder_paths(
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
+        "parallel_groups": parallel_groups,
     }
 
     return feeders, aggregated, issues, debug
+
+
+def _group_feeders_by_subroot(
+    feeders: List[Dict[str, Any]],
+    adjacency: Dict[Node, Set[Node]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Set[str]] = defaultdict(set)
+    for feeder in feeders:
+        subroot = feeder.get("subroot_net") or ""
+        if not subroot:
+            continue
+        grouped[subroot].add(_logical_base_name(feeder["feeder_end_name"]))
+
+    for subroot in list(grouped.keys()):
+        net_node = f"NET:{subroot}"
+        for neighbor in adjacency.get(net_node, set()):
+            if _is_net_node(neighbor):
+                continue
+            device_name = _device_name(neighbor)
+            if not device_name:
+                continue
+            base_name = _logical_base_name(device_name)
+            if _is_f_device(base_name) or _is_q_device(base_name) or base_name.startswith("-X"):
+                grouped[subroot].add(base_name)
+
+    return [
+        {
+            "subroot_net": subroot,
+            "members": sorted(members),
+        }
+        for subroot, members in sorted(grouped.items())
+    ]
 
 
 def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
