@@ -43,8 +43,8 @@ def _preview_reason_ok(df) -> None:
 def render_wire_page() -> None:
     from wire_tool.io import load_connection_list
     from wire_tool.validators import validate_required_columns
-    from wire_tool.graph import filter_power_rows, scan_pin_templates
-    from wire_tool.pin_logic import load_pin_templates, save_pin_templates
+    from wire_tool.graph import scan_pin_templates
+    from wire_tool.pin_templates import load_templates, save_templates
 
     st.subheader(_TITLE)
     uploaded_file = st.file_uploader(
@@ -74,7 +74,7 @@ def render_wire_page() -> None:
         st.error(f"Missing required columns: {', '.join(missing)}")
         st.stop()
 
-    df_power = filter_power_rows(df)
+    df_power = df[df["Line-Function"].astype(str).str.strip().str.lower() == "power"].copy()
     st.metric("Total rows", len(df))
     st.metric("Power rows", len(df_power))
 
@@ -86,15 +86,15 @@ def render_wire_page() -> None:
         st.dataframe(df_power.head(50), use_container_width=True)
 
     st.subheader("Pin template resolver")
-    templates_path = "pin_templates.json"
-    templates = load_pin_templates(templates_path)
+    templates_path = "data/pin_templates.yaml"
+    templates = load_templates(templates_path)
     templates_needed, inconsistent_devices, scan_debug = scan_pin_templates(
         df_power,
         templates=templates,
     )
 
     st.caption(
-        "Only power pins are shown (1-12 + neutral tokens). Aux/control pins are excluded."
+        "Only power pins are shown (1-8 + neutral tokens). Aux/control pins are excluded."
     )
 
     if inconsistent_devices:
@@ -134,6 +134,7 @@ def render_wire_page() -> None:
             back_key = f"pin_back_{pinset_key}"
             neutral_front_key = f"pin_neutral_front_{pinset_key}"
             neutral_back_key = f"pin_neutral_back_{pinset_key}"
+            allow_unmapped_key = f"pin_allow_unmapped_{pinset_key}"
 
             front_selection = st.multiselect(
                 "FRONT pins",
@@ -154,6 +155,11 @@ def render_wire_page() -> None:
                 "Neutral back token (optional)",
                 key=neutral_back_key,
             )
+            st.checkbox(
+                "Allow unmapped pins",
+                key=allow_unmapped_key,
+                help="Enable this if some pins should remain unmapped.",
+            )
 
         if st.button("Save pin templates"):
             errors: list[str] = []
@@ -169,11 +175,21 @@ def render_wire_page() -> None:
                     f"pin_neutral_back_{pinset_key}",
                     "",
                 ).strip()
+                allow_unmapped = st.session_state.get(
+                    f"pin_allow_unmapped_{pinset_key}",
+                    False,
+                )
 
                 if not front_selection:
                     errors.append(f"{pinset_key}: select at least one FRONT pin.")
                 if set(front_selection) & set(back_selection):
                     errors.append(f"{pinset_key}: FRONT and BACK pins must be disjoint.")
+                if not allow_unmapped:
+                    if set(front_selection) | set(back_selection) != set(pins):
+                        errors.append(
+                            f"{pinset_key}: FRONT+BACK must cover all pins unless "
+                            "unmapped pins are allowed."
+                        )
                 if (neutral_front and not neutral_back) or (neutral_back and not neutral_front):
                     errors.append(
                         f"{pinset_key}: provide both neutral tokens or leave both blank."
@@ -214,12 +230,13 @@ def render_wire_page() -> None:
                         "back": back_selection,
                     }
                     if neutral_front and neutral_back:
-                        mapping["neutral_map"] = [
-                            {"front": neutral_front, "back": neutral_back}
-                        ]
-                    templates[pinset_key] = mapping
+                        mapping["neutral"] = {
+                            "front": neutral_front,
+                            "back": neutral_back,
+                        }
+                    templates.setdefault("pinsets", {})[pinset_key] = mapping
 
-                save_pin_templates(templates, templates_path)
+                save_templates(templates_path, templates)
                 st.success("Pin templates saved. Rerun the graph to apply changes.")
 
     st.caption(
@@ -228,6 +245,25 @@ def render_wire_page() -> None:
             **scan_debug
         )
     )
+    with st.expander("Pin resolver debug"):
+        st.write(
+            {
+                "devices_in_power_rows": scan_debug["devices_total"],
+                "pinsets_total": scan_debug["pinsets_total"],
+                "pinsets_unknown": scan_debug["unknown_pinsets"],
+                "pinsets_resolved": scan_debug["resolved_devices"],
+            }
+        )
+        if templates_needed:
+            st.write("Top unknown pinsets:")
+            preview = [
+                {
+                    "pinset_key": entry["pinset_key"],
+                    "example_devices": ", ".join(entry.get("example_devices", [])[:5]),
+                }
+                for entry in templates_needed[:5]
+            ]
+            st.dataframe(preview, use_container_width=True)
 
     if st.button("Compute feeder paths"):
         from wire_tool.graph import build_graph, compute_feeder_paths

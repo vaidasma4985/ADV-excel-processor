@@ -7,12 +7,12 @@ from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import pandas as pd
 
-from wire_tool.pin_logic import (
-    canonical_pinset_key,
-    canonicalize_pin_token,
-    filter_power_pins,
-    load_pin_templates,
-    resolve_pin_template,
+from wire_tool.pin_templates import (
+    is_power_pin,
+    load_templates,
+    normalize_pin_token,
+    pinset_key,
+    resolve_mapping,
 )
 Node = str
 Issue = Dict[str, Any]
@@ -22,7 +22,7 @@ _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
 _SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
 _ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
 _PIN_PAIR_ORDER = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
-_NEUTRAL_PAIRS = (("N", "N'"), ("7N", "8N"), ("N", "7N"))
+_NEUTRAL_PAIRS = (("N", "N'"), ("7N", "8N"))
 
 
 def _is_missing(value: Any) -> bool:
@@ -143,20 +143,6 @@ def _extract_wireno_tokens(wireno: str | None) -> List[str]:
     return [token.strip() for token in tokens if token.strip()]
 
 
-def filter_power_rows(df: pd.DataFrame) -> pd.DataFrame:
-    if "Line-Function" in df.columns:
-        line_fn = df["Line-Function"].astype(str).str.strip().str.lower() == "power"
-    else:
-        line_fn = pd.Series([False] * len(df), index=df.index)
-    if "Wireno" in df.columns:
-        nets_mask = df["Wireno"].map(
-            lambda value: bool(_extract_root_tokens(_normalize_wireno(value)))
-        )
-    else:
-        nets_mask = pd.Series([False] * len(df), index=df.index)
-    return df[line_fn | nets_mask].copy()
-
-
 def _extract_pindata_tokens(value: Any) -> List[str]:
     if _is_missing(value):
         return []
@@ -164,12 +150,17 @@ def _extract_pindata_tokens(value: Any) -> List[str]:
     if not raw:
         return []
     tokens = [token for token in re.split(r"[;,]", raw) if token]
-    normalized = [canonicalize_pin_token(token) for token in tokens]
+    normalized = [normalize_pin_token(token) for token in tokens]
     return [token for token in normalized if token]
 
 
-def _power_pins_no_pe(pins: Iterable[str]) -> List[str]:
-    return [pin for pin in pins if pin != "PE"]
+def _power_pin_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    token = normalize_pin_token(value)
+    if is_power_pin(token):
+        return token
+    return None
 
 
 def _is_front_terminal(term: str | None) -> bool:
@@ -187,7 +178,7 @@ def _is_bus_token(token: str) -> bool:
 def build_graph(
     df_power: pd.DataFrame,
     templates: dict | None = None,
-    templates_path: str = "pin_templates.json",
+    templates_path: str = "data/pin_templates.yaml",
 ) -> Tuple[
     Dict[Node, Set[Node]],
     List[Issue],
@@ -201,7 +192,7 @@ def build_graph(
     device_parts: Dict[str, Set[str]] = defaultdict(set)
     device_pinsets: Dict[str, Set[str]] = defaultdict(set)
     if templates is None:
-        templates = load_pin_templates(templates_path)
+        templates = load_templates(templates_path)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -219,20 +210,20 @@ def build_graph(
 
         if name_a and cp_a:
             device_terminals[name_a].add(cp_a)
-            for token in _power_pins_no_pe(filter_power_pins([cp_a])):
-                device_pinsets[name_a].add(token)
+            power_pin = _power_pin_token(cp_a)
+            if power_pin:
+                device_pinsets[name_a].add(power_pin)
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
-            for token in _power_pins_no_pe(filter_power_pins([cp_b])):
-                device_pinsets[name_b].add(token)
+            power_pin = _power_pin_token(cp_b)
+            if power_pin:
+                device_pinsets[name_b].add(power_pin)
         if name_a_raw and name_a:
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
             device_parts[_logical_base_name(name_b)].add(name_b)
         if name_a:
-            pindata_tokens = _extract_pindata_tokens(row.get("PINDATA"))
-            for token in _power_pins_no_pe(filter_power_pins(pindata_tokens)):
-                device_pinsets[name_a].add(token)
+            _ = _extract_pindata_tokens(row.get("PINDATA"))
 
         if not from_node and not to_node:
             issues.append(
@@ -289,10 +280,10 @@ def build_graph(
 def scan_pin_templates(
     df_power: pd.DataFrame,
     templates: dict | None = None,
-    templates_path: str = "pin_templates.json",
+    templates_path: str = "data/pin_templates.yaml",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     if templates is None:
-        templates = load_pin_templates(templates_path)
+        templates = load_templates(templates_path)
 
     device_pinsets: Dict[str, Set[str]] = defaultdict(set)
     device_pinset_keys_seen: Dict[str, Set[str]] = defaultdict(set)
@@ -306,20 +297,18 @@ def scan_pin_templates(
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
         if name_a and cp_a:
-            for token in _power_pins_no_pe(filter_power_pins([cp_a])):
-                device_pinsets[name_a].add(token)
+            power_pin = _power_pin_token(cp_a)
+            if power_pin:
+                device_pinsets[name_a].add(power_pin)
         if name_b and cp_b:
-            for token in _power_pins_no_pe(filter_power_pins([cp_b])):
-                device_pinsets[name_b].add(token)
+            power_pin = _power_pin_token(cp_b)
+            if power_pin:
+                device_pinsets[name_b].add(power_pin)
         if name_a:
             pindata_tokens = _extract_pindata_tokens(row.get("PINDATA"))
-            filtered_pindata = _power_pins_no_pe(filter_power_pins(pindata_tokens))
-            for token in filtered_pindata:
-                device_pinsets[name_a].add(token)
-            if filtered_pindata:
-                device_pinset_keys_seen[name_a].add(
-                    canonical_pinset_key(filtered_pindata)
-                )
+            filtered_pindata = [token for token in pindata_tokens if is_power_pin(token)]
+            if len(filtered_pindata) >= 2:
+                device_pinset_keys_seen[name_a].add(pinset_key(filtered_pindata))
 
         for device in (name_a, name_b):
             if device and row_nets:
@@ -328,6 +317,7 @@ def scan_pin_templates(
     pinset_devices: Dict[str, List[str]] = defaultdict(list)
     pinset_pins: Dict[str, List[str]] = {}
     inconsistent_devices: List[Dict[str, Any]] = []
+    resolved_pinsets: Set[str] = set()
     resolved_devices = 0
     for device, pins in device_pinsets.items():
         pinset_keys = device_pinset_keys_seen.get(device, set())
@@ -339,15 +329,16 @@ def scan_pin_templates(
                 }
             )
             continue
-        pinset_key = canonical_pinset_key(pins)
-        if not pinset_key:
+        device_key = pinset_key(pins)
+        if not device_key:
             continue
-        template, _ = resolve_pin_template(pins, templates)
+        template = resolve_mapping(device_key, templates)
         if template is None:
-            pinset_devices[pinset_key].append(device)
-            pinset_pins.setdefault(pinset_key, sorted(pins, key=_pin_sort_key))
+            pinset_devices[device_key].append(device)
+            pinset_pins.setdefault(device_key, sorted(pins, key=_pin_sort_key))
         else:
             resolved_devices += 1
+            resolved_pinsets.add(device_key)
 
     templates_needed: List[Dict[str, Any]] = []
     for key in sorted(pinset_devices):
@@ -376,6 +367,7 @@ def scan_pin_templates(
         "resolved_devices": resolved_devices,
         "unknown_pinsets": len(pinset_devices),
         "inconsistent_devices": len(inconsistent_devices),
+        "pinsets_total": len(pinset_devices) + len(resolved_pinsets),
     }
     return templates_needed, inconsistent_devices, debug
 
@@ -466,13 +458,19 @@ def _template_pairs(mapping: dict, pins: Set[str]) -> List[Tuple[str, str]]:
         if left in pins and right in pins and left in front_set and right in back_set:
             pairs.append((left, right))
 
+    neutral_mapping = mapping.get("neutral")
+    if isinstance(neutral_mapping, dict):
+        left = neutral_mapping.get("front")
+        right = neutral_mapping.get("back")
+        if left and right and left in pins and right in pins:
+            if left in front_set and right in back_set:
+                pairs.append((left, right))
     for neutral in mapping.get("neutral_map", []) or []:
         left = neutral.get("front")
         right = neutral.get("back")
-        if not left or not right:
-            continue
-        if left in pins and right in pins and left in front_set and right in back_set:
-            pairs.append((left, right))
+        if left and right and left in pins and right in pins:
+            if left in front_set and right in back_set:
+                pairs.append((left, right))
 
     return pairs
 
@@ -486,7 +484,10 @@ def _add_pin_template_edges(
     templates_needed: List[Dict[str, Any]] = []
 
     for device_name, pins in sorted(device_pinsets.items()):
-        mapping, key = resolve_pin_template(pins, templates)
+        key = pinset_key(pins)
+        if not key:
+            continue
+        mapping = resolve_mapping(key, templates)
         if mapping is None:
             templates_needed.append(
                 {
