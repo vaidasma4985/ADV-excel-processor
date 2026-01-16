@@ -8,7 +8,9 @@ from typing import Any, Dict, Iterable, List, Set, Tuple
 import pandas as pd
 
 from wire_tool.pin_logic import (
+    canonical_pinset_key,
     canonicalize_pin_token,
+    filter_power_pins,
     load_pin_templates,
     resolve_pin_template,
 )
@@ -141,6 +143,20 @@ def _extract_wireno_tokens(wireno: str | None) -> List[str]:
     return [token.strip() for token in tokens if token.strip()]
 
 
+def filter_power_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if "Line-Function" in df.columns:
+        line_fn = df["Line-Function"].astype(str).str.strip().str.lower() == "power"
+    else:
+        line_fn = pd.Series([False] * len(df), index=df.index)
+    if "Wireno" in df.columns:
+        nets_mask = df["Wireno"].map(
+            lambda value: bool(_extract_root_tokens(_normalize_wireno(value)))
+        )
+    else:
+        nets_mask = pd.Series([False] * len(df), index=df.index)
+    return df[line_fn | nets_mask].copy()
+
+
 def _extract_pindata_tokens(value: Any) -> List[str]:
     if _is_missing(value):
         return []
@@ -150,6 +166,10 @@ def _extract_pindata_tokens(value: Any) -> List[str]:
     tokens = [token for token in re.split(r"[;,]", raw) if token]
     normalized = [canonicalize_pin_token(token) for token in tokens]
     return [token for token in normalized if token]
+
+
+def _power_pins_no_pe(pins: Iterable[str]) -> List[str]:
+    return [pin for pin in pins if pin != "PE"]
 
 
 def _is_front_terminal(term: str | None) -> bool:
@@ -199,16 +219,19 @@ def build_graph(
 
         if name_a and cp_a:
             device_terminals[name_a].add(cp_a)
-            device_pinsets[name_a].add(canonicalize_pin_token(cp_a))
+            for token in _power_pins_no_pe(filter_power_pins([cp_a])):
+                device_pinsets[name_a].add(token)
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
-            device_pinsets[name_b].add(canonicalize_pin_token(cp_b))
+            for token in _power_pins_no_pe(filter_power_pins([cp_b])):
+                device_pinsets[name_b].add(token)
         if name_a_raw and name_a:
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
             device_parts[_logical_base_name(name_b)].add(name_b)
         if name_a:
-            for token in _extract_pindata_tokens(row.get("PINDATA")):
+            pindata_tokens = _extract_pindata_tokens(row.get("PINDATA"))
+            for token in _power_pins_no_pe(filter_power_pins(pindata_tokens)):
                 device_pinsets[name_a].add(token)
 
         if not from_node and not to_node:
@@ -267,45 +290,84 @@ def scan_pin_templates(
     df_power: pd.DataFrame,
     templates: dict | None = None,
     templates_path: str = "pin_templates.json",
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     if templates is None:
         templates = load_pin_templates(templates_path)
 
     device_pinsets: Dict[str, Set[str]] = defaultdict(set)
+    device_pinset_keys_seen: Dict[str, Set[str]] = defaultdict(set)
+    device_power_nets: Dict[str, Set[str]] = defaultdict(set)
     for _, row in df_power.iterrows():
+        wireno = _normalize_wireno(row.get("Wireno"))
+        row_nets = _extract_root_tokens(wireno)
         name_a = _base_of(_normalize_name(row.get("Name")))
         name_b = _base_of(_normalize_name(row.get("Name.1")))
         cp_a = _normalize_terminal(row.get("C.name"))
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
         if name_a and cp_a:
-            device_pinsets[name_a].add(canonicalize_pin_token(cp_a))
-        if name_b and cp_b:
-            device_pinsets[name_b].add(canonicalize_pin_token(cp_b))
-        if name_a:
-            for token in _extract_pindata_tokens(row.get("PINDATA")):
+            for token in _power_pins_no_pe(filter_power_pins([cp_a])):
                 device_pinsets[name_a].add(token)
+        if name_b and cp_b:
+            for token in _power_pins_no_pe(filter_power_pins([cp_b])):
+                device_pinsets[name_b].add(token)
+        if name_a:
+            pindata_tokens = _extract_pindata_tokens(row.get("PINDATA"))
+            filtered_pindata = _power_pins_no_pe(filter_power_pins(pindata_tokens))
+            for token in filtered_pindata:
+                device_pinsets[name_a].add(token)
+            if filtered_pindata:
+                device_pinset_keys_seen[name_a].add(
+                    canonical_pinset_key(filtered_pindata)
+                )
+
+        for device in (name_a, name_b):
+            if device and row_nets:
+                device_power_nets[device].update(row_nets)
 
     pinset_devices: Dict[str, List[str]] = defaultdict(list)
     pinset_pins: Dict[str, List[str]] = {}
+    inconsistent_devices: List[Dict[str, Any]] = []
     resolved_devices = 0
     for device, pins in device_pinsets.items():
-        template, key = resolve_pin_template(pins, templates)
+        pinset_keys = device_pinset_keys_seen.get(device, set())
+        if len(pinset_keys) > 1:
+            inconsistent_devices.append(
+                {
+                    "device": device,
+                    "pinset_keys": sorted(pinset_keys),
+                }
+            )
+            continue
+        pinset_key = canonical_pinset_key(pins)
+        if not pinset_key:
+            continue
+        template, _ = resolve_pin_template(pins, templates)
         if template is None:
-            pinset_devices[key].append(device)
-            pinset_pins.setdefault(key, sorted(pins, key=_pin_sort_key))
+            pinset_devices[pinset_key].append(device)
+            pinset_pins.setdefault(pinset_key, sorted(pins, key=_pin_sort_key))
         else:
             resolved_devices += 1
 
     templates_needed: List[Dict[str, Any]] = []
     for key in sorted(pinset_devices):
         devices = sorted(pinset_devices[key])
+        example_devices = devices[:10]
+        example_context = []
+        for device in example_devices:
+            example_context.append(
+                {
+                    "device": device,
+                    "nets": sorted(device_power_nets.get(device, set())),
+                    "pins": sorted(device_pinsets.get(device, set()), key=_pin_sort_key),
+                }
+            )
         templates_needed.append(
             {
-                "device": devices[0] if devices else "",
-                "devices": devices,
                 "pinset_key": key,
                 "pins": pinset_pins.get(key, []),
+                "example_devices": example_devices,
+                "example_device_context": example_context,
             }
         )
 
@@ -313,8 +375,9 @@ def scan_pin_templates(
         "devices_total": len(device_pinsets),
         "resolved_devices": resolved_devices,
         "unknown_pinsets": len(pinset_devices),
+        "inconsistent_devices": len(inconsistent_devices),
     }
-    return templates_needed, debug
+    return templates_needed, inconsistent_devices, debug
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:

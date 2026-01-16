@@ -43,7 +43,7 @@ def _preview_reason_ok(df) -> None:
 def render_wire_page() -> None:
     from wire_tool.io import load_connection_list
     from wire_tool.validators import validate_required_columns
-    from wire_tool.graph import scan_pin_templates
+    from wire_tool.graph import filter_power_rows, scan_pin_templates
     from wire_tool.pin_logic import load_pin_templates, save_pin_templates
 
     st.subheader(_TITLE)
@@ -74,7 +74,7 @@ def render_wire_page() -> None:
         st.error(f"Missing required columns: {', '.join(missing)}")
         st.stop()
 
-    df_power = df[df["Line-Function"] == "Power"].copy()
+    df_power = filter_power_rows(df)
     st.metric("Total rows", len(df))
     st.metric("Power rows", len(df_power))
 
@@ -88,7 +88,18 @@ def render_wire_page() -> None:
     st.subheader("Pin template resolver")
     templates_path = "pin_templates.json"
     templates = load_pin_templates(templates_path)
-    templates_needed, scan_debug = scan_pin_templates(df_power, templates=templates)
+    templates_needed, inconsistent_devices, scan_debug = scan_pin_templates(
+        df_power,
+        templates=templates,
+    )
+
+    st.caption(
+        "Only power pins are shown (1-12 + neutral tokens). Aux/control pins are excluded."
+    )
+
+    if inconsistent_devices:
+        st.warning("Inconsistent power pinsets detected; templates will not be requested.")
+        st.dataframe(inconsistent_devices, use_container_width=True)
 
     if not templates_needed:
         st.success("All pinsets resolved by built-ins or saved templates.")
@@ -101,22 +112,23 @@ def render_wire_page() -> None:
         grouped: dict[str, dict[str, object]] = {}
         for entry in templates_needed:
             pinset_key = entry["pinset_key"]
-            grouped.setdefault(
-                pinset_key,
-                {
-                    "pins": entry.get("pins", []),
-                    "devices": [],
-                },
-            )
-            devices = entry.get("devices") or [entry["device"]]
-            grouped[pinset_key]["devices"].extend(devices)
+            grouped[pinset_key] = {
+                "pins": entry.get("pins", []),
+                "example_devices": entry.get("example_devices", []),
+                "example_device_context": entry.get("example_device_context", []),
+            }
 
         for pinset_key, data in grouped.items():
             pins = data["pins"] or pinset_key.split(",")
-            devices = data["devices"]
+            devices = data.get("example_devices", [])
+            context_rows = data.get("example_device_context", [])
             st.markdown(f"**Pinset `{pinset_key}`**")
             if devices:
                 st.caption(f"Example devices: {', '.join(devices[:5])}")
+            if pins:
+                st.caption(f"Power pins: {', '.join(pins)}")
+            if context_rows:
+                st.dataframe(context_rows, use_container_width=True)
 
             front_key = f"pin_front_{pinset_key}"
             back_key = f"pin_back_{pinset_key}"
@@ -212,7 +224,9 @@ def render_wire_page() -> None:
 
     st.caption(
         "Scan stats: devices={devices_total}, resolved={resolved_devices}, "
-        "unknown pinsets={unknown_pinsets}".format(**scan_debug)
+        "unknown pinsets={unknown_pinsets}, inconsistent={inconsistent_devices}".format(
+            **scan_debug
+        )
     )
 
     if st.button("Compute feeder paths"):

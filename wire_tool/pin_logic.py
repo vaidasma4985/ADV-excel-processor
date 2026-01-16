@@ -7,6 +7,9 @@ from typing import Iterable
 
 
 _DEFAULT_TEMPLATE_PATH = "pin_templates.json"
+_POWER_NEUTRAL_TOKENS = {"N", "N'", "7N", "8N", "NS"}
+_POWER_PE_TOKENS = {"PE"}
+_POWER_NUMERIC_ALLOWED = set(range(1, 13))
 
 
 def canonicalize_pin_token(token: str) -> str:
@@ -27,11 +30,35 @@ def _pin_sort_key(token: str) -> tuple[int, int | str]:
     return (1, token)
 
 
-def canonical_pinset_key(pins: Iterable[str]) -> str:
+def canonical_pinset_key(pins: Iterable[str], include_pe: bool = False) -> str:
     unique_tokens = {canonicalize_pin_token(pin) for pin in pins if pin is not None}
     unique_tokens.discard("")
+    if not include_pe:
+        unique_tokens -= _POWER_PE_TOKENS
     sorted_tokens = sorted(unique_tokens, key=_pin_sort_key)
     return ",".join(sorted_tokens)
+
+
+def is_power_pin_token(token: str) -> bool:
+    canonical = canonicalize_pin_token(token)
+    if canonical in _POWER_NEUTRAL_TOKENS:
+        return True
+    if canonical in _POWER_PE_TOKENS:
+        return True
+    if canonical.isdigit():
+        return int(canonical) in _POWER_NUMERIC_ALLOWED
+    return False
+
+
+def filter_power_pins(pins: Iterable[str]) -> list[str]:
+    filtered: list[str] = []
+    for pin in pins:
+        canonical = canonicalize_pin_token(pin)
+        if not canonical:
+            continue
+        if is_power_pin_token(canonical):
+            filtered.append(canonical)
+    return filtered
 
 
 def load_pin_templates(path: str = _DEFAULT_TEMPLATE_PATH) -> dict:
