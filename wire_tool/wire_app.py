@@ -188,6 +188,18 @@ def render_wire_page() -> None:
                         "feeder_ends_found": debug["feeder_ends_found"],
                         "feeder_end_bases_count": debug["feeder_end_bases_count"],
                         "feeder_end_bases_sample": debug["feeder_end_bases_sample"],
+                        "cable_feeder_end_bases_raw_count": debug[
+                            "cable_feeder_end_bases_raw_count"
+                        ],
+                        "cable_feeder_end_bases_raw_sample": debug[
+                            "cable_feeder_end_bases_raw_sample"
+                        ],
+                        "cable_feeder_end_bases_reachable_count": debug[
+                            "cable_feeder_end_bases_reachable_count"
+                        ],
+                        "cable_feeder_end_bases_reachable_sample": debug[
+                            "cable_feeder_end_bases_reachable_sample"
+                        ],
                         "stacked_example": debug["stacked_example"],
                         "stacked_groups_sample": debug["stacked_groups_sample"],
                         "logical_edges_added": debug["logical_edges_added"],

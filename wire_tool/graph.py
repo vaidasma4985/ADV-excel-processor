@@ -12,8 +12,8 @@ Issue = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
-_SUB_ROOT_PATTERN = re.compile(r"^F\d+/(L1|L2|L3|N)$")
-_ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+)/(L1|L2|L3|N)")
+_SUB_ROOT_PATTERN = re.compile(r"^F\d+(?:\.\d+)?/(L1|L2|L3|N)$")
+_ROOT_TOKEN_PATTERN = re.compile(r"(MT2|LT2|MT|IT|LT|F\d+(?:\.\d+)?)/(L1|L2|L3|N)")
 _PASS_THROUGH_PAIRS = (
     ("1", "2"),
     ("3", "4"),
@@ -635,6 +635,33 @@ def compute_feeder_paths(
     aggregated = _aggregate_feeder_paths(feeders)
 
     feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
+    cable_feeder_end_bases_raw = sorted(
+        {
+            feeder["feeder_end_name"]
+            for feeder in feeders
+            if feeder["feeder_end_name"].startswith("-X")
+        }
+    )
+    cable_feeder_end_bases_reachable = sorted(
+        {
+            feeder["feeder_end_name"]
+            for feeder in feeders
+            if feeder["feeder_end_name"].startswith("-X") and feeder["reachable"]
+        }
+    )
+    cable_feeder_examples = cable_feeder_end_bases_raw[:5]
+    issues.append(
+        _issue(
+            "INFO",
+            "W301",
+            "Cable feeder candidates summary.",
+            context={
+                "candidates": len(cable_feeder_end_bases_raw),
+                "reachable": len(cable_feeder_end_bases_reachable),
+                "examples": cable_feeder_examples,
+            },
+        )
+    )
     stacked_example = None
     for base_name in sorted(device_parts):
         parts = device_parts.get(base_name, set())
@@ -660,6 +687,10 @@ def compute_feeder_paths(
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
+        "cable_feeder_end_bases_raw_count": len(cable_feeder_end_bases_raw),
+        "cable_feeder_end_bases_raw_sample": cable_feeder_end_bases_raw[:10],
+        "cable_feeder_end_bases_reachable_count": len(cable_feeder_end_bases_reachable),
+        "cable_feeder_end_bases_reachable_sample": cable_feeder_end_bases_reachable[:10],
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
@@ -739,3 +770,12 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
         )
 
     return aggregated
+
+
+def _self_check_regex() -> None:
+    assert _SUB_ROOT_PATTERN.match("F611.1/L1")
+    assert _ROOT_TOKEN_PATTERN.findall("F611.1/L1") == [("F611.1", "L1")]
+
+
+if __name__ == "__main__":
+    _self_check_regex()
