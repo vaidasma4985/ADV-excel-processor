@@ -163,11 +163,13 @@ def build_graph(
     Dict[str, Set[str]],
     Dict[str, Set[str]],
     int,
+    Dict[str, int],
 ]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
+    wired_between_parts: Set[str] = set()
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -191,6 +193,20 @@ def build_graph(
             device_parts[_logical_base_name(name_a)].add(name_a)
         if name_b_raw and name_b:
             device_parts[_logical_base_name(name_b)].add(name_b)
+        if name_a_raw and name_b_raw:
+            name_a_part = _base_device_name(name_a_raw)
+            name_b_part = _base_device_name(name_b_raw)
+            if name_a_part and name_b_part:
+                base_a = _logical_base_name(name_a_part)
+                base_b = _logical_base_name(name_b_part)
+                if (
+                    base_a
+                    and base_a == base_b
+                    and name_a_part != name_b_part
+                    and re.search(r"\.\d+$", name_a_part)
+                    and re.search(r"\.\d+$", name_b_part)
+                ):
+                    wired_between_parts.add(base_a)
 
         if not from_node and not to_node:
             issues.append(
@@ -238,9 +254,21 @@ def build_graph(
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
 
-    logical_edges_added = _add_logical_edges(adjacency, device_terminals, device_parts)
+    logical_edges_added, stacked_debug = _add_logical_edges(
+        adjacency,
+        device_terminals,
+        device_parts,
+        wired_between_parts,
+    )
 
-    return adjacency, issues, device_terminals, device_parts, logical_edges_added
+    return (
+        adjacency,
+        issues,
+        device_terminals,
+        device_parts,
+        logical_edges_added,
+        stacked_debug,
+    )
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -353,28 +381,87 @@ def _add_logical_edges(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]],
     logical_groups: Dict[str, Set[str]],
-) -> int:
+    wired_between_parts: Set[str],
+) -> Tuple[int, Dict[str, int]]:
     logical_edges_added = 0
+    stacked_candidates_count = 0
+    stacked_applied_count = 0
+    stacked_rejected_wired_count = 0
+    stacked_rejected_pin_mismatch_count = 0
+
+    def _part_side(terminals: Iterable[str]) -> str | None:
+        if not terminals:
+            return None
+        front = False
+        back = False
+        for term in terminals:
+            if _is_neutral_terminal(term):
+                kind = _neutral_kind(term)
+                if kind == "front":
+                    front = True
+                elif kind == "end":
+                    back = True
+                else:
+                    return None
+            elif term.isdigit():
+                if int(term) % 2 == 1:
+                    front = True
+                else:
+                    back = True
+            else:
+                return None
+        if front and back:
+            return "mixed"
+        if front:
+            return "front"
+        if back:
+            return "back"
+        return None
+
     for base_name in sorted(logical_groups):
         parts = sorted(logical_groups[base_name])
-        if len(parts) < 2:
+        part_map = {}
+        for part in parts:
+            match = re.search(r"\.(1|2)$", part)
+            if match:
+                part_map[match.group(1)] = part
+        if "1" not in part_map or "2" not in part_map:
             continue
-        for left, right in zip(parts, parts[1:]):
-            terminals_left = device_terminals.get(left, set())
-            terminals_right = device_terminals.get(right, set())
-            for term_left, term_right in _logical_terminal_edges(
-                terminals_left,
-                terminals_right,
-            ):
-                node_left = f"{left}:{term_left}"
-                node_right = f"{right}:{term_right}"
-                adjacency.setdefault(node_left, set())
-                adjacency.setdefault(node_right, set())
-                if node_right not in adjacency[node_left]:
-                    adjacency[node_left].add(node_right)
-                    adjacency[node_right].add(node_left)
-                    logical_edges_added += 1
-    return logical_edges_added
+        stacked_candidates_count += 1
+        if base_name in wired_between_parts:
+            stacked_rejected_wired_count += 1
+            continue
+        part_one = part_map["1"]
+        part_two = part_map["2"]
+        terminals_one = device_terminals.get(part_one, set())
+        terminals_two = device_terminals.get(part_two, set())
+        side_one = _part_side(terminals_one)
+        side_two = _part_side(terminals_two)
+        if {side_one, side_two} != {"front", "back"}:
+            stacked_rejected_pin_mismatch_count += 1
+            continue
+        terminals_front = terminals_one if side_one == "front" else terminals_two
+        terminals_back = terminals_two if side_one == "front" else terminals_one
+        for term_left, term_right in _logical_terminal_edges(
+            terminals_front,
+            terminals_back,
+        ):
+            node_left = f"{part_one if side_one == 'front' else part_two}:{term_left}"
+            node_right = f"{part_two if side_one == 'front' else part_one}:{term_right}"
+            adjacency.setdefault(node_left, set())
+            adjacency.setdefault(node_right, set())
+            if node_right not in adjacency[node_left]:
+                adjacency[node_left].add(node_right)
+                adjacency[node_right].add(node_left)
+                logical_edges_added += 1
+        stacked_applied_count += 1
+
+    return logical_edges_added, {
+        "stacked_candidates_count": stacked_candidates_count,
+        "stacked_applied_count": stacked_applied_count,
+        "stacked_rejected_wired_count": stacked_rejected_wired_count,
+        "stacked_rejected_pin_mismatch_count": stacked_rejected_pin_mismatch_count,
+    }
 
 
 def _shortest_path_to_roots(
@@ -503,11 +590,30 @@ def _is_f_device(name: str) -> bool:
     return bool(re.match(r"^-F\d+", name))
 
 
+def _preferred_fuse_for_q(name: str) -> str | None:
+    match = re.match(r"^-Q(\d+)$", name)
+    if not match:
+        return None
+    digits = match.group(1)
+    if len(digits) < 2:
+        return None
+    suffix = digits[-1]
+    if suffix not in {"7", "8"}:
+        return None
+    try:
+        base_val = int(digits[:-1])
+    except ValueError:
+        return None
+    preferred_val = base_val + (1 if suffix == "8" else 0)
+    return f"-F{preferred_val}"
+
+
 def compute_feeder_paths(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: int | None = None,
+    stacked_debug: Dict[str, int] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -571,6 +677,13 @@ def compute_feeder_paths(
             for node in feeder_nodes
             if _logical_base_name(_device_name(node)) != feeder_base
         }
+        if _is_q_device(feeder_name):
+            preferred_fuse = _preferred_fuse_for_q(feeder_name)
+            if preferred_fuse:
+                for node in device_nodes:
+                    node_base = _logical_base_name(_device_name(node))
+                    if _is_f_device(node_base) and node_base != preferred_fuse:
+                        blocked_nodes.add(node)
 
         path_any, supply_any = _shortest_path_to_roots(
             adjacency,
@@ -652,6 +765,7 @@ def compute_feeder_paths(
         if len(parts) > 1
     ][:3]
 
+    stacked_debug = stacked_debug or {}
     debug = {
         "total_nodes": len(adjacency),
         "total_edges": sum(len(neighbors) for neighbors in adjacency.values()) // 2,
@@ -663,6 +777,16 @@ def compute_feeder_paths(
         "stacked_example": stacked_example,
         "stacked_groups_sample": stacked_groups_sample,
         "logical_edges_added": logical_edges_added or 0,
+        "stacked_candidates_count": stacked_debug.get("stacked_candidates_count", 0),
+        "stacked_applied_count": stacked_debug.get("stacked_applied_count", 0),
+        "stacked_rejected_wired_count": stacked_debug.get(
+            "stacked_rejected_wired_count",
+            0,
+        ),
+        "stacked_rejected_pin_mismatch_count": stacked_debug.get(
+            "stacked_rejected_pin_mismatch_count",
+            0,
+        ),
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
     }
 

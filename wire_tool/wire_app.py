@@ -84,12 +84,14 @@ def render_wire_page() -> None:
             device_terminals,
             device_parts,
             logical_edges_added,
+            stacked_debug,
         ) = build_graph(df_power)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
+            stacked_debug=stacked_debug,
         )
         issues.extend(feeder_issues)
 
@@ -191,6 +193,12 @@ def render_wire_page() -> None:
                         "stacked_example": debug["stacked_example"],
                         "stacked_groups_sample": debug["stacked_groups_sample"],
                         "logical_edges_added": debug["logical_edges_added"],
+                        "stacked_candidates_count": debug["stacked_candidates_count"],
+                        "stacked_applied_count": debug["stacked_applied_count"],
+                        "stacked_rejected_wired_count": debug["stacked_rejected_wired_count"],
+                        "stacked_rejected_pin_mismatch_count": debug[
+                            "stacked_rejected_pin_mismatch_count"
+                        ],
                         "unreachable_feeders_count": debug["unreachable_feeders_count"],
                     }
                 )
