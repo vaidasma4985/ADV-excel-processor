@@ -184,7 +184,9 @@ def build_graph(
     issues: List[Issue] = []
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
     device_parts: Dict[str, Set[str]] = defaultdict(set)
+    device_nets: Dict[str, Set[str]] = defaultdict(set)
     wired_between_parts: Set[str] = set()
+    direct_part_edges: Set[frozenset[str]] = set()
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -219,6 +221,13 @@ def build_graph(
                 and _part_base(name_a_raw) == _part_base(name_b_raw)
             ):
                 wired_between_parts.add(_part_base(name_a_raw))
+                direct_part_edges.add(frozenset({name_a_raw, name_b_raw}))
+
+        if wireno_tokens:
+            if name_a_raw:
+                device_nets[name_a_raw].update(wireno_tokens)
+            if name_b_raw:
+                device_nets[name_b_raw].update(wireno_tokens)
 
         if not from_node and not to_node:
             issues.append(
@@ -275,6 +284,8 @@ def build_graph(
         device_parts,
         device_templates or {},
         wired_between_parts,
+        device_nets,
+        direct_part_edges,
     )
 
     return adjacency, issues, device_terminals, device_parts, logical_edges_stats
@@ -412,12 +423,16 @@ def _add_logical_edges(
     logical_groups: Dict[str, Set[str]],
     device_templates: Dict[str, Dict[str, Any]],
     wired_between_parts: Set[str],
+    device_nets: Dict[str, Set[str]],
+    direct_part_edges: Set[frozenset[str]],
 ) -> Dict[str, int]:
     logical_edges_added = 0
     logical_edges_skipped = 0
     stacked_candidates = 0
     stacked_applied = 0
     stacked_rejected_wired = 0
+    stacked_rejected_ambiguous = 0
+    stacked_rejected_examples: List[Dict[str, Any]] = []
     stacked_rejected_pin_mismatch = 0
     for base_name in sorted(logical_groups):
         parts = logical_groups[base_name]
@@ -430,10 +445,37 @@ def _add_logical_edges(
             continue
         stacked_candidates += 1
         base_part_name = _part_base(candidates[0])
-        if base_part_name in wired_between_parts:
-            stacked_rejected_wired += 1
-            continue
         left, right = sorted(candidates)
+        direct_edge = frozenset({left, right}) in direct_part_edges
+        nets_left = device_nets.get(left, set())
+        nets_right = device_nets.get(right, set())
+        common_nets = sorted(nets_left & nets_right)
+        if base_part_name in wired_between_parts or direct_edge or common_nets:
+            stacked_rejected_wired += 1
+            if len(stacked_rejected_examples) < 3:
+                stacked_rejected_examples.append(
+                    {
+                        "base": base_part_name,
+                        "parts": [left, right],
+                        "common_nets": common_nets,
+                        "found_edge": direct_edge,
+                        "reason": "wired",
+                    }
+                )
+            continue
+        if not nets_left or not nets_right:
+            stacked_rejected_ambiguous += 1
+            if len(stacked_rejected_examples) < 3:
+                stacked_rejected_examples.append(
+                    {
+                        "base": base_part_name,
+                        "parts": [left, right],
+                        "common_nets": common_nets,
+                        "found_edge": direct_edge,
+                        "reason": "ambiguous",
+                    }
+                )
+            continue
         terminals_left = device_terminals.get(left, set())
         terminals_right = device_terminals.get(right, set())
         role_left = _stacked_split_role(terminals_left, device_templates.get(left))
@@ -461,7 +503,9 @@ def _add_logical_edges(
         "stacked_candidates": stacked_candidates,
         "stacked_applied": stacked_applied,
         "stacked_rejected_wired": stacked_rejected_wired,
+        "stacked_rejected_ambiguous": stacked_rejected_ambiguous,
         "stacked_rejected_pin_mismatch": stacked_rejected_pin_mismatch,
+        "stacked_rejected_examples": stacked_rejected_examples,
     }
 
 
@@ -856,8 +900,17 @@ def compute_feeder_paths(
         "stacked_candidates_count": logical_edges_stats.get("stacked_candidates", 0),
         "stacked_applied_count": logical_edges_stats.get("stacked_applied", 0),
         "stacked_rejected_wired_count": logical_edges_stats.get("stacked_rejected_wired", 0),
+        "stacked_rejected_ambiguous_count": logical_edges_stats.get(
+            "stacked_rejected_ambiguous", 0
+        ),
         "stacked_rejected_pin_mismatch_count": logical_edges_stats.get(
             "stacked_rejected_pin_mismatch", 0
+        ),
+        "stacked_groups_rejected_due_to_wires_count": logical_edges_stats.get(
+            "stacked_rejected_wired", 0
+        ),
+        "stacked_groups_rejected_examples": logical_edges_stats.get(
+            "stacked_rejected_examples", []
         ),
         "q_branch_heuristic_applied_count": q_heuristic_applied,
         "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
