@@ -186,7 +186,7 @@ def build_graph(
     device_parts: Dict[str, Set[str]] = defaultdict(set)
     device_nets: Dict[str, Set[str]] = defaultdict(set)
     wired_between_parts: Set[str] = set()
-    direct_part_edges: Set[frozenset[str]] = set()
+    direct_device_edges: Set[frozenset[str]] = set()
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -221,7 +221,9 @@ def build_graph(
                 and _part_base(name_a_raw) == _part_base(name_b_raw)
             ):
                 wired_between_parts.add(_part_base(name_a_raw))
-                direct_part_edges.add(frozenset({name_a_raw, name_b_raw}))
+                direct_device_edges.add(frozenset({name_a_raw, name_b_raw}))
+            if name_a_raw != name_b_raw:
+                direct_device_edges.add(frozenset({name_a_raw, name_b_raw}))
 
         if wireno_tokens:
             if name_a_raw:
@@ -281,11 +283,10 @@ def build_graph(
     logical_edges_stats = _add_logical_edges(
         adjacency,
         device_terminals,
-        device_parts,
         device_templates or {},
         wired_between_parts,
         device_nets,
-        direct_part_edges,
+        direct_device_edges,
     )
 
     return adjacency, issues, device_terminals, device_parts, logical_edges_stats
@@ -417,14 +418,44 @@ def _stacked_split_role(terminals: Set[str], template: Dict[str, Any] | None) ->
     return None
 
 
+def _f_family_key(name: str) -> str | None:
+    match = re.match(r"^(-F\d+)(?:\.(\d+))?$", name)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _device_nodes_by_name(adjacency: Dict[Node, Set[Node]]) -> Dict[str, Set[Node]]:
+    mapping: Dict[str, Set[Node]] = defaultdict(set)
+    for node in adjacency:
+        if _is_net_node(node):
+            continue
+        mapping[_device_name(node)].add(node)
+    return mapping
+
+
+def _has_wire_between_devices(
+    adjacency: Dict[Node, Set[Node]],
+    nodes_by_name: Dict[str, Set[Node]],
+    dev_a: str,
+    dev_b: str,
+) -> bool:
+    for node in nodes_by_name.get(dev_a, set()):
+        for neighbor in adjacency.get(node, set()):
+            if _is_net_node(neighbor):
+                continue
+            if _device_name(neighbor) == dev_b:
+                return True
+    return False
+
+
 def _add_logical_edges(
     adjacency: Dict[Node, Set[Node]],
     device_terminals: Dict[str, Set[str]],
-    logical_groups: Dict[str, Set[str]],
     device_templates: Dict[str, Dict[str, Any]],
     wired_between_parts: Set[str],
     device_nets: Dict[str, Set[str]],
-    direct_part_edges: Set[frozenset[str]],
+    direct_device_edges: Set[frozenset[str]],
 ) -> Dict[str, int]:
     logical_edges_added = 0
     logical_edges_skipped = 0
@@ -434,23 +465,34 @@ def _add_logical_edges(
     stacked_rejected_ambiguous = 0
     stacked_rejected_examples: List[Dict[str, Any]] = []
     stacked_rejected_pin_mismatch = 0
-    for base_name in sorted(logical_groups):
-        parts = logical_groups[base_name]
-        candidates = []
-        for part in parts:
-            suffix = _part_suffix(part)
-            if suffix in {"1", "2"}:
-                candidates.append(part)
-        if len(candidates) != 2:
+    stacked_groups_sample: List[Dict[str, Any]] = []
+    nodes_by_name = _device_nodes_by_name(adjacency)
+    family_members: Dict[str, Set[str]] = defaultdict(set)
+    for device_name in device_terminals:
+        family_key = _f_family_key(device_name)
+        if family_key:
+            family_members[family_key].add(device_name)
+    for family_key in sorted(family_members):
+        members = family_members[family_key]
+        front_candidate = None
+        if f"{family_key}.2" in members:
+            front_candidate = f"{family_key}.2"
+        elif family_key in members:
+            front_candidate = family_key
+        back_candidate = f"{family_key}.1" if f"{family_key}.1" in members else None
+        if not front_candidate or not back_candidate:
+            continue
+        if front_candidate == family_key and f"{family_key}.2" in members:
             continue
         stacked_candidates += 1
-        base_part_name = _part_base(candidates[0])
-        left, right = sorted(candidates)
-        direct_edge = frozenset({left, right}) in direct_part_edges
+        base_part_name = family_key
+        left, right = front_candidate, back_candidate
+        direct_edge = frozenset({left, right}) in direct_device_edges
         nets_left = device_nets.get(left, set())
         nets_right = device_nets.get(right, set())
         common_nets = sorted(nets_left & nets_right)
-        if base_part_name in wired_between_parts or direct_edge or common_nets:
+        has_wire_between = _has_wire_between_devices(adjacency, nodes_by_name, left, right)
+        if base_part_name in wired_between_parts or direct_edge or common_nets or has_wire_between:
             stacked_rejected_wired += 1
             if len(stacked_rejected_examples) < 3:
                 stacked_rejected_examples.append(
@@ -458,10 +500,13 @@ def _add_logical_edges(
                         "base": base_part_name,
                         "parts": [left, right],
                         "common_nets": common_nets,
-                        "found_edge": direct_edge,
+                        "found_edge": direct_edge or has_wire_between,
                         "reason": "wired",
                     }
                 )
+            print(
+                f"Stack refused for {base_part_name}: wire_between=True parts={left},{right}"
+            )
             continue
         if not nets_left or not nets_right:
             stacked_rejected_ambiguous += 1
@@ -483,6 +528,9 @@ def _add_logical_edges(
         if not role_left or not role_right or role_left == role_right:
             stacked_rejected_pin_mismatch += 1
             logical_edges_skipped += 1
+            print(
+                f"Stack refused for {base_part_name}: pins_not_complementary parts={left},{right}"
+            )
             continue
         for term_left, term_right in _logical_terminal_edges(
             terminals_left,
@@ -497,6 +545,11 @@ def _add_logical_edges(
                 adjacency[node_right].add(node_left)
                 logical_edges_added += 1
         stacked_applied += 1
+        if len(stacked_groups_sample) < 3:
+            stacked_groups_sample.append(
+                {"base": base_part_name, "parts": [left, right]}
+            )
+        print(f"Stack applied for {base_part_name}: parts={left},{right}")
     return {
         "added": logical_edges_added,
         "skipped": logical_edges_skipped,
@@ -506,6 +559,7 @@ def _add_logical_edges(
         "stacked_rejected_ambiguous": stacked_rejected_ambiguous,
         "stacked_rejected_pin_mismatch": stacked_rejected_pin_mismatch,
         "stacked_rejected_examples": stacked_rejected_examples,
+        "stacked_groups_sample": stacked_groups_sample,
     }
 
 
@@ -894,7 +948,9 @@ def compute_feeder_paths(
         "feeder_end_bases_count": len(feeder_end_bases),
         "feeder_end_bases_sample": feeder_end_bases[:10],
         "stacked_example": stacked_example,
-        "stacked_groups_sample": stacked_groups_sample,
+        "stacked_groups_sample": logical_edges_stats.get(
+            "stacked_groups_sample", stacked_groups_sample
+        ),
         "logical_edges_added": logical_edges_stats.get("added", 0),
         "logical_edges_skipped": logical_edges_stats.get("skipped", 0),
         "stacked_candidates_count": logical_edges_stats.get("stacked_candidates", 0),
