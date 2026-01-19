@@ -170,6 +170,21 @@ def _is_bus_token(token: str) -> bool:
     return bool(_MAIN_ROOT_PATTERN.match(token) or _SUB_ROOT_PATTERN.match(token))
 
 
+def identify_root_devices(adjacency: Dict[Node, Set[Node]]) -> Set[str]:
+    """Return device names that touch main root nets (MT/MT2/IT/LT/LT2)."""
+    root_devices: Set[str] = set()
+    for node, neighbors in adjacency.items():
+        if not _is_net_node(node):
+            continue
+        if not _MAIN_ROOT_PATTERN.match(_net_name(node)):
+            continue
+        for nb in neighbors:
+            if _is_net_node(nb):
+                continue
+            root_devices.add(_device_name(nb))
+    return root_devices
+
+
 def build_graph(
     df_power: pd.DataFrame,
     device_templates: Dict[str, Dict[str, Any]] | None = None,
@@ -188,6 +203,15 @@ def build_graph(
     wired_between_parts: Set[str] = set()
     direct_device_edges: Set[frozenset[str]] = set()
 
+    # BUS / NET hub threshold:
+    # Net token is treated as a "bus" only if it connects to >= 4 device pins.
+    # This reduces false bus detection and prevents path "jumps".
+    BUS_HUB_DEGREE_THRESHOLD = 4
+
+    parsed_rows: List[Dict[str, Any]] = []
+    net_pin_degree: Dict[str, Set[Node]] = defaultdict(set)
+
+    # Pass 1: parse + collect stats (no edges yet)
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
         wireno_tokens = _extract_wireno_tokens(wireno)
@@ -201,6 +225,22 @@ def build_graph(
 
         from_node = _device_node(name_a, cp_a)
         to_node = _device_node(name_b, cp_b)
+
+        parsed_rows.append(
+            {
+                "row_index": row_index,
+                "wireno": row.get("Wireno"),
+                "wireno_tokens": wireno_tokens,
+                "name_a_raw": name_a_raw,
+                "name_b_raw": name_b_raw,
+                "name_a": name_a,
+                "cp_a": cp_a,
+                "name_b": name_b,
+                "cp_b": cp_b,
+                "from_node": from_node,
+                "to_node": to_node,
+            }
+        )
 
         if name_a and cp_a:
             device_terminals[name_a].add(cp_a)
@@ -231,6 +271,30 @@ def build_graph(
             if name_b_raw:
                 device_nets[name_b_raw].update(wireno_tokens)
 
+        # net degree counts (unique device pins connected to token)
+        for token in wireno_tokens:
+            if from_node:
+                net_pin_degree[token].add(from_node)
+            if to_node:
+                net_pin_degree[token].add(to_node)
+
+    bus_tokens_active: Set[str] = {
+        token
+        for token, pins in net_pin_degree.items()
+        if _is_bus_token(token) and len(pins) >= BUS_HUB_DEGREE_THRESHOLD
+    }
+
+    # Pass 2: build graph edges
+    for entry in parsed_rows:
+        row_index = entry["row_index"]
+        wireno_tokens: List[str] = entry["wireno_tokens"]
+        name_a_raw = entry["name_a_raw"]
+        name_b_raw = entry["name_b_raw"]
+        cp_a = entry["cp_a"]
+        cp_b = entry["cp_b"]
+        from_node: Node | None = entry["from_node"]
+        to_node: Node | None = entry["to_node"]
+
         if not from_node and not to_node:
             issues.append(
                 _issue(
@@ -239,9 +303,9 @@ def build_graph(
                     "Missing endpoint data for Power row; no device nodes created.",
                     row_index=row_index,
                     context={
-                        "wireno": row.get("Wireno"),
-                        "from_name": row.get("Name"),
-                        "to_name": row.get("Name.1"),
+                        "wireno": entry.get("wireno"),
+                        "from_name": name_a_raw,
+                        "to_name": name_b_raw,
                     },
                 )
             )
@@ -254,7 +318,7 @@ def build_graph(
         if from_node and to_node:
             suppress_direct = False
             if wireno_tokens and _is_front_terminal(cp_a) and _is_front_terminal(cp_b):
-                suppress_direct = any(_is_bus_token(token) for token in wireno_tokens)
+                suppress_direct = any(token in bus_tokens_active for token in wireno_tokens)
             if not suppress_direct:
                 adjacency[from_node].add(to_node)
                 adjacency[to_node].add(from_node)
@@ -795,6 +859,77 @@ def compute_feeder_paths(
         for g, terminals in group_terminals.items()
         if _is_f_device(g) and _is_f_end(terminals)
     }
+
+    # --- Minimal reproducible debug dump for a problematic family (hardcoded by request)
+    def _family_debug(base: str) -> Dict[str, Any] | None:
+        members = sorted(
+            [name for name in device_names if name == base or name.startswith(f"{base}.")]
+        )
+        if not members:
+            return None
+
+        nodes_by_name = _device_nodes_by_name(adjacency)
+
+        def nets_for(name: str) -> List[str]:
+            nets: Set[str] = set()
+            for node in nodes_by_name.get(name, set()):
+                for nb in adjacency.get(node, set()):
+                    if _is_net_node(nb):
+                        nets.add(_net_name(nb))
+            return sorted(nets)
+
+        def has_direct_device_edge(a: str, b: str) -> bool:
+            for node in nodes_by_name.get(a, set()):
+                for nb in adjacency.get(node, set()):
+                    if _is_net_node(nb):
+                        continue
+                    if _device_name(nb) == b:
+                        return True
+            return False
+
+        edges_between: List[Dict[str, Any]] = []
+        for i, a in enumerate(members):
+            for b in members[i + 1 :]:
+                edges_between.append(
+                    {
+                        "a": a,
+                        "b": b,
+                        "direct_edge": has_direct_device_edge(a, b),
+                        "common_nets": sorted(set(nets_for(a)) & set(nets_for(b))),
+                    }
+                )
+
+        stacked = any(item.get("base") == base for item in stacked_applied_pairs)
+        stack_reason = "applied" if stacked else "refused"
+        if not stacked:
+            # Mirror hard rule: any evidence of wiring/connection => refuse stacking
+            if any(e["direct_edge"] or e["common_nets"] for e in edges_between):
+                stack_reason = "refused:wired_between_parts"
+
+        per_member = []
+        for name in members:
+            terms = sorted(device_terminals.get(name, set()), key=lambda t: (not t.isdigit(), t))
+            per_member.append(
+                {
+                    "name": name,
+                    "terminals": terms,
+                    "nets": nets_for(name),
+                    "is_feeder_end_by_self": _is_f_device(name) and _is_f_end(terms),
+                    "group_key": group_key(name),
+                    "is_feeder_end_by_group": group_key(name) in feeder_f_groups,
+                }
+            )
+
+        return {
+            "base": base,
+            "members": members,
+            "stacked": stacked,
+            "stack_decision": stack_reason,
+            "edges_between_members": edges_between,
+            "per_member": per_member,
+        }
+
+    f611_debug = _family_debug("-F611")
     feeder_q_names = {name for name in device_names if _is_q_device(name)}
     feeder_x_names = {name for name in device_names if name.startswith("-X")}
 
@@ -963,6 +1098,7 @@ def compute_feeder_paths(
         "q_branch_heuristic_applied_count": q_heuristic_applied,
         "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
+        "family_debug_-F611": f611_debug,
     }
 
     return feeders, aggregated, issues, debug
