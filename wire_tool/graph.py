@@ -220,8 +220,7 @@ def _logical_terminal_edges(
     evens_a = {term for term in numbers_a if int(term) % 2 == 0}
     evens_b = {term for term in numbers_b if int(term) % 2 == 0}
 
-    neutral_pairs = _neutral_logical_pairs(terminals_a, terminals_b)
-    edges.update(neutral_pairs)
+    edges.update(_neutral_logical_pairs(terminals_a, terminals_b))
 
     common_numbers = numbers_a & numbers_b
     for number in sorted(common_numbers, key=lambda value: int(value)):
@@ -249,7 +248,7 @@ def _stacked_split_role(terminals: Set[str], template: Dict[str, Any] | None) ->
     """
     Returns "front" if ALL terminals are subset of template.front_pins (and none in back),
             "back"  if ALL terminals are subset of template.back_pins (and none in front),
-            None otherwise (mixed/unknown/unmatched).
+            None otherwise.
     """
     if not terminals or not template:
         return None
@@ -292,10 +291,7 @@ def _has_wire_between_devices(
     dev_a: str,
     dev_b: str,
 ) -> bool:
-    """
-    True only if there is a direct device-to-device adjacency edge (no NET node in between).
-    This is a secondary safety check; the primary check is direct_device_edges captured from raw rows.
-    """
+    # True only if there is a direct device-to-device adjacency edge (no NET in between).
     for node in nodes_by_name.get(dev_a, set()):
         for neighbor in adjacency.get(node, set()):
             if _is_net_node(neighbor):
@@ -320,18 +316,15 @@ def build_graph(
 
     device_terminals: Dict[str, Set[str]] = defaultdict(set)
 
-    # IMPORTANT:
-    # - device_parts_all: diagnostic grouping only (raw base -> all members)
-    # - device_parts (returned): ONLY stacked groups that were actually applied
-    device_parts_all: Dict[str, Set[str]] = defaultdict(set)
+    # Returned device_parts: ONLY applied stacked groups
     device_parts_applied: Dict[str, Set[str]] = defaultdict(set)
 
-    device_nets: Dict[str, Set[str]] = defaultdict(set)
+    # These capture hard "no stack" evidence
     wired_between_parts: Set[str] = set()
-
-    # direct_device_edges captures "there is a Power-row wire between device A and B"
-    # This is the strongest "NO STACK" rule.
     direct_device_edges: Set[frozenset[str]] = set()
+
+    # Optional diagnostics (kept local)
+    device_nets: Dict[str, Set[str]] = defaultdict(set)
 
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
@@ -354,16 +347,11 @@ def build_graph(
         if name_b and cp_b:
             device_terminals[name_b].add(cp_b)
 
-        if name_a:
-            device_parts_all[_logical_base_name(name_a)].add(name_a)
-        if name_b:
-            device_parts_all[_logical_base_name(name_b)].add(name_b)
-
-        # Capture "there is a wire between two devices" from Power rows.
+        # Hard evidence: there is a wire between devices in Power export
         if name_a and name_b and name_a != name_b:
             direct_device_edges.add(frozenset({name_a, name_b}))
 
-        # Detect explicit wiring between parts of the same base (Fxxx.1 <-> Fxxx.2 etc.)
+        # Hard evidence: there is wiring between parts of same base (Fxxx.1 <-> Fxxx.2)
         if name_a_raw and name_b_raw:
             part_a_suffix = _part_suffix(name_a_raw)
             part_b_suffix = _part_suffix(name_b_raw)
@@ -401,14 +389,14 @@ def build_graph(
         for node in nodes:
             adjacency.setdefault(node, set())
 
+        # IMPORTANT FIX:
+        # Always keep the direct device-to-device edge if export says there is a wire.
+        # (The NET nodes are additional, not replacement.)
         if from_node and to_node:
-            suppress_direct = False
-            if wireno_tokens and _is_front_terminal(cp_a) and _is_front_terminal(cp_b):
-                suppress_direct = any(_is_bus_token(token) for token in wireno_tokens)
-            if not suppress_direct:
-                adjacency[from_node].add(to_node)
-                adjacency[to_node].add(from_node)
+            adjacency[from_node].add(to_node)
+            adjacency[to_node].add(from_node)
 
+        # NET connections
         for token in wireno_tokens:
             net_node = f"NET:{token}"
             adjacency.setdefault(net_node, set())
@@ -428,7 +416,7 @@ def build_graph(
                 adjacency.setdefault(node_left, set()).add(node_right)
                 adjacency.setdefault(node_right, set()).add(node_left)
 
-    # template edges inside device (preferred over fallback pass-through)
+    # template edges inside device (preferred)
     if device_templates:
         _add_template_edges(adjacency, device_terminals, device_templates)
 
@@ -437,12 +425,10 @@ def build_graph(
         device_terminals=device_terminals,
         device_templates=device_templates or {},
         wired_between_parts=wired_between_parts,
-        device_nets=device_nets,
         direct_device_edges=direct_device_edges,
         device_parts_applied=device_parts_applied,
     )
 
-    # Return ONLY applied stacked groups (so debug doesn't pretend F611/F611.1 is a stack).
     return adjacency, issues, device_terminals, device_parts_applied, logical_edges_stats
 
 
@@ -470,7 +456,6 @@ def _collapse_consecutive_duplicates(names: List[str]) -> List[str]:
 
 
 def _extract_device_names_from_path(path: List[Node]) -> List[str]:
-    # Filter out NET nodes and non-device labels; keep only base device names.
     names: List[str] = []
     for node in path:
         if _is_net_node(node):
@@ -487,18 +472,14 @@ def _add_logical_edges(
     device_terminals: Dict[str, Set[str]],
     device_templates: Dict[str, Dict[str, Any]],
     wired_between_parts: Set[str],
-    device_nets: Dict[str, Set[str]],
     direct_device_edges: Set[frozenset[str]],
     device_parts_applied: Dict[str, Set[str]],
 ) -> Dict[str, int]:
     """
-    Strict stacking rules (your B option):
-    - Stack only for -Fxxx(.2 or base) + -Fxxx.1
-    - ONLY if roles are complementary by template:
-        left is 'front', right is 'back' (or vice versa)
-    - AND only if there is NO direct wire between them in Power rows.
-      (direct_device_edges contains that strongest evidence)
-    - AND only if client didn't explicitly wire between parts of same base (wired_between_parts).
+    Strict stacking (variant B2 safe mode):
+    - Auto-stack ONLY if there is -Fxxx.2 and -Fxxx.1
+    - Require complementary roles by templates (front-only vs back-only)
+    - Refuse if there is any direct wire evidence between parts
     """
     logical_edges_added = 0
     logical_edges_skipped = 0
@@ -521,26 +502,21 @@ def _add_logical_edges(
     for family_key in sorted(family_members):
         members = family_members[family_key]
 
-        # Candidate pairing:
-        # Prefer .2 + .1, else base + .1 as alias only if .2 missing.
-        front_candidate = f"{family_key}.2" if f"{family_key}.2" in members else (family_key if family_key in members else None)
-        back_candidate = f"{family_key}.1" if f"{family_key}.1" in members else None
-        if not front_candidate or not back_candidate:
-            continue
-        if front_candidate == family_key and f"{family_key}.2" in members:
-            # base exists but .2 also exists -> do NOT use base as alias in this case
+        # IMPORTANT FIX:
+        # Only .2 + .1 can be auto-stacked. Base (-Fxxx) is NOT an alias for .2.
+        left = f"{family_key}.2"
+        right = f"{family_key}.1"
+        if left not in members or right not in members:
             continue
 
         stacked_candidates += 1
         base_part_name = family_key
-        left, right = front_candidate, back_candidate
 
-        # HARD "no wires" rules:
+        # Hard "no wires" rules
         direct_edge = frozenset({left, right}) in direct_device_edges
-        has_wire_between = _has_wire_between_devices(adjacency, nodes_by_name, left, right)
+        has_adj_edge = _has_wire_between_devices(adjacency, nodes_by_name, left, right)
 
-        # wired_between_parts uses raw base without suffix; family_key is -Fxxx, OK.
-        if base_part_name in wired_between_parts or direct_edge or has_wire_between:
+        if base_part_name in wired_between_parts or direct_edge or has_adj_edge:
             stacked_rejected_wired += 1
             if len(stacked_rejected_examples) < 5:
                 stacked_rejected_examples.append(
@@ -549,12 +525,11 @@ def _add_logical_edges(
                         "parts": [left, right],
                         "reason": "wired",
                         "direct_edge_from_rows": direct_edge,
-                        "direct_adj_edge": has_wire_between,
+                        "direct_adj_edge": has_adj_edge,
                     }
                 )
             continue
 
-        # Role check via templates: strict.
         terminals_left = device_terminals.get(left, set())
         terminals_right = device_terminals.get(right, set())
 
@@ -562,8 +537,6 @@ def _add_logical_edges(
         role_right = _stacked_split_role(terminals_right, device_templates.get(right))
 
         if not role_left or not role_right:
-            # Ambiguous -> in your desired behavior, UI should ask.
-            # Here we just refuse & log (UI layer can surface this).
             stacked_rejected_ambiguous += 1
             if len(stacked_rejected_examples) < 5:
                 stacked_rejected_examples.append(
@@ -605,7 +578,6 @@ def _add_logical_edges(
 
         stacked_applied += 1
         device_parts_applied[base_part_name] = {left, right}
-
         if len(stacked_groups_sample) < 3:
             stacked_groups_sample.append({"base": base_part_name, "parts": [left, right]})
 
@@ -876,10 +848,7 @@ def compute_feeder_paths(
                     preferred_number = int(base_digits) + (0 if q_digits[-1] == "7" else 1)
                 except ValueError:
                     preferred_number = None
-                if preferred_number is None:
-                    preferred_prefix = ""
-                else:
-                    preferred_prefix = f"-F{preferred_number}"
+                preferred_prefix = f"-F{preferred_number}" if preferred_number is not None else ""
                 preferred_devices = {name for name in device_names if name.startswith(preferred_prefix)}
                 if preferred_prefix and preferred_devices:
                     group_prefix = q_digits[:-2]
@@ -896,7 +865,7 @@ def compute_feeder_paths(
                         q_heuristic_blocked_nodes += len(q_blocked_nodes)
                         blocked_nodes |= q_blocked_nodes
 
-        path_any, supply_any = _shortest_path_to_roots(
+        path_any, _supply_any = _shortest_path_to_roots(
             adjacency,
             [feeder_node],
             root_nets,
@@ -906,6 +875,7 @@ def compute_feeder_paths(
         reachable = bool(path_any)
         first_subroot_token = _first_subroot_in_path(path_any)
         path_main = " -> ".join(_compress_path_names(path_any))
+
         if not reachable:
             path_closest, closest_net = _shortest_path_to_roots(
                 adjacency,
@@ -935,6 +905,7 @@ def compute_feeder_paths(
         supply_net = _first_main_root_in_path(path_any)
         if not reachable:
             supply_net = f"UNRESOLVED (last={last_device_before_root}, net={closest_net_token})"
+
         path_nodes_raw = " -> ".join(path_any)
         path_names_collapsed = " -> ".join(_compress_path_names(path_any) + ([supply_net] if supply_net else []))
         device_chain = " -> ".join(_extract_device_names_from_path(path_any))
@@ -956,24 +927,6 @@ def compute_feeder_paths(
 
     aggregated = _aggregate_feeder_paths(feeders)
 
-    feeder_end_bases = sorted({_device_name(node) for node in feeder_nodes})
-    stacked_example = None
-    for base_name in sorted(device_parts):
-        parts = device_parts.get(base_name, set())
-        if len(parts) > 1:
-            stacked_example = {
-                "base": base_name,
-                "parts": sorted(parts),
-                "terminals_union": sorted(logical_base_terminals.get(base_name, set())),
-            }
-            break
-
-    stacked_groups_sample = [
-        {"base": base_name, "parts": sorted(parts)}
-        for base_name, parts in sorted(device_parts.items())
-        if len(parts) > 1
-    ][:3]
-
     if isinstance(logical_edges_added, dict):
         logical_edges_stats = logical_edges_added
     else:
@@ -985,10 +938,9 @@ def compute_feeder_paths(
         "main_root_nets": sorted(_net_name(node) for node in root_nets),
         "sub_root_nets": sorted(_net_name(node) for node in sub_root_nets),
         "feeder_ends_found": sorted({feeder["feeder_end_name"] for feeder in feeders}),
-        "feeder_end_bases_count": len(feeder_end_bases),
-        "feeder_end_bases_sample": feeder_end_bases[:10],
-        "stacked_example": stacked_example,
-        "stacked_groups_sample": logical_edges_stats.get("stacked_groups_sample", stacked_groups_sample),
+        "feeder_end_bases_count": len(sorted({_device_name(node) for node in feeder_nodes})),
+        "feeder_end_bases_sample": sorted({_device_name(node) for node in feeder_nodes})[:10],
+        "stacked_groups_sample": logical_edges_stats.get("stacked_groups_sample", []),
         "logical_edges_added": logical_edges_stats.get("added", 0),
         "logical_edges_skipped": logical_edges_stats.get("skipped", 0),
         "stacked_candidates_count": logical_edges_stats.get("stacked_candidates", 0),
@@ -996,7 +948,6 @@ def compute_feeder_paths(
         "stacked_rejected_wired_count": logical_edges_stats.get("stacked_rejected_wired", 0),
         "stacked_rejected_ambiguous_count": logical_edges_stats.get("stacked_rejected_ambiguous", 0),
         "stacked_rejected_pin_mismatch_count": logical_edges_stats.get("stacked_rejected_pin_mismatch", 0),
-        "stacked_groups_rejected_due_to_wires_count": logical_edges_stats.get("stacked_rejected_wired", 0),
         "stacked_groups_rejected_examples": logical_edges_stats.get("stacked_rejected_examples", []),
         "q_branch_heuristic_applied_count": q_heuristic_applied,
         "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
