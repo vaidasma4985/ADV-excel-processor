@@ -960,6 +960,7 @@ def compute_feeder_paths(
         }
 
         q_blocked_nodes = set()
+        q_blocked_prefix = ""
         q_match = re.match(r"^-Q(\d+)$", feeder_name)
         if q_match and feeder_name != "-Q81":
             q_digits = q_match.group(1)
@@ -974,6 +975,7 @@ def compute_feeder_paths(
                 preferred_devices = {name for name in device_names if preferred_prefix and name.startswith(preferred_prefix)}
                 if preferred_prefix and preferred_devices:
                     group_prefix = q_digits[:-2]
+                    q_blocked_prefix = f"-F{group_prefix}"
                     for name in device_names:
                         if not name.startswith(f"-F{group_prefix}"):
                             continue
@@ -993,6 +995,32 @@ def compute_feeder_paths(
             root_nets,
             blocked_nodes=blocked_nodes,
         )
+
+        if not path_any and q_blocked_nodes:
+            fallback_blocked_nodes = blocked_nodes - q_blocked_nodes
+            fallback_path, fallback_supply = _shortest_path_to_roots(
+                adjacency,
+                [feeder_node],
+                root_nets,
+                blocked_nodes=fallback_blocked_nodes,
+            )
+            if fallback_path:
+                path_any = fallback_path
+                supply_any = fallback_supply
+                blocked_device_names = sorted({_device_name(node) for node in q_blocked_nodes})
+                issues.append(
+                    _issue(
+                        "WARN",
+                        "W2QFALLBACK",
+                        "Q-heuristic blocked a valid path; fallback used.",
+                        context={
+                            "feeder_name": feeder_name,
+                            "feeder_cp": feeder_cp,
+                            "blocked_prefix": q_blocked_prefix,
+                            "blocked_devices_sample": blocked_device_names[:5],
+                        },
+                    )
+                )
 
         reachable = bool(path_any)
         first_subroot_token = _first_subroot_in_path(path_any)
