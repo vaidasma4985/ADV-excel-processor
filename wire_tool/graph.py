@@ -158,6 +158,19 @@ def _extract_wireno_tokens(wireno: str | None) -> List[str]:
     return [token.strip() for token in tokens if token.strip()]
 
 
+def _merge_wireno_tokens(wireno: str | None) -> List[str]:
+    tokens = _extract_wireno_tokens(wireno)
+    root_tokens = _extract_root_tokens(wireno)
+    merged: List[str] = []
+    seen: Set[str] = set()
+    for token in tokens + root_tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        merged.append(token)
+    return merged
+
+
 def _is_front_terminal(term: str | None) -> bool:
     if not term:
         return False
@@ -214,7 +227,7 @@ def build_graph(
     # Pass 1: parse + collect stats (no edges yet)
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
-        wireno_tokens = _extract_wireno_tokens(wireno)
+        wireno_tokens = _merge_wireno_tokens(wireno)
 
         name_a_raw = _normalize_name(row.get("Name"))
         name_b_raw = _normalize_name(row.get("Name.1"))
