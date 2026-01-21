@@ -5,7 +5,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 
-TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "pin_templates.json"
+def _find_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in (current.parent, *current.parents):
+        if (parent / "app.py").is_file():
+            return parent
+    return current.parents[1]
+
+
+TEMPLATE_PATH = _find_repo_root() / "pin_templates.json"
 _NEUTRAL_TOKENS = {"N", "N'", "7N", "8N"}
 
 

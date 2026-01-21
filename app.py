@@ -5,7 +5,7 @@ import streamlit as st
 
 def render_component_correction() -> None:
     # Lazy import to isolate tools
-    from processor import process_excel  # DO NOT TOUCH processor.py
+    from component_correction.processor import process_excel  # DO NOT TOUCH processor.py
 
     st.subheader("Component correction")
 
