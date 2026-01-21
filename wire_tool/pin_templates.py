@@ -50,6 +50,28 @@ def save_templates(
     path: Path | None = None,
 ) -> None:
     template_path = path or TEMPLATE_PATH
+    serialized = _serialize_templates(templates)
+    template_path.write_text(
+        json.dumps(serialized, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def templates_to_json_bytes(
+    templates: Dict[Tuple[Tuple[str, ...], str], Dict[str, Any]]
+) -> bytes:
+    serialized = _serialize_templates(templates)
+    return json.dumps(serialized, indent=2, sort_keys=True).encode("utf-8")
+
+
+def templates_from_json_bytes(data: bytes) -> Dict[Tuple[Tuple[str, ...], str], Dict[str, Any]]:
+    payload = json.loads(data.decode("utf-8"))
+    return _deserialize_templates(payload)
+
+
+def _serialize_templates(
+    templates: Dict[Tuple[Tuple[str, ...], str], Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     serialized: List[Dict[str, Any]] = []
     for (_pinset, _signature), template in sorted(
         templates.items(),
@@ -66,7 +88,41 @@ def save_templates(
                 "front_only": bool(template.get("front_only", False)),
             }
         )
-    template_path.write_text(json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8")
+    return serialized
+
+
+def _deserialize_templates(
+    payload: Any,
+) -> Dict[Tuple[Tuple[str, ...], str], Dict[str, Any]]:
+    if not isinstance(payload, list):
+        raise ValueError("Template payload must be a list.")
+    templates: Dict[Tuple[Tuple[str, ...], str], Dict[str, Any]] = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            raise ValueError("Template entry must be a dict.")
+        if "pinset" not in entry or "type_signature" not in entry:
+            raise ValueError("Template entry missing required keys.")
+        pinset = entry.get("pinset")
+        front_pins = entry.get("front_pins", [])
+        back_pins = entry.get("back_pins", [])
+        if (
+            not isinstance(pinset, list)
+            or not isinstance(front_pins, list)
+            or not isinstance(back_pins, list)
+        ):
+            raise ValueError("Template pin lists must be lists.")
+        pinset_tokens = tuple(sorted({str(pin) for pin in pinset}, key=pin_sort_key))
+        type_signature = str(entry.get("type_signature") or "").strip()
+        templates[(pinset_tokens, type_signature)] = {
+            "pinset": list(pinset_tokens),
+            "type_signature": type_signature,
+            "front_pins": sorted([str(pin) for pin in front_pins], key=pin_sort_key),
+            "back_pins": sorted([str(pin) for pin in back_pins], key=pin_sort_key),
+            "neutral_front_token": entry.get("neutral_front_token"),
+            "neutral_back_token": entry.get("neutral_back_token"),
+            "front_only": bool(entry.get("front_only", False)),
+        }
+    return templates
 
 
 def resolve_template_for_pinset(

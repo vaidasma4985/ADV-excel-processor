@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 
 
@@ -178,6 +180,8 @@ def render_wire_page() -> None:
         pin_sort_key,
         resolve_template_for_pinset,
         save_templates,
+        templates_from_json_bytes,
+        templates_to_json_bytes,
     )
     from wire_tool.graph import build_graph, identify_root_devices
 
@@ -210,6 +214,36 @@ def render_wire_page() -> None:
                 auto_resolved += 1
         if template is None:
             unknown_groups.append((pinset, signature, devices))
+
+    st.subheader("Templates")
+    if st.session_state.pop("templates_upload_success", False):
+        st.toast("Templates applied", icon="✅")
+    st.download_button(
+        "Download templates",
+        data=templates_to_json_bytes(templates),
+        file_name="pin_templates.json",
+        mime="application/json",
+    )
+    uploaded_templates = st.file_uploader(
+        "Upload pin_templates.json",
+        type=["json"],
+    )
+    apply_upload = st.button(
+        "Apply uploaded templates",
+        disabled=uploaded_templates is None,
+    )
+    if apply_upload and uploaded_templates is not None:
+        try:
+            uploaded_data = uploaded_templates.getvalue()
+            uploaded_templates_dict = templates_from_json_bytes(uploaded_data)
+        except json.JSONDecodeError as exc:
+            st.error(f"Invalid JSON: {exc}")
+        except ValueError:
+            st.error("Template file has wrong schema")
+        else:
+            save_templates(uploaded_templates_dict)
+            st.session_state["templates_upload_success"] = True
+            st.rerun()
 
     st.subheader("Pin template resolver")
     st.write(
