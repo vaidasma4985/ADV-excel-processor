@@ -251,66 +251,69 @@ def render_wire_page() -> None:
             front_key = f"front_pins_{index}"
             back_key = f"back_pins_{index}"
             neutral_key = f"neutral_warn_{index}"
-            default_front = [pin for pin in pinset_list if pin.isdigit() and int(pin) % 2 == 1]
-            front_pins = st.multiselect(
-                "Front pins",
-                options=pinset_list,
-                default=default_front,
-                key=front_key,
-            )
-            remaining = [pin for pin in pinset_list if pin not in front_pins]
-            back_pins = st.multiselect(
-                "Back pins",
-                options=remaining,
-                default=[],
-                key=back_key,
-            )
+            form_key = f"tpl_form_{index}"
+            with st.form(key=form_key, clear_on_submit=True):
+                default_front = [pin for pin in pinset_list if pin.isdigit() and int(pin) % 2 == 1]
+                front_pins = st.multiselect(
+                    "Front pins",
+                    options=pinset_list,
+                    default=default_front,
+                    key=front_key,
+                )
+                remaining = [pin for pin in pinset_list if pin not in front_pins]
+                back_pins = st.multiselect(
+                    "Back pins",
+                    options=remaining,
+                    default=[],
+                    key=back_key,
+                )
 
-            neutral_tokens = {"N", "N'", "7N", "8N"}
-            front_neutral = [pin for pin in front_pins if pin in neutral_tokens]
-            back_neutral = [pin for pin in back_pins if pin in neutral_tokens]
+                neutral_tokens = {"N", "N'", "7N", "8N"}
+                front_neutral = [pin for pin in front_pins if pin in neutral_tokens]
+                back_neutral = [pin for pin in back_pins if pin in neutral_tokens]
 
-            if len(front_neutral) > 1 or len(back_neutral) > 1:
-                st.error("Select at most one neutral token in front/back pins.")
-                st.session_state[neutral_key] = True
-            else:
-                st.session_state[neutral_key] = False
+                if len(front_neutral) > 1 or len(back_neutral) > 1:
+                    st.error("Select at most one neutral token in front/back pins.")
+                    st.session_state[neutral_key] = True
+                else:
+                    st.session_state[neutral_key] = False
 
-            save_key = f"save_template_{index}"
-            if st.button("Save template", key=save_key):
-                if st.session_state.get(neutral_key):
-                    st.stop()
-                if not set(front_pins).issubset(pinset_list) or not set(back_pins).issubset(
-                    pinset_list
-                ):
-                    st.error("Selected pins must come from the pinset.")
-                    st.stop()
+                submitted = st.form_submit_button("Save template")
+                if submitted:
+                    if st.session_state.get(neutral_key):
+                        st.stop()
+                    if not set(front_pins).issubset(pinset_list) or not set(back_pins).issubset(
+                        pinset_list
+                    ):
+                        st.error("Selected pins must come from the pinset.")
+                        st.stop()
 
-                front_only_allowed = _pinset_allows_front_only(pinset_list)
-                front_only = not back_pins and front_only_allowed
+                    front_only_allowed = _pinset_allows_front_only(pinset_list)
+                    front_only = not back_pins and front_only_allowed
 
-                if not back_pins and not front_only_allowed:
-                    st.error(
-                        "Back pins are required for this pinset. Use front-only only when pinset has only front pins."
-                    )
-                    st.stop()
+                    if not back_pins and not front_only_allowed:
+                        st.error(
+                            "Back pins are required for this pinset. Use front-only only when pinset has only front pins."
+                        )
+                        st.stop()
 
-                if back_pins and set(front_pins) | set(back_pins) != set(pinset_list):
-                    st.error("Front/back pins must cover the full pinset.")
-                    st.stop()
+                    if back_pins and set(front_pins) | set(back_pins) != set(pinset_list):
+                        st.error("Front/back pins must cover the full pinset.")
+                        st.stop()
 
-                template = {
-                    "pinset": sorted(pinset_list, key=pin_sort_key),
-                    "type_signature": signature,
-                    "front_pins": sorted(front_pins, key=pin_sort_key),
-                    "back_pins": sorted(back_pins, key=pin_sort_key),
-                    "neutral_front_token": front_neutral[0] if front_neutral else None,
-                    "neutral_back_token": back_neutral[0] if back_neutral else None,
-                    "front_only": front_only,
-                }
-                templates[(tuple(sorted(pinset_list, key=pin_sort_key)), signature)] = template
-                save_templates(templates)
-                st.success("Template saved. Rerun to refresh pinset list.")
+                    template = {
+                        "pinset": sorted(pinset_list, key=pin_sort_key),
+                        "type_signature": signature,
+                        "front_pins": sorted(front_pins, key=pin_sort_key),
+                        "back_pins": sorted(back_pins, key=pin_sort_key),
+                        "neutral_front_token": front_neutral[0] if front_neutral else None,
+                        "neutral_back_token": back_neutral[0] if back_neutral else None,
+                        "front_only": front_only,
+                    }
+                    templates[(tuple(sorted(pinset_list, key=pin_sort_key)), signature)] = template
+                    save_templates(templates)
+                    st.toast("Template saved", icon="✅")
+                    st.rerun()
 
     if st.button("Compute feeder paths"):
         from wire_tool.graph import build_graph, compute_feeder_paths
