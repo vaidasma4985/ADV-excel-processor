@@ -151,6 +151,22 @@ def _extract_root_tokens(wireno: str | None) -> List[str]:
     return [f"{match[0]}/{match[1]}" for match in _ROOT_TOKEN_PATTERN.findall(wireno)]
 
 
+def _extract_root_chain_nets(path: List[Node]) -> List[str]:
+    root_chain: List[str] = []
+    last_token: str | None = None
+    for node in path:
+        if not _is_net_node(node):
+            continue
+        token = _net_name(node)
+        if not (_SUB_ROOT_PATTERN.match(token) or _MAIN_ROOT_PATTERN.match(token)):
+            continue
+        if token == last_token:
+            continue
+        root_chain.append(token)
+        last_token = token
+    return root_chain
+
+
 def _extract_wireno_tokens(wireno: str | None) -> List[str]:
     if not wireno:
         return []
@@ -1025,6 +1041,9 @@ def compute_feeder_paths(
         reachable = bool(path_any)
         first_subroot_token = _first_subroot_in_path(path_any)
         path_main = " -> ".join(_compress_path_names(path_any))
+        root_chain_nets = _extract_root_chain_nets(path_any)
+        root_chain_str = " -> ".join(root_chain_nets)
+        spine_str = f"{feeder_name} -> {root_chain_str} -> -Q81" if root_chain_str else f"{feeder_name} -> -Q81"
 
         if not reachable:
             path_closest, closest_net = _shortest_path_to_roots(
@@ -1075,6 +1094,8 @@ def compute_feeder_paths(
                 "path_names_collapsed": path_names_collapsed,
                 "device_chain": device_chain,
                 "path_len_nodes": len(path_any),
+                "root_chain_str": root_chain_str,
+                "spine_str": spine_str,
             }
         )
 
@@ -1151,6 +1172,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "device_chain_candidates": defaultdict(int),
                 "reachable": True,
                 "path_len_nodes": 0,
+                "root_chain_str": "",
+                "spine_str": "",
             },
         )
         if feeder["feeder_end_cp"]:
@@ -1167,8 +1190,15 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             entry["device_chain_candidates"][feeder["device_chain"]] += 1
         if entry["path_len_nodes"] == 0:
             entry["path_len_nodes"] = feeder["path_len_nodes"]
+            entry["root_chain_str"] = feeder.get("root_chain_str", "")
+            entry["spine_str"] = feeder.get("spine_str", "")
         else:
-            entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
+            if feeder["path_len_nodes"] < entry["path_len_nodes"]:
+                entry["path_len_nodes"] = feeder["path_len_nodes"]
+                entry["root_chain_str"] = feeder.get("root_chain_str", "")
+                entry["spine_str"] = feeder.get("spine_str", "")
+            else:
+                entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
 
     aggregated = []
     for (_name, _supply), entry in sorted(grouped.items()):
@@ -1192,6 +1222,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "device_chain_grouped": entry["device_chain_grouped"],
                 "reachable": entry["reachable"],
                 "path_len_nodes": entry["path_len_nodes"],
+                "root_chain_str": entry["root_chain_str"],
+                "spine_str": entry["spine_str"],
             }
         )
 

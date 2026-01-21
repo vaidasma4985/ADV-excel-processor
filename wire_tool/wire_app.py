@@ -396,6 +396,8 @@ def render_wire_page() -> None:
             "path_names_collapsed",
             "device_chain",
             "path_len_nodes",
+            "root_chain_str",
+            "spine_str",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
 
@@ -409,6 +411,8 @@ def render_wire_page() -> None:
             "device_chain_grouped",
             "reachable",
             "path_len_nodes",
+            "root_chain_str",
+            "spine_str",
         ]
         aggregated_df = pd.DataFrame(aggregated, columns=aggregated_columns)
 
@@ -416,14 +420,9 @@ def render_wire_page() -> None:
         unreachable_df = feeders_df[~feeders_df["reachable"]].copy()
         simplified_columns = [
             "feeder_end_name",
-            "feeder_end_cps",
-            "supply_net",
-            "subroot_net",
-            "path_main",
-            "path_names_collapsed",
-            "device_chain_grouped",
+            "root_chain_str",
+            "spine_str",
             "reachable",
-            "path_len_nodes",
         ]
         simplified_df = aggregated_df[simplified_columns].copy()
 
@@ -456,12 +455,10 @@ def render_wire_page() -> None:
         st.metric("Unreachable feeders", unreachable_count)
         st.metric("Issues", issues_count)
 
-        simplified_tab, detailed_tab = st.tabs(["Simplified view", "Detailed view"])
+        st.subheader("Simplified view")
+        st.dataframe(simplified_df, use_container_width=True)
 
-        with simplified_tab:
-            st.dataframe(simplified_df, use_container_width=True)
-
-        with detailed_tab:
+        with st.expander("Detailed view"):
             with st.expander("Details: per-contact paths (raw)"):
                 st.dataframe(feeders_df, use_container_width=True)
 
