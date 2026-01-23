@@ -151,7 +151,7 @@ def render_wire_page() -> None:
         _clear_results()
 
     try:
-        df = load_connection_list(uploaded_file)
+        df, load_meta = load_connection_list(uploaded_file)
     except Exception as exc:
         st.error(f"Failed to load Excel file: {exc}")
         st.stop()
@@ -165,6 +165,7 @@ def render_wire_page() -> None:
         df["Line-Function"].astype(str).str.strip().str.lower() == "power"
     ].copy()
     st.metric("Total rows", len(df))
+    st.metric("Dropped Q81 self rows", load_meta.get("n_dropped_q81_self", 0))
     st.metric("Power rows", len(df_power))
 
     if df_power.empty:
@@ -188,7 +189,7 @@ def render_wire_page() -> None:
     templates = load_templates()
     pinsets, type_signatures, device_nets = _collect_device_power_info(df_power)
 
-    adjacency, _, _, _, _ = build_graph(df_power)
+    adjacency, _, _, _, _, _ = build_graph(df_power)
     root_devices = identify_root_devices(adjacency)
     root_devices |= {name for name in pinsets if name in _ROOT_DEVICE_DENY_TAGS}
     for device, signature in type_signatures.items():
@@ -374,12 +375,14 @@ def render_wire_page() -> None:
             device_terminals,
             device_parts,
             logical_edges_added,
+            virtual_links,
         ) = build_graph(df_power, device_templates=device_templates)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
             device_terminals=device_terminals,
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
+            virtual_links=virtual_links,
         )
         issues.extend(feeder_issues)
 
@@ -422,8 +425,9 @@ def render_wire_page() -> None:
         unreachable_df = feeders_df[~feeders_df["reachable"]].copy()
         simplified_columns = [
             "feeder_end_name",
-            "simplified_chain",
             "reachable",
+            "simplified_chain",
+            "root_chain_str",
         ]
         simplified_df = aggregated_df[simplified_columns].copy()
 
@@ -437,6 +441,7 @@ def render_wire_page() -> None:
                 "wire_results_grouped_df": aggregated_df,
                 "wire_results_issues_df": issues_df,
                 "wire_results_unreachable_df": unreachable_df,
+                "wire_results_virtual_links": virtual_links,
             }
         )
 
@@ -447,6 +452,7 @@ def render_wire_page() -> None:
         issues_df = st.session_state["wire_results_issues_df"]
         unreachable_df = st.session_state["wire_results_unreachable_df"]
         debug = st.session_state["wire_results_debug"]
+        virtual_links = st.session_state.get("wire_results_virtual_links", [])
 
         feeders_found = len(feeders_df)
         unreachable_count = len(unreachable_df)
@@ -462,6 +468,12 @@ def render_wire_page() -> None:
             st.dataframe(simplified_df, use_container_width=True)
 
         with detailed_tab:
+            if virtual_links:
+                with st.expander("Virtual links detected"):
+                    st.dataframe(virtual_links, use_container_width=True)
+            else:
+                with st.expander("Virtual links detected"):
+                    st.info("No virtual links detected.")
             with st.expander("Details: per-contact paths (raw)"):
                 st.dataframe(feeders_df, use_container_width=True)
 

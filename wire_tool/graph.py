@@ -9,6 +9,7 @@ import pandas as pd
 
 Node = str
 Issue = Dict[str, Any]
+VirtualLink = Dict[str, Any]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
@@ -28,6 +29,16 @@ _PASS_THROUGH_PAIRS = (
     ("N", "N'"),
     ("N", "7N"),
     ("7N", "N'"),
+)
+_VIRTUAL_LINK_TYPE = "GV2AF3"
+_IMAGE_COLUMNS = (
+    "Image",
+    "Image path",
+    "Image Path",
+    "ImagePath",
+    "Image File",
+    "ImageFile",
+    "ImageFilePath",
 )
 
 
@@ -171,11 +182,27 @@ def _extract_root_chain_nets(path: List[Node]) -> List[str]:
     return root_chain
 
 
-def build_simplified_chain(
+def _is_virtual_link_row(wireno: str | None, type_a: str | None, type_b: str | None) -> bool:
+    """GV2AF3 adapter rows are visualization-only and must not create routing edges."""
+    return not wireno and _VIRTUAL_LINK_TYPE in {type_a, type_b}
+
+
+def _extract_image_value(row: pd.Series, suffix: str) -> str | None:
+    for base in _IMAGE_COLUMNS:
+        key = f"{base}{suffix}"
+        if key not in row:
+            continue
+        value = row.get(key)
+        if _is_missing(value):
+            continue
+        return str(value).strip()
+    return None
+
+
+def build_simplified_chain_items(
     path: List[Node],
     feeder_end_name: str,
-    q_marker: str = "-Q81",
-) -> str:
+) -> List[str]:
     items: List[str] = []
     for node in path:
         if _is_net_node(node):
@@ -193,10 +220,8 @@ def build_simplified_chain(
 
     if not chain or chain[0] != feeder_end_name:
         chain.insert(0, feeder_end_name)
-    if not chain or chain[-1] != q_marker:
-        chain.append(q_marker)
 
-    return " -> ".join(chain)
+    return chain
 
 
 def _extract_wireno_tokens(wireno: str | None) -> List[str]:
@@ -242,6 +267,7 @@ def build_graph(
     Dict[str, Set[str]],
     Dict[str, Set[str]],
     Dict[str, int],
+    List[VirtualLink],
 ]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
@@ -258,11 +284,14 @@ def build_graph(
 
     parsed_rows: List[Dict[str, Any]] = []
     net_pin_degree: Dict[str, Set[Node]] = defaultdict(set)
+    virtual_links: List[VirtualLink] = []
 
     # Pass 1: parse + collect stats (no edges yet)
     for row_index, row in df_power.iterrows():
         wireno = _normalize_wireno(row.get("Wireno"))
         wireno_tokens = _extract_wireno_tokens(wireno)
+        type_a = _normalize_name(row.get("Type"))
+        type_b = _normalize_name(row.get("Type.1"))
 
         name_a_raw = _normalize_name(row.get("Name"))
         name_b_raw = _normalize_name(row.get("Name.1"))
@@ -270,6 +299,22 @@ def build_graph(
         cp_a = _normalize_terminal(row.get("C.name"))
         name_b = _base_of(name_b_raw)
         cp_b = _normalize_terminal(row.get("C.name.1"))
+
+        if _is_virtual_link_row(wireno, type_a, type_b):
+            virtual_links.append(
+                {
+                    "from_name_raw": name_a_raw,
+                    "from_pin": cp_a,
+                    "from_type": type_a,
+                    "from_image": _extract_image_value(row, ""),
+                    "to_name_raw": name_b_raw,
+                    "to_pin": cp_b,
+                    "to_type": type_b,
+                    "to_image": _extract_image_value(row, ".1"),
+                    "original_row_index": row_index,
+                }
+            )
+            continue
 
         from_node = _device_node(name_a, cp_a)
         to_node = _device_node(name_b, cp_b)
@@ -401,7 +446,7 @@ def build_graph(
         direct_device_edges,
     )
 
-    return adjacency, issues, device_terminals, device_parts, logical_edges_stats
+    return adjacency, issues, device_terminals, device_parts, logical_edges_stats, virtual_links
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -437,6 +482,40 @@ def _extract_device_names_from_path(path: List[Node]) -> List[str]:
             continue
         names.append(device_name)
     return _collapse_consecutive_duplicates(names)
+
+
+def _insert_virtual_links(
+    chain_items: List[str],
+    virtual_links: List[VirtualLink],
+) -> List[str]:
+    if not virtual_links:
+        return chain_items
+
+    adapter_map: Dict[Tuple[str, str], str] = {}
+    for link in sorted(virtual_links, key=lambda item: item.get("original_row_index", 0)):
+        from_name = link.get("from_name_raw")
+        to_name = link.get("to_name_raw")
+        if not from_name or not to_name:
+            continue
+        adapter_type = link.get("from_type") or link.get("to_type") or _VIRTUAL_LINK_TYPE
+        adapter_map.setdefault((from_name, to_name), adapter_type)
+
+    device_sequence = [item for item in chain_items if item.startswith("-")]
+    if len(device_sequence) < 2:
+        return chain_items
+
+    updated: List[str] = []
+    device_index = 0
+    for item in chain_items:
+        updated.append(item)
+        if item.startswith("-"):
+            if device_index < len(device_sequence) - 1:
+                next_device = device_sequence[device_index + 1]
+                adapter_type = adapter_map.get((item, next_device))
+                if adapter_type:
+                    updated.append(f"[{adapter_type}]")
+            device_index += 1
+    return updated
 
 
 def _logical_terminal_edges(
@@ -850,6 +929,7 @@ def compute_feeder_paths(
     device_terminals: Dict[str, Set[str]] | None = None,
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: Dict[str, Any] | int | None = None,
+    virtual_links: List[VirtualLink] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -1076,7 +1156,17 @@ def compute_feeder_paths(
         root_chain_nets = _extract_root_chain_nets(path_any)
         root_chain_str = " -> ".join(root_chain_nets)
         spine_str = f"{feeder_name} -> {root_chain_str} -> -Q81" if root_chain_str else f"{feeder_name} -> -Q81"
-        simplified_chain = build_simplified_chain(path_any, feeder_name)
+        chain_items = build_simplified_chain_items(path_any, feeder_name)
+        chain_items = _insert_virtual_links(chain_items, virtual_links or [])
+        if reachable or root_chain_nets:
+            if not chain_items or chain_items[-1] != "-Q81":
+                chain_items.append("-Q81")
+        else:
+            if not chain_items or chain_items[-1] != "[UNREACHED]":
+                chain_items.append("[UNREACHED]")
+            if not root_chain_str:
+                root_chain_str = "(NO ROOT)"
+        simplified_chain = " -> ".join(chain_items)
 
         if not reachable:
             path_closest, closest_net = _shortest_path_to_roots(
@@ -1182,6 +1272,8 @@ def compute_feeder_paths(
         "q_branch_heuristic_blocked_nodes": q_heuristic_blocked_nodes,
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
         "family_debug_-F611": f611_debug,
+        "virtual_links_count": len(virtual_links or []),
+        "virtual_links": virtual_links or [],
     }
 
     return feeders, aggregated, issues, debug
