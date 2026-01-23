@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import os
 import heapq
 import re
 from typing import Any, Dict, Iterable, List, Set, Tuple
@@ -581,32 +582,32 @@ def _add_logical_edges(
 
     nodes_by_name = _device_nodes_by_name(adjacency)
 
-    family_members: Dict[str, Set[str]] = defaultdict(set)
+    base_groups: Dict[str, Set[str]] = defaultdict(set)
     for device_name in device_terminals:
-        family_key = _f_family_key(device_name)
-        if family_key:
-            family_members[family_key].add(device_name)
+        base_name = _part_base(device_name)
+        if _f_family_key(base_name):
+            base_groups[base_name].add(device_name)
 
-    for family_key in sorted(family_members):
-        members = family_members[family_key]
+    for base_name in sorted(base_groups):
+        members = base_groups[base_name]
 
         front_candidate = None
-        if f"{family_key}.2" in members:
-            front_candidate = f"{family_key}.2"
-        elif family_key in members:
+        if f"{base_name}.2" in members:
+            front_candidate = f"{base_name}.2"
+        elif base_name in members:
             # NOTE: base name without .2 is treated as potential “front” only if there is no explicit .2
-            front_candidate = family_key
+            front_candidate = base_name
 
-        back_candidate = f"{family_key}.1" if f"{family_key}.1" in members else None
+        back_candidate = f"{base_name}.1" if f"{base_name}.1" in members else None
         if not front_candidate or not back_candidate:
             continue
 
         # If both exist (base and .2), do NOT alias base->.2 automatically.
-        if front_candidate == family_key and f"{family_key}.2" in members:
+        if front_candidate == base_name and f"{base_name}.2" in members:
             continue
 
         stacked_candidates += 1
-        base_part_name = family_key
+        base_part_name = base_name
         left, right = front_candidate, back_candidate
 
         direct_edge = frozenset({left, right}) in direct_device_edges
@@ -978,6 +979,8 @@ def compute_feeder_paths(
         }
 
     f611_debug = _family_debug("-F611")
+    debug_family = os.getenv("WIRE_DEBUG_FAMILY", "").strip()
+    f115_debug = _family_debug("-F115") if debug_family == "-F115" else None
     feeder_q_names = {name for name in device_names if _is_q_device(name)}
     feeder_x_names = {name for name in device_names if name.startswith("-X")}
 
@@ -1183,6 +1186,8 @@ def compute_feeder_paths(
         "unreachable_feeders_count": sum(1 for feeder in feeders if not feeder["reachable"]),
         "family_debug_-F611": f611_debug,
     }
+    if f115_debug is not None:
+        debug["family_debug_-F115"] = f115_debug
 
     return feeders, aggregated, issues, debug
 
