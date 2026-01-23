@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import streamlit as st
 
-from processor import process_excel
 
+def render_component_correction() -> None:
+    # Lazy import to isolate tools
+    from component_correction.processor import process_excel  # DO NOT TOUCH processor.py
 
-def main() -> None:
-    st.set_page_config(page_title="Excel komponentų apdorojimas", layout="wide")
-    st.title("Excel komponentų apdorojimas")
+    st.subheader("Component correction")
 
-    uploaded = st.file_uploader("Įkelk Excel failą", type=["xlsx"])
+    uploaded = st.file_uploader("Įkelk Excel failą", type=["xlsx"], key="comp_uploader")
 
     if uploaded is None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
 
-    if st.button("Apdoroti failą"):
+    if st.button("Apdoroti failą", key="comp_run"):
         try:
             cleaned_df, removed_df, out_bytes, stats = process_excel(uploaded.getvalue())
 
@@ -44,6 +44,37 @@ def main() -> None:
             st.error(f"Klaida: {e}")
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
+
+
+def render_wire_tool() -> None:
+    from wire_tool.wire_app import render_wire_page  # new module
+
+    render_wire_page()
+
+
+def main() -> None:
+    st.set_page_config(page_title="Excel įrankiai", layout="wide")
+    st.title("Excel įrankiai")
+
+    if "mode" not in st.session_state:
+        st.session_state.mode = "none"
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Component correction", use_container_width=True):
+            st.session_state.mode = "component"
+    with c2:
+        if st.button("Wire sizing tool", use_container_width=True):
+            st.session_state.mode = "wire"
+
+    st.divider()
+
+    if st.session_state.mode == "component":
+        render_component_correction()
+    elif st.session_state.mode == "wire":
+        render_wire_tool()
+    else:
+        st.info("Pasirink įrankį viršuje.")
 
 
 if __name__ == "__main__":
