@@ -10,6 +10,7 @@ import pandas as pd
 Node = str
 Issue = Dict[str, Any]
 VirtualLink = Dict[str, Any]
+VirtualEdge = Dict[Tuple[Node, Node], Dict[str, Any]]
 
 
 _MAIN_ROOT_PATTERN = re.compile(r"^(MT2|LT2|MT|IT|LT)/(L1|L2|L3|N)$")
@@ -31,6 +32,7 @@ _PASS_THROUGH_PAIRS = (
     ("7N", "N'"),
 )
 _VIRTUAL_LINK_TYPE = "GV2AF3"
+_VIRTUAL_EDGE_WEIGHT = 10
 _IMAGE_COLUMNS = (
     "Image",
     "Image path",
@@ -183,7 +185,7 @@ def _extract_root_chain_nets(path: List[Node]) -> List[str]:
 
 
 def _is_virtual_link_row(wireno: str | None, type_a: str | None, type_b: str | None) -> bool:
-    """GV2AF3 adapter rows are visualization-only and must not create routing edges."""
+    """GV2AF3 adapter rows represent continuity links without wires."""
     return not wireno and _VIRTUAL_LINK_TYPE in {type_a, type_b}
 
 
@@ -268,6 +270,7 @@ def build_graph(
     Dict[str, Set[str]],
     Dict[str, int],
     List[VirtualLink],
+    VirtualEdge,
 ]:
     adjacency: Dict[Node, Set[Node]] = {}
     issues: List[Issue] = []
@@ -285,6 +288,7 @@ def build_graph(
     parsed_rows: List[Dict[str, Any]] = []
     net_pin_degree: Dict[str, Set[Node]] = defaultdict(set)
     virtual_links: List[VirtualLink] = []
+    virtual_edges: VirtualEdge = {}
 
     # Pass 1: parse + collect stats (no edges yet)
     for row_index, row in df_power.iterrows():
@@ -301,19 +305,39 @@ def build_graph(
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
         if _is_virtual_link_row(wireno, type_a, type_b):
-            virtual_links.append(
-                {
-                    "from_name_raw": name_a_raw,
-                    "from_pin": cp_a,
-                    "from_type": type_a,
-                    "from_image": _extract_image_value(row, ""),
-                    "to_name_raw": name_b_raw,
-                    "to_pin": cp_b,
-                    "to_type": type_b,
-                    "to_image": _extract_image_value(row, ".1"),
+            link = {
+                "from_name_raw": name_a_raw,
+                "from_pin": cp_a,
+                "from_type": type_a,
+                "from_image": _extract_image_value(row, ""),
+                "to_name_raw": name_b_raw,
+                "to_pin": cp_b,
+                "to_type": type_b,
+                "to_image": _extract_image_value(row, ".1"),
+                "original_row_index": row_index,
+            }
+            virtual_links.append(link)
+            from_node = _device_node(name_a_raw, cp_a)
+            to_node = _device_node(name_b_raw, cp_b)
+            if from_node and to_node:
+                virtual_edges[(from_node, to_node)] = {
+                    "edge_type": "virtual",
+                    "virtual_type": type_a or type_b or _VIRTUAL_LINK_TYPE,
                     "original_row_index": row_index,
+                    "from_image": link["from_image"],
+                    "to_image": link["to_image"],
+                    "weight": _VIRTUAL_EDGE_WEIGHT,
                 }
-            )
+                adjacency.setdefault(from_node, set()).add(to_node)
+                adjacency.setdefault(to_node, set())
+            if name_a_raw and cp_a:
+                device_terminals[name_a_raw].add(cp_a)
+            if name_b_raw and cp_b:
+                device_terminals[name_b_raw].add(cp_b)
+            if name_a_raw:
+                device_parts[_logical_base_name(name_a_raw)].add(name_a_raw)
+            if name_b_raw:
+                device_parts[_logical_base_name(name_b_raw)].add(name_b_raw)
             continue
 
         from_node = _device_node(name_a, cp_a)
@@ -446,7 +470,24 @@ def build_graph(
         direct_device_edges,
     )
 
-    return adjacency, issues, device_terminals, device_parts, logical_edges_stats, virtual_links
+    if virtual_edges:
+        issues.append(
+            _issue(
+                "INFO",
+                "VIRTUAL_EDGES",
+                f"Applied {len(virtual_edges)} virtual continuity edges.",
+            )
+        )
+
+    return (
+        adjacency,
+        issues,
+        device_terminals,
+        device_parts,
+        logical_edges_stats,
+        virtual_links,
+        virtual_edges,
+    )
 
 
 def _compress_path_names(path: List[Node]) -> List[str]:
@@ -516,6 +557,16 @@ def _insert_virtual_links(
                     updated.append(f"[{adapter_type}]")
             device_index += 1
     return updated
+
+
+def _virtual_edge_count(path: List[Node], virtual_edges: VirtualEdge) -> int:
+    if not path or not virtual_edges:
+        return 0
+    count = 0
+    for left, right in zip(path, path[1:]):
+        if (left, right) in virtual_edges:
+            count += 1
+    return count
 
 
 def _logical_terminal_edges(
@@ -771,12 +822,14 @@ def _shortest_path_to_roots(
     start_nodes: Iterable[Node],
     root_nodes: Set[Node],
     blocked_nodes: Set[Node] | None = None,
+    edge_weights: Dict[Tuple[Node, Node], int] | None = None,
 ) -> Tuple[List[Node], Node | None]:
     start_list = sorted(start_nodes)
     if not start_list:
         return [], None
 
     blocked_nodes = blocked_nodes or set()
+    edge_weights = edge_weights or {}
     best_cost: Dict[Node, Tuple[int, int]] = {}
     parent: Dict[Node, Node] = {}
 
@@ -811,7 +864,8 @@ def _shortest_path_to_roots(
         for neighbor in neighbors:
             if neighbor in blocked_nodes:
                 continue
-            next_cost = (distance + 1, device_count + _device_count(neighbor))
+            weight = edge_weights.get((current, neighbor), 1)
+            next_cost = (distance + weight, device_count + _device_count(neighbor))
             if neighbor in best_cost and next_cost >= best_cost[neighbor]:
                 continue
             best_cost[neighbor] = next_cost
@@ -930,6 +984,7 @@ def compute_feeder_paths(
     device_parts: Dict[str, Set[str]] | None = None,
     logical_edges_added: Dict[str, Any] | int | None = None,
     virtual_links: List[VirtualLink] | None = None,
+    virtual_edges: VirtualEdge | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Issue], Dict[str, Any]]:
     issues: List[Issue] = []
     feeders: List[Dict[str, Any]] = []
@@ -937,6 +992,9 @@ def compute_feeder_paths(
         device_terminals = _device_terminals_from_nodes(adjacency)
     if device_parts is None:
         device_parts = {}
+    virtual_edge_weights = {
+        edge: data.get("weight", 1) for edge, data in (virtual_edges or {}).items()
+    }
 
     root_nets = {
         node
@@ -1122,6 +1180,7 @@ def compute_feeder_paths(
             [feeder_node],
             root_nets,
             blocked_nodes=blocked_nodes,
+            edge_weights=virtual_edge_weights,
         )
 
         if not path_any and q_blocked_nodes:
@@ -1131,6 +1190,7 @@ def compute_feeder_paths(
                 [feeder_node],
                 root_nets,
                 blocked_nodes=fallback_blocked_nodes,
+                edge_weights=virtual_edge_weights,
             )
             if fallback_path:
                 path_any = fallback_path
@@ -1151,6 +1211,8 @@ def compute_feeder_paths(
                 )
 
         reachable = bool(path_any)
+        virtual_edges_count = _virtual_edge_count(path_any, virtual_edges or {})
+        virtual_edges_used = virtual_edges_count > 0
         first_subroot_token = _first_subroot_in_path(path_any)
         path_main = " -> ".join(_compress_path_names(path_any))
         root_chain_nets = _extract_root_chain_nets(path_any)
@@ -1174,6 +1236,7 @@ def compute_feeder_paths(
                 [feeder_node],
                 {node for node in adjacency if _is_net_node(node)},
                 blocked_nodes=blocked_nodes,
+                edge_weights=virtual_edge_weights,
             )
             closest_net_token = _net_name(closest_net) if closest_net else ""
             last_device_before_root = _last_device_before_root(path_closest[:-1])
@@ -1220,6 +1283,8 @@ def compute_feeder_paths(
                 "root_chain_str": root_chain_str,
                 "spine_str": spine_str,
                 "simplified_chain": simplified_chain,
+                "virtual_edges_used": virtual_edges_used,
+                "virtual_edges_count": virtual_edges_count,
             }
         )
 
@@ -1274,6 +1339,7 @@ def compute_feeder_paths(
         "family_debug_-F611": f611_debug,
         "virtual_links_count": len(virtual_links or []),
         "virtual_links": virtual_links or [],
+        "virtual_edges_count": len(virtual_edges or {}),
     }
 
     return feeders, aggregated, issues, debug
@@ -1301,6 +1367,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "root_chain_str": "",
                 "spine_str": "",
                 "simplified_chain": "",
+                "virtual_edges_used": False,
+                "virtual_edges_count": 0,
             },
         )
         if feeder["feeder_end_cp"]:
@@ -1320,12 +1388,16 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
             entry["root_chain_str"] = feeder.get("root_chain_str", "")
             entry["spine_str"] = feeder.get("spine_str", "")
             entry["simplified_chain"] = feeder.get("simplified_chain", "")
+            entry["virtual_edges_used"] = feeder.get("virtual_edges_used", False)
+            entry["virtual_edges_count"] = feeder.get("virtual_edges_count", 0)
         else:
             if feeder["path_len_nodes"] < entry["path_len_nodes"]:
                 entry["path_len_nodes"] = feeder["path_len_nodes"]
                 entry["root_chain_str"] = feeder.get("root_chain_str", "")
                 entry["spine_str"] = feeder.get("spine_str", "")
                 entry["simplified_chain"] = feeder.get("simplified_chain", "")
+                entry["virtual_edges_used"] = feeder.get("virtual_edges_used", False)
+                entry["virtual_edges_count"] = feeder.get("virtual_edges_count", 0)
             else:
                 entry["path_len_nodes"] = min(entry["path_len_nodes"], feeder["path_len_nodes"])
 
@@ -1354,6 +1426,8 @@ def _aggregate_feeder_paths(feeders: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "root_chain_str": entry["root_chain_str"],
                 "spine_str": entry["spine_str"],
                 "simplified_chain": entry["simplified_chain"],
+                "virtual_edges_used": entry["virtual_edges_used"],
+                "virtual_edges_count": entry["virtual_edges_count"],
             }
         )
 

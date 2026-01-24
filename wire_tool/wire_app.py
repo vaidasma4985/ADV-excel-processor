@@ -189,7 +189,7 @@ def render_wire_page() -> None:
     templates = load_templates()
     pinsets, type_signatures, device_nets = _collect_device_power_info(df_power)
 
-    adjacency, _, _, _, _, _ = build_graph(df_power)
+    adjacency, _, _, _, _, _, _ = build_graph(df_power)
     root_devices = identify_root_devices(adjacency)
     root_devices |= {name for name in pinsets if name in _ROOT_DEVICE_DENY_TAGS}
     for device, signature in type_signatures.items():
@@ -376,6 +376,7 @@ def render_wire_page() -> None:
             device_parts,
             logical_edges_added,
             virtual_links,
+            virtual_edges,
         ) = build_graph(df_power, device_templates=device_templates)
         feeders, aggregated, feeder_issues, debug = compute_feeder_paths(
             adjacency,
@@ -383,6 +384,7 @@ def render_wire_page() -> None:
             device_parts=device_parts,
             logical_edges_added=logical_edges_added,
             virtual_links=virtual_links,
+            virtual_edges=virtual_edges,
         )
         issues.extend(feeder_issues)
 
@@ -402,6 +404,8 @@ def render_wire_page() -> None:
             "root_chain_str",
             "spine_str",
             "simplified_chain",
+            "virtual_edges_used",
+            "virtual_edges_count",
         ]
         feeders_df = pd.DataFrame(feeders, columns=feeder_columns)
 
@@ -418,6 +422,8 @@ def render_wire_page() -> None:
             "root_chain_str",
             "spine_str",
             "simplified_chain",
+            "virtual_edges_used",
+            "virtual_edges_count",
         ]
         aggregated_df = pd.DataFrame(aggregated, columns=aggregated_columns)
 
@@ -428,6 +434,8 @@ def render_wire_page() -> None:
             "reachable",
             "simplified_chain",
             "root_chain_str",
+            "virtual_edges_used",
+            "virtual_edges_count",
         ]
         simplified_df = aggregated_df[simplified_columns].copy()
 
