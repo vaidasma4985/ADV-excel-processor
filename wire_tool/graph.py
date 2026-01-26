@@ -280,9 +280,6 @@ def build_graph(
     wired_between_parts: Set[str] = set()
     direct_device_edges: Set[frozenset[str]] = set()
 
-    # BUS / NET hub threshold:
-    # Net token is treated as a "bus" only if it connects to >= 4 device pins.
-    # This reduces false bus detection and prevents path "jumps".
     BUS_HUB_DEGREE_THRESHOLD = 4
 
     parsed_rows: List[Dict[str, Any]] = []
@@ -304,6 +301,7 @@ def build_graph(
         name_b = _base_of(name_b_raw)
         cp_b = _normalize_terminal(row.get("C.name.1"))
 
+        # --- Virtual link capture + continuity edges (bidirectional)
         if _is_virtual_link_row(wireno, type_a, type_b):
             link = {
                 "from_name_raw": name_a_raw,
@@ -317,10 +315,13 @@ def build_graph(
                 "original_row_index": row_index,
             }
             virtual_links.append(link)
+
             from_node = _device_node(name_a_raw, cp_a)
             to_node = _device_node(name_b_raw, cp_b)
             if from_node and to_node:
                 virtual_type = type_a or type_b or _VIRTUAL_LINK_TYPE
+
+                # Store metadata + weights both directions
                 virtual_edges[(from_node, to_node)] = {
                     "edge_type": "virtual",
                     "virtual_type": virtual_type,
@@ -337,8 +338,12 @@ def build_graph(
                     "to_image": link["from_image"],
                     "weight": _VIRTUAL_EDGE_WEIGHT,
                 }
+
+                # Continuity edges in adjacency (bidirectional)
                 adjacency.setdefault(from_node, set()).add(to_node)
                 adjacency.setdefault(to_node, set()).add(from_node)
+
+            # Keep terminals/parts
             if name_a_raw and cp_a:
                 device_terminals[name_a_raw].add(cp_a)
             if name_b_raw and cp_b:
@@ -397,7 +402,6 @@ def build_graph(
             if name_b_raw:
                 device_nets[name_b_raw].update(wireno_tokens)
 
-        # net degree counts (unique device pins connected to token)
         for token in wireno_tokens:
             if from_node:
                 net_pin_degree[token].add(from_node)
@@ -410,7 +414,7 @@ def build_graph(
         if _is_bus_token(token) and len(pins) >= BUS_HUB_DEGREE_THRESHOLD
     }
 
-    # Pass 2: build graph edges
+    # Pass 2: build graph edges (non-virtual rows)
     for entry in parsed_rows:
         row_index = entry["row_index"]
         wireno_tokens: List[str] = entry["wireno_tokens"]
@@ -459,6 +463,7 @@ def build_graph(
                 adjacency[net_node].add(to_node)
                 adjacency[to_node].add(net_node)
 
+    # Pass-through internal edges
     for device_name, terminals in device_terminals.items():
         for left, right in _PASS_THROUGH_PAIRS:
             if left in terminals and right in terminals:
@@ -716,7 +721,7 @@ def _add_logical_edges(
     stacked_rejected_examples: List[Dict[str, Any]] = []
     stacked_rejected_pin_mismatch = 0
     stacked_groups_sample: List[Dict[str, Any]] = []
-    stacked_applied_pairs: List[Dict[str, str]] = []  # IMPORTANT: used later for stable grouping
+    stacked_applied_pairs: List[Dict[str, str]] = []
 
     nodes_by_name = _device_nodes_by_name(adjacency)
 
@@ -733,14 +738,12 @@ def _add_logical_edges(
         if f"{family_key}.2" in members:
             front_candidate = f"{family_key}.2"
         elif family_key in members:
-            # NOTE: base name without .2 is treated as potential “front” only if there is no explicit .2
             front_candidate = family_key
 
         back_candidate = f"{family_key}.1" if f"{family_key}.1" in members else None
         if not front_candidate or not back_candidate:
             continue
 
-        # If both exist (base and .2), do NOT alias base->.2 automatically.
         if front_candidate == family_key and f"{family_key}.2" in members:
             continue
 
@@ -754,7 +757,6 @@ def _add_logical_edges(
         common_nets = sorted(nets_left & nets_right)
         has_wire_between = _has_wire_between_devices(adjacency, nodes_by_name, left, right)
 
-        # HARD RULE: if there is ANY evidence of wiring/connection between .2 and .1 -> DO NOT stack.
         if base_part_name in wired_between_parts or direct_edge or common_nets or has_wire_between:
             stacked_rejected_wired += 1
             if len(stacked_rejected_examples) < 3:
@@ -769,7 +771,6 @@ def _add_logical_edges(
                 )
             continue
 
-        # If we have no nets at all, stacking is ambiguous -> refuse.
         if not nets_left or not nets_right:
             stacked_rejected_ambiguous += 1
             if len(stacked_rejected_examples) < 3:
@@ -789,13 +790,11 @@ def _add_logical_edges(
         role_left = _stacked_split_role(terminals_left, device_templates.get(left))
         role_right = _stacked_split_role(terminals_right, device_templates.get(right))
 
-        # Must be complementary roles (front-only vs back-only), otherwise refuse.
         if not role_left or not role_right or role_left == role_right:
             stacked_rejected_pin_mismatch += 1
             logical_edges_skipped += 1
             continue
 
-        # Add logical bridge edges between the two parts
         for term_left, term_right in _logical_terminal_edges(terminals_left, terminals_right):
             node_left = f"{left}:{term_left}"
             node_right = f"{right}:{term_right}"
@@ -1025,8 +1024,7 @@ def compute_feeder_paths(
     device_nodes = [node for node in adjacency if not _is_net_node(node)]
     device_names = {_device_name(node) for node in device_nodes}
 
-    # ---- IMPORTANT FIX:
-    # Only treat .1/.2 as the same “logical base” if stacking was ACTUALLY applied.
+    # Only treat .1/.2 as same base if stacking was applied
     stacked_applied_pairs: List[Dict[str, str]] = []
     if isinstance(logical_edges_added, dict):
         stacked_applied_pairs = list(logical_edges_added.get("stacked_applied_pairs", []) or [])
@@ -1043,7 +1041,6 @@ def compute_feeder_paths(
     def group_key(name: str) -> str:
         return name_to_group.get(name, name)
 
-    # group terminals by group_key (NOT by naive _logical_base_name)
     group_terminals: Dict[str, Set[str]] = defaultdict(set)
     for name in device_names:
         group_terminals[group_key(name)].update(device_terminals.get(name, set()))
@@ -1061,7 +1058,6 @@ def compute_feeder_paths(
         if _is_f_device(g) and _is_f_end(terminals)
     }
 
-    # --- Minimal reproducible debug dump for a problematic family (hardcoded by request)
     def _family_debug(base: str) -> Dict[str, Any] | None:
         members = sorted(
             [name for name in device_names if name == base or name.startswith(f"{base}.")]
@@ -1103,7 +1099,6 @@ def compute_feeder_paths(
         stacked = any(item.get("base") == base for item in stacked_applied_pairs)
         stack_reason = "applied" if stacked else "refused"
         if not stacked:
-            # Mirror hard rule: any evidence of wiring/connection => refuse stacking
             if any(e["direct_edge"] or e["common_nets"] for e in edges_between):
                 stack_reason = "refused:wired_between_parts"
 
@@ -1150,15 +1145,30 @@ def compute_feeder_paths(
         feeder_name = _device_name(feeder_node)
         feeder_cp = feeder_node.split(":", 1)[1] if ":" in feeder_node else ""
         direct_nets = _direct_net_neighbors(adjacency, [feeder_node])
-
         feeder_group = group_key(feeder_name)
 
-        # block all OTHER feeder end nodes, but keep same logical group
-        blocked_nodes = {
-            node
-            for node in feeder_nodes
-            if group_key(_device_name(node)) != feeder_group
-        }
+        # ---- IMPORTANT FIX (core):
+        # Q feeders MUST be allowed to route via F devices (protections), even if those F devices are also "feeder ends".
+        # Otherwise Q3217/Q3317 become unreachable because upstream -F321.2/-F331.2 are blocked.
+        blocked_mode = "default:block_other_feeders_except_same_group"
+
+        if _is_q_device(feeder_name):
+            # Block only OTHER Q feeders (and X if you want), but DO NOT block F devices.
+            blocked_mode = "Q:block_only_other_Q_and_X"
+            blocked_nodes = set()
+            for node in feeder_nodes:
+                nm = _device_name(node)
+                if nm == feeder_name:
+                    continue
+                if _is_q_device(nm) or nm.startswith("-X"):
+                    blocked_nodes.add(node)
+        else:
+            # For F feeders: keep previous behavior to avoid jumping into other feeder branches.
+            blocked_nodes = {
+                node
+                for node in feeder_nodes
+                if group_key(_device_name(node)) != feeder_group
+            }
 
         q_blocked_nodes = set()
         q_blocked_prefix = ""
@@ -1269,6 +1279,7 @@ def compute_feeder_paths(
                         "closest_net_token": closest_net_token,
                         "last_device_before_root": last_device_before_root,
                         "first_subroot_token_seen": first_subroot_token,
+                        "blocked_mode": blocked_mode,
                     },
                 )
             )
@@ -1300,6 +1311,7 @@ def compute_feeder_paths(
                 "simplified_chain": simplified_chain,
                 "virtual_edges_used": virtual_edges_used,
                 "virtual_edges_count": virtual_edges_count,
+                "blocked_mode": blocked_mode,
             }
         )
 
