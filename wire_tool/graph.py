@@ -790,12 +790,21 @@ def _add_logical_edges(
         role_left = _stacked_split_role(terminals_left, device_templates.get(left))
         role_right = _stacked_split_role(terminals_right, device_templates.get(right))
 
-        if not role_left or not role_right or role_left == role_right:
+        if role_left and role_right:
+            if role_left == role_right:
+                stacked_rejected_pin_mismatch += 1
+                logical_edges_skipped += 1
+                continue
+            terminal_pairs = _logical_terminal_edges(terminals_left, terminals_right)
+        else:
+            terminal_pairs = _logical_terminal_edges(terminals_left, terminals_right)
+
+        if not terminal_pairs:
             stacked_rejected_pin_mismatch += 1
             logical_edges_skipped += 1
             continue
 
-        for term_left, term_right in _logical_terminal_edges(terminals_left, terminals_right):
+        for term_left, term_right in terminal_pairs:
             node_left = f"{left}:{term_left}"
             node_right = f"{right}:{term_right}"
             adjacency.setdefault(node_left, set())
