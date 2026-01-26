@@ -320,16 +320,25 @@ def build_graph(
             from_node = _device_node(name_a_raw, cp_a)
             to_node = _device_node(name_b_raw, cp_b)
             if from_node and to_node:
+                virtual_type = type_a or type_b or _VIRTUAL_LINK_TYPE
                 virtual_edges[(from_node, to_node)] = {
                     "edge_type": "virtual",
-                    "virtual_type": type_a or type_b or _VIRTUAL_LINK_TYPE,
+                    "virtual_type": virtual_type,
                     "original_row_index": row_index,
                     "from_image": link["from_image"],
                     "to_image": link["to_image"],
                     "weight": _VIRTUAL_EDGE_WEIGHT,
                 }
+                virtual_edges[(to_node, from_node)] = {
+                    "edge_type": "virtual",
+                    "virtual_type": virtual_type,
+                    "original_row_index": row_index,
+                    "from_image": link["to_image"],
+                    "to_image": link["from_image"],
+                    "weight": _VIRTUAL_EDGE_WEIGHT,
+                }
                 adjacency.setdefault(from_node, set()).add(to_node)
-                adjacency.setdefault(to_node, set())
+                adjacency.setdefault(to_node, set()).add(from_node)
             if name_a_raw and cp_a:
                 device_terminals[name_a_raw].add(cp_a)
             if name_b_raw and cp_b:
@@ -995,6 +1004,12 @@ def compute_feeder_paths(
     virtual_edge_weights = {
         edge: data.get("weight", 1) for edge, data in (virtual_edges or {}).items()
     }
+    valid_virtual_link_count = 0
+    for link in virtual_links or []:
+        from_node = _device_node(link.get("from_name_raw"), link.get("from_pin"))
+        to_node = _device_node(link.get("to_name_raw"), link.get("to_pin"))
+        if from_node and to_node:
+            valid_virtual_link_count += 1
 
     root_nets = {
         node
@@ -1340,6 +1355,11 @@ def compute_feeder_paths(
         "virtual_links_count": len(virtual_links or []),
         "virtual_links": virtual_links or [],
         "virtual_edges_count": len(virtual_edges or {}),
+        "virtual_edges_bidirectional": bool(
+            virtual_edges
+            and len(virtual_edges) == valid_virtual_link_count * 2
+            and len(virtual_edges) % 2 == 0
+        ),
     }
 
     return feeders, aggregated, issues, debug
