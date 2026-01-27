@@ -88,9 +88,11 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
         return m.get(t, "")
 
     func_col = df["Type"].astype(str).map(type_to_func).fillna("")
-    backup_name_mask = df["Name"].astype(str).str.match(r"-K56[123]\d*", na=False)
+    # Use original names for K-based detection because Name is prefixed later.
+    name_src = df["_name_orig"] if "_name_orig" in df.columns else df["Name"]
+    backup_name_mask = name_src.astype(str).str.match(r"-K56[123]\d*", na=False)
     func_col.loc[backup_name_mask] = "BACKUP"
-    timed_name_mask = df["Name"].astype(str).str.contains(r"-K192A?\d+\b", regex=True, na=False)
+    timed_name_mask = name_src.astype(str).str.contains(r"-K192A?\d+\b", regex=True, na=False)
     func_col.loc[timed_name_mask] = "TIMED_RELAYS"
     hasf = func_col.astype(str).ne("")
     df.loc[hasf, "Name"] = "=" + func_col[hasf].astype(str) + df.loc[hasf, "Name"].astype(str)
