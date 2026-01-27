@@ -700,9 +700,12 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         _apply_accessories(block32, "WAGO.2002-991_ADV", None)
         _apply_accessories(last_836_block, "WAGO.2002-991_ADV", None)
 
-        a9f_mask = fuse_data["Type"].astype(str).eq("SE.A9F04604_ADV")
+        name_src = fuse_data["_name_orig"] if "_name_orig" in fuse_data.columns else fuse_data["Name"]
+        crankcase_token = name_src.astype(str).str.extract(r"(-F\d{3})", expand=False)
+        crankcase_mask = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
         missing_defaults = pd.Series(None, index=fuse_data.index, dtype="float")
-        missing_defaults.loc[a9f_mask] = 0
+        # Strict crankcase matching keeps unrelated F*** devices out of GS=0 (EPLAN ordering relies on GS).
+        missing_defaults.loc[crankcase_mask] = 0
         fuse_data["_terminal_sort"] = fuse_data["_fuse_order_val"].where(
             fuse_data["_fuse_order_val"].notna(), 10**9 + fuse_data["_orig_order"]
         )
