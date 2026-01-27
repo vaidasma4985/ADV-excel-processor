@@ -538,11 +538,21 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         gs_one_pole_val = _assign_missing(one_pole_mask, preferred_start=prev_for_1pole, min_start=prev_for_1pole)
         gs_one_pole_final = _first_group_gs(one_pole_mask)
 
-        backup_mask = relay_data["Type"].astype(str).eq(type_backup) | relay_data["Name"].astype(str).str.match(r"-K56[123]\d*", na=False)
-        prev_for_backup = max(
-            [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a, gs_one_pole_final] if g is not None], default=0
-        ) + 1
-        _assign_missing(backup_mask, preferred_start=prev_for_backup, min_start=prev_for_backup)
+        backup_mask = relay_data["Type"].astype(str).eq(type_backup) | relay_data["Name"].astype(str).str.match(
+            r"-K56[123]\d*", na=False
+        )
+        backup_gs_candidates = pd.to_numeric(
+            relay_data.loc[relay_data["Type"].astype(str).eq(type_backup), "Group Sorting"], errors="coerce"
+        ).dropna()
+        if backup_gs_candidates.empty:
+            prev_for_backup = max(
+                [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a, gs_one_pole_final] if g is not None],
+                default=0,
+            ) + 1
+            backup_gs = _next_free_gs(existing_gs, prev_for_backup)
+        else:
+            backup_gs = int(backup_gs_candidates.iloc[0])
+        relay_data.loc[backup_mask, "Group Sorting"] = backup_gs
 
         def _relay_sort_value(name: str) -> int:
             m = re.search(r"-K192A?(\d+)", str(name))
