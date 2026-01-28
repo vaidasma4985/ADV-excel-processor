@@ -81,7 +81,7 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
             "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
             "WAGO.2002-3201_ADV": "CONTROL",
             "WAGO.2002-3207_ADV": "CONTROL",
-            "SE.RE22R1AMR_ADV": "BACKUP",
+            "SE.RE22R1AMR_ADV": "2POLE",
             "FIN.39.00.8.230.8240_ADV": "1POLE",
             "SE.RE17LCBM_ADV": "TIMED_RELAYS",
         }
@@ -90,8 +90,6 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
     func_col = df["Type"].astype(str).map(type_to_func).fillna("")
     # Use original names for K-based detection because Name is prefixed later.
     name_src = df["_name_orig"] if "_name_orig" in df.columns else df["Name"]
-    backup_name_mask = name_src.astype(str).str.match(r"-K56[123]\d*", na=False)
-    func_col.loc[backup_name_mask] = "BACKUP"
     timed_name_mask = name_src.astype(str).str.contains(r"-K192A?\d+\b", regex=True, na=False)
     func_col.loc[timed_name_mask] = "TIMED_RELAYS"
     hasf = func_col.astype(str).ne("")
@@ -441,7 +439,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         }
         type_2pole = "SE.RGZE1S48M + SE.RXG22P7"
         type_4pole = "SE.RXZE2S114M + SE.RXM4GB2BD"
-        type_backup = "SE.RE22R1AMR_ADV"
         type_1pole = "FIN.39.00.8.230.8240_ADV"
 
         gs_numeric_all = pd.to_numeric(relay_data["Group Sorting"], errors="coerce")
@@ -449,7 +446,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         combo_mask = relay_data["Type"].astype(str).isin(relay_combo_types)
 
-        all_2pole = relay_data["Type"].astype(str).eq(type_2pole)
+        all_2pole = relay_data["Type"].astype(str).isin([type_2pole, "SE.RE22R1AMR_ADV"])
         all_4pole = relay_data["Type"].astype(str).eq(type_4pole)
 
         def _assign_missing(
@@ -538,22 +535,6 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         gs_one_pole_val = _assign_missing(one_pole_mask, preferred_start=prev_for_1pole, min_start=prev_for_1pole)
         gs_one_pole_final = _first_group_gs(one_pole_mask)
 
-        backup_mask = relay_data["Type"].astype(str).eq(type_backup) | relay_data["Name"].astype(str).str.match(
-            r"-K56[123]\d*", na=False
-        )
-        backup_gs_candidates = pd.to_numeric(
-            relay_data.loc[relay_data["Type"].astype(str).eq(type_backup), "Group Sorting"], errors="coerce"
-        ).dropna()
-        if backup_gs_candidates.empty:
-            prev_for_backup = max(
-                [g for g in [gs_2_final, gs_4_final, gs_k192, gs_k192a, gs_one_pole_final] if g is not None],
-                default=0,
-            ) + 1
-            backup_gs = _next_free_gs(existing_gs, prev_for_backup)
-        else:
-            backup_gs = int(backup_gs_candidates.iloc[0])
-        relay_data.loc[backup_mask, "Group Sorting"] = backup_gs
-
         def _relay_sort_value(name: str) -> int:
             m = re.search(r"-K192A?(\d+)", str(name))
             if m:
@@ -568,24 +549,29 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         timed_idxs = relay_data[k192_mask | k192a_mask].index.tolist()
         if timed_idxs:
             relay_data.loc[timed_idxs, "_terminal_sort"] = [_relay_sort_value(relay_data.at[i, "Name"]) for i in timed_idxs]
-            timed_sorted = sorted(timed_idxs, key=lambda i: (_gs_int_safe(i), relay_data.at[i, "_terminal_sort"]))
-            last_timed = timed_sorted[-1]
-            relay_data.at[last_timed, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_timed, "Quantity of accessories"] = 1
 
-        one_pole_idxs = relay_data[one_pole_mask].index.tolist()
-        if one_pole_idxs:
-            one_pole_sorted = sorted(one_pole_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
-            last_one_pole = one_pole_sorted[-1]
-            relay_data.at[last_one_pole, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_one_pole, "Quantity of accessories"] = 1
+        name_src = relay_data["_name_orig"] if "_name_orig" in relay_data.columns else relay_data["Name"]
+        k_num = name_src.astype(str).str.extract(r"-K(\d+)", expand=False)
+        k_num_int = pd.to_numeric(k_num, errors="coerce")
 
-        backup_idxs = relay_data[backup_mask].index.tolist()
-        if backup_idxs:
-            backup_sorted = sorted(backup_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
-            last_backup = backup_sorted[-1]
-            relay_data.at[last_backup, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_backup, "Quantity of accessories"] = 1
+        def _apply_relay_accessory(group_mask: pd.Series) -> None:
+            if not group_mask.any():
+                return
+            group_idxs = relay_data[group_mask].index
+            relay_data.loc[group_idxs, "Accessories"] = ""
+            relay_data.loc[group_idxs, "Quantity of accessories"] = 0
+            valid_k = k_num_int.loc[group_idxs].dropna()
+            if valid_k.empty:
+                return
+            max_idx = valid_k.idxmax()
+            # Use max K-number for deterministic “last” selection; DF order is unstable.
+            relay_data.at[max_idx, "Accessories"] = "WAGO.249-116_ADV"
+            relay_data.at[max_idx, "Quantity of accessories"] = 1
+
+        _apply_relay_accessory(k192_mask | k192a_mask)
+        _apply_relay_accessory(one_pole_mask)
+        _apply_relay_accessory(all_2pole)
+        _apply_relay_accessory(all_4pole)
 
         relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
@@ -939,9 +925,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     relay_type_priority = {
         "SE.RGZE1S48M + SE.RXG22P7": 0,  # 2POLE before 4POLE when GS is equal
+        "SE.RE22R1AMR_ADV": 0,
         "SE.RXZE2S114M + SE.RXM4GB2BD": 1,
         "FIN.39.00.8.230.8240_ADV": 3,
-        "SE.RE22R1AMR_ADV": 4,
     }
     timed_mask = cleaned_df["Name"].astype(str).str.contains(r"-K192A?\d+", regex=True, na=False)
     type_order_series = cleaned_df["Type"].map(relay_type_priority)
