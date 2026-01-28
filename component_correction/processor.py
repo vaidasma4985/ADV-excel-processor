@@ -210,16 +210,21 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     term_df = _drop_unnamed_cols(term_df)
     term_df.columns = term_df.columns.astype(str).str.strip()
 
-    if "Conns." not in term_df.columns or "GROUP SORTING" not in term_df.columns:
+    if "Conns." not in term_df.columns or "GROUP SORTING" not in term_df.columns or "Name" not in term_df.columns:
         return {}
 
     conns = term_df["Conns."].astype(str).str.strip()
+    names = term_df["Name"].astype(str).str.strip()
     gs_numeric = pd.to_numeric(term_df["GROUP SORTING"], errors="coerce")
-    pe_mask = conns.eq("⏚") & gs_numeric.notna()
+    gs_ok = gs_numeric.notna()
+    gs_int = gs_numeric.astype(int)
+    pe_gs_ok = (gs_int % 10) == 5
+    name_ok = names.str.match(r"^-X\d+\b")
+    pe_mask = conns.eq("⏚") & name_ok & gs_ok & pe_gs_ok
     if not pe_mask.any():
         return {}
 
-    counts = gs_numeric[pe_mask].astype(int).value_counts()
+    counts = gs_int[pe_mask].value_counts()
     return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
 
 
