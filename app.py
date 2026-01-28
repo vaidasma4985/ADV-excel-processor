@@ -9,15 +9,27 @@ def render_component_correction() -> None:
 
     st.subheader("Component correction")
 
-    uploaded = st.file_uploader("Įkelk Excel failą", type=["xlsx"], key="comp_uploader")
+    uploaded = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
+    terminal_uploaded = st.file_uploader(
+        "Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader"
+    )
 
+    if uploaded is None and terminal_uploaded is not None:
+        st.info("Component list privalomas. Įkelkite Component list failą.")
+        return
     if uploaded is None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
 
     if st.button("Apdoroti failą", key="comp_run"):
         try:
-            cleaned_df, removed_df, out_bytes, stats = process_excel(uploaded.getvalue())
+            if terminal_uploaded is None:
+                st.warning(
+                    "⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus."
+                )
+            cleaned_df, removed_df, out_bytes, stats = process_excel(
+                uploaded.getvalue(), terminal_list_bytes=terminal_uploaded.getvalue() if terminal_uploaded else None
+            )
 
             st.subheader("Statistika")
             st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
