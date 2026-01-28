@@ -549,30 +549,29 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         timed_idxs = relay_data[k192_mask | k192a_mask].index.tolist()
         if timed_idxs:
             relay_data.loc[timed_idxs, "_terminal_sort"] = [_relay_sort_value(relay_data.at[i, "Name"]) for i in timed_idxs]
-            timed_sorted = sorted(timed_idxs, key=lambda i: (_gs_int_safe(i), relay_data.at[i, "_terminal_sort"]))
-            last_timed = timed_sorted[-1]
-            relay_data.at[last_timed, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_timed, "Quantity of accessories"] = 1
 
-        one_pole_idxs = relay_data[one_pole_mask].index.tolist()
-        if one_pole_idxs:
-            one_pole_sorted = sorted(one_pole_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
-            last_one_pole = one_pole_sorted[-1]
-            relay_data.at[last_one_pole, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_one_pole, "Quantity of accessories"] = 1
-        two_pole_idxs = relay_data[all_2pole].index.tolist()
-        if two_pole_idxs:
-            two_pole_sorted = sorted(two_pole_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
-            last_two_pole = two_pole_sorted[-1]
-            relay_data.at[last_two_pole, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_two_pole, "Quantity of accessories"] = 1
+        name_src = relay_data["_name_orig"] if "_name_orig" in relay_data.columns else relay_data["Name"]
+        k_num = name_src.astype(str).str.extract(r"-K(\d+)", expand=False)
+        k_num_int = pd.to_numeric(k_num, errors="coerce")
 
-        four_pole_idxs = relay_data[all_4pole].index.tolist()
-        if four_pole_idxs:
-            four_pole_sorted = sorted(four_pole_idxs, key=lambda i: (_gs_int_safe(i), str(relay_data.at[i, "Name"])))
-            last_four_pole = four_pole_sorted[-1]
-            relay_data.at[last_four_pole, "Accessories"] = "WAGO.249-116_ADV"
-            relay_data.at[last_four_pole, "Quantity of accessories"] = 1
+        def _apply_relay_accessory(group_mask: pd.Series) -> None:
+            if not group_mask.any():
+                return
+            group_idxs = relay_data[group_mask].index
+            relay_data.loc[group_idxs, "Accessories"] = ""
+            relay_data.loc[group_idxs, "Quantity of accessories"] = 0
+            valid_k = k_num_int.loc[group_idxs].dropna()
+            if valid_k.empty:
+                return
+            max_idx = valid_k.idxmax()
+            # Use max K-number for deterministic “last” selection; DF order is unstable.
+            relay_data.at[max_idx, "Accessories"] = "WAGO.249-116_ADV"
+            relay_data.at[max_idx, "Quantity of accessories"] = 1
+
+        _apply_relay_accessory(k192_mask | k192a_mask)
+        _apply_relay_accessory(one_pole_mask)
+        _apply_relay_accessory(all_2pole)
+        _apply_relay_accessory(all_4pole)
 
         relay_data = _allocate_category_gs(relay_data, missing_default=1)
         return relay_data, pd.DataFrame(columns=list(relay_data.columns) + ["Removed Reason"])
