@@ -199,6 +199,51 @@ def _terminal_sort_key(name: str) -> int:
     return 10**9
 
 
+def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Dict[int, int]:
+    if not terminal_list_bytes:
+        return {}
+    try:
+        term_df = pd.read_excel(BytesIO(terminal_list_bytes), sheet_name=0, engine="openpyxl")
+    except Exception:
+        return {}
+
+    term_df = _drop_unnamed_cols(term_df)
+    term_df.columns = term_df.columns.astype(str).str.strip()
+
+    if "Conns." not in term_df.columns or "GROUP SORTING" not in term_df.columns:
+        return {}
+
+    conns = term_df["Conns."].astype(str).str.strip()
+    gs_numeric = pd.to_numeric(term_df["GROUP SORTING"], errors="coerce")
+    pe_mask = conns.eq("⏚") & gs_numeric.notna()
+    if not pe_mask.any():
+        return {}
+
+    counts = gs_numeric[pe_mask].astype(int).value_counts()
+    return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
+
+
+def _apply_pe_quantity_corrections(df: pd.DataFrame, required_pe_qty_by_gs: Dict[int, int]) -> None:
+    if not required_pe_qty_by_gs:
+        return
+
+    pe_mask = df["Type"].astype(str).eq("WAGO.2002-3207_ADV")
+    if not pe_mask.any():
+        return
+
+    gs_numeric = pd.to_numeric(df["Group Sorting"], errors="coerce")
+    for gs, required_qty in required_pe_qty_by_gs.items():
+        gs_mask = pe_mask & gs_numeric.eq(gs)
+        if gs_mask.any():
+            df.loc[gs_mask, "Quantity"] = int(required_qty)
+
+    update_mask = pe_mask & gs_numeric.isin(list(required_pe_qty_by_gs.keys()))
+    if update_mask.any():
+        df.loc[update_mask, "Quantity"] = (
+            pd.to_numeric(df.loc[update_mask, "Quantity"], errors="coerce").fillna(0).astype(int)
+        )
+
+
 def _normalize_terminal_name(name: str) -> str:
     """
     Normalizuoja terminalo pavadinimą deduplikavimui, nuimdama
@@ -262,7 +307,9 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 # Main processing
 # -----------------------------------------------------------------------------
-def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
+def process_excel(
+    file_bytes: bytes, terminal_list_bytes: bytes | None = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
     df = _drop_unnamed_cols(df)
     input_rows = len(df)
@@ -378,6 +425,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
     }
     df["Type"] = df["Type"].replace(relay_map)
+
+    required_pe_qty_by_gs = _load_terminal_list_pe_requirements(terminal_list_bytes)
+    _apply_pe_quantity_corrections(df, required_pe_qty_by_gs)
 
     # -------------------------------------------------------------------------
     # STEP 4b – relay merge by Name (2POLE/4POLE)
