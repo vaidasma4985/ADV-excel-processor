@@ -217,14 +217,14 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     names = term_df["Name"].astype(str).str.strip()
     gs_numeric = pd.to_numeric(term_df["GROUP SORTING"], errors="coerce")
     gs_ok = gs_numeric.notna()
-    gs_int = gs_numeric.astype(int)
-    pe_gs_ok = (gs_int % 10) == 5
+    pe_gs_ok = (gs_numeric % 10) == 5
     name_ok = names.str.match(r"^-X\d+\b")
     pe_mask = conns.eq("⏚") & name_ok & gs_ok & pe_gs_ok
     if not pe_mask.any():
         return {}
 
-    counts = gs_int[pe_mask].value_counts()
+    gs_int = gs_numeric[pe_mask].astype(int)
+    counts = gs_int.value_counts()
     return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
 
 
