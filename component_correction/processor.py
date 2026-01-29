@@ -199,6 +199,35 @@ def _terminal_sort_key(name: str) -> int:
     return 10**9
 
 
+def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Dict[int, int]:
+    if not terminal_list_bytes:
+        return {}
+    try:
+        term_df = pd.read_excel(BytesIO(terminal_list_bytes), sheet_name=0, engine="openpyxl")
+    except Exception:
+        return {}
+
+    term_df = _drop_unnamed_cols(term_df)
+    term_df.columns = term_df.columns.astype(str).str.strip()
+
+    if "Conns." not in term_df.columns or "GROUP SORTING" not in term_df.columns or "Name" not in term_df.columns:
+        return {}
+
+    conns = term_df["Conns."].astype(str).str.strip()
+    names = term_df["Name"].astype(str).str.strip()
+    gs_numeric = pd.to_numeric(term_df["GROUP SORTING"], errors="coerce")
+    gs_ok = gs_numeric.notna()
+    pe_gs_ok = (gs_numeric % 10) == 5
+    name_ok = names.str.match(r"^-X\d+\b")
+    pe_mask = conns.eq("⏚") & name_ok & gs_ok & pe_gs_ok
+    if not pe_mask.any():
+        return {}
+
+    gs_int = gs_numeric[pe_mask].astype(int)
+    counts = gs_int.value_counts()
+    return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
+
+
 def _normalize_terminal_name(name: str) -> str:
     """
     Normalizuoja terminalo pavadinimą deduplikavimui, nuimdama
@@ -262,7 +291,9 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 # Main processing
 # -----------------------------------------------------------------------------
-def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
+def process_excel(
+    file_bytes: bytes, terminal_list_bytes: bytes | None = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
     df = _drop_unnamed_cols(df)
     input_rows = len(df)
@@ -378,6 +409,8 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
         "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
     }
     df["Type"] = df["Type"].replace(relay_map)
+
+    required_pe_qty_by_gs = _load_terminal_list_pe_requirements(terminal_list_bytes)
 
     # -------------------------------------------------------------------------
     # STEP 4b – relay merge by Name (2POLE/4POLE)
@@ -701,7 +734,9 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
-    def process_terminals(term_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def process_terminals(
+        term_data: pd.DataFrame, pe_requirements: Dict[int, int]
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
@@ -761,7 +796,24 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
             for pe_name, grp in term_data[pe_name_mask].groupby("Name", sort=False):
                 idxs = grp.index.to_list()
                 cnt = len(idxs)
+                base_gs = term_data.at[idxs[0], "_gs_orig"]
+                base_gs_int = int(base_gs) if pd.notna(base_gs) else None
                 need = (cnt + 2) // 3  # ceil(cnt/3)
+                if base_gs_int is not None and base_gs_int in pe_requirements:
+                    need = int(pe_requirements[base_gs_int])
+                if need > cnt:
+                    prototype = term_data.loc[idxs[0]].copy()
+                    for extra_idx in range(cnt, need):
+                        new_row = prototype.copy()
+                        new_row["Quantity"] = 1
+                        new_row["Accessories"] = ""
+                        new_row["Quantity of accessories"] = 0
+                        new_row["Accessories2"] = ""
+                        new_row["Quantity of accessories2"] = 0
+                        new_row["Designation"] = str(extra_idx) if extra_idx > 0 else ""
+                        term_data = pd.concat([term_data, pd.DataFrame([new_row])], ignore_index=True)
+                        idxs.append(term_data.index[-1])
+                    cnt = len(idxs)
 
                 for offset, idx in enumerate(idxs[:need]):
                     term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
@@ -897,7 +949,7 @@ def process_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, bytes,
 
     relay_clean, relay_removed = process_relays(relay_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
-    terminal_clean, terminal_removed = process_terminals(terminal_df)
+    terminal_clean, terminal_removed = process_terminals(terminal_df, required_pe_qty_by_gs)
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
     removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
