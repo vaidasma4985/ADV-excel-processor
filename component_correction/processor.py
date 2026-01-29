@@ -228,27 +228,6 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
 
 
-def _apply_pe_quantity_corrections(df: pd.DataFrame, required_pe_qty_by_gs: Dict[int, int]) -> None:
-    if not required_pe_qty_by_gs:
-        return
-
-    pe_mask = df["Type"].astype(str).eq("WAGO.2002-3207_ADV")
-    if not pe_mask.any():
-        return
-
-    gs_numeric = pd.to_numeric(df["Group Sorting"], errors="coerce")
-    for gs, required_qty in required_pe_qty_by_gs.items():
-        gs_mask = pe_mask & gs_numeric.eq(gs)
-        if gs_mask.any():
-            df.loc[gs_mask, "Quantity"] = int(required_qty)
-
-    update_mask = pe_mask & gs_numeric.isin(list(required_pe_qty_by_gs.keys()))
-    if update_mask.any():
-        df.loc[update_mask, "Quantity"] = (
-            pd.to_numeric(df.loc[update_mask, "Quantity"], errors="coerce").fillna(0).astype(int)
-        )
-
-
 def _normalize_terminal_name(name: str) -> str:
     """
     Normalizuoja terminalo pavadinimą deduplikavimui, nuimdama
@@ -432,7 +411,6 @@ def process_excel(
     df["Type"] = df["Type"].replace(relay_map)
 
     required_pe_qty_by_gs = _load_terminal_list_pe_requirements(terminal_list_bytes)
-    _apply_pe_quantity_corrections(df, required_pe_qty_by_gs)
 
     # -------------------------------------------------------------------------
     # STEP 4b – relay merge by Name (2POLE/4POLE)
@@ -756,7 +734,9 @@ def process_excel(
 
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
-    def process_terminals(term_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def process_terminals(
+        term_data: pd.DataFrame, pe_requirements: Dict[int, int]
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
@@ -816,7 +796,24 @@ def process_excel(
             for pe_name, grp in term_data[pe_name_mask].groupby("Name", sort=False):
                 idxs = grp.index.to_list()
                 cnt = len(idxs)
+                base_gs = term_data.at[idxs[0], "_gs_orig"]
+                base_gs_int = int(base_gs) if pd.notna(base_gs) else None
                 need = (cnt + 2) // 3  # ceil(cnt/3)
+                if base_gs_int is not None and base_gs_int in pe_requirements:
+                    need = int(pe_requirements[base_gs_int])
+                if need > cnt:
+                    prototype = term_data.loc[idxs[0]].copy()
+                    for extra_idx in range(cnt, need):
+                        new_row = prototype.copy()
+                        new_row["Quantity"] = 1
+                        new_row["Accessories"] = ""
+                        new_row["Quantity of accessories"] = 0
+                        new_row["Accessories2"] = ""
+                        new_row["Quantity of accessories2"] = 0
+                        new_row["Designation"] = str(extra_idx) if extra_idx > 0 else ""
+                        term_data = pd.concat([term_data, pd.DataFrame([new_row])], ignore_index=True)
+                        idxs.append(term_data.index[-1])
+                    cnt = len(idxs)
 
                 for offset, idx in enumerate(idxs[:need]):
                     term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
@@ -952,7 +949,7 @@ def process_excel(
 
     relay_clean, relay_removed = process_relays(relay_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
-    terminal_clean, terminal_removed = process_terminals(terminal_df)
+    terminal_clean, terminal_removed = process_terminals(terminal_df, required_pe_qty_by_gs)
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
     removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
