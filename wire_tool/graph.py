@@ -367,9 +367,14 @@ def build_graph(
             suppress_direct = False
             if wireno_tokens and _is_front_terminal(cp_a) and _is_front_terminal(cp_b):
                 suppress_direct = any(token in bus_tokens_active for token in wireno_tokens)
-            if not suppress_direct:
+            allow_direct = not wireno_tokens and not suppress_direct
+            if allow_direct:
                 adjacency[from_node].add(to_node)
                 adjacency[to_node].add(from_node)
+            elif wireno_tokens:
+                # Avoid direct edges when wireno tokens exist; this prevents path shortcuts
+                # and ensures NET:<token> nodes are preserved for display.
+                pass
 
         for token in wireno_tokens:
             net_node = f"NET:{token}"
