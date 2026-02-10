@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 
@@ -20,6 +21,52 @@ def render_component_correction() -> None:
     if uploaded is None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
+
+    transformer_needed = False
+    missing_transformer_columns = False
+    try:
+        raw_df = pd.read_excel(uploaded, sheet_name=0)
+        normalized_columns = {col: str(col).strip() for col in raw_df.columns}
+        name_col = next(
+            (original for original, normalized in normalized_columns.items() if normalized == "Name"),
+            None,
+        )
+        gs_col = next(
+            (
+                original
+                for original, normalized in normalized_columns.items()
+                if normalized.lower() in {"group sorting", "group sortin"}
+            ),
+            None,
+        )
+        if name_col is None or gs_col is None:
+            missing_transformer_columns = True
+        else:
+            name_series = raw_df[name_col].astype(str)
+            gs_series = raw_df[gs_col].astype(str)
+            cond_name = name_series.str.contains(
+                r"(^|[^A-Z0-9])\-X102([^A-Z0-9]|$)",
+                regex=True,
+                na=False,
+            )
+            cond_gs_text = gs_series.str.strip().eq("Transformer 460/230")
+            transformer_needed = cond_name.any() or cond_gs_text.any()
+    except Exception:
+        missing_transformer_columns = True
+
+    if transformer_needed:
+        st.markdown(
+            """
+            <div style="background-color:#d4edda;padding:16px;border-radius:8px;">
+              <span style="color:#1b5e20;font-size:28px;font-weight:800;">
+                EXTERNAL TRANSFORMER TERMINALS NEEDED
+              </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif missing_transformer_columns:
+        st.warning("Missing columns for transformer check.")
 
     if st.button("Apdoroti failą", key="comp_run"):
         try:
