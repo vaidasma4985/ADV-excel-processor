@@ -13,6 +13,148 @@ YELLOW_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 
 
 # -----------------------------------------------------------------------------
+# Type normalization/classification constants (single source of truth helpers)
+# -----------------------------------------------------------------------------
+_REMOVE_PREFIXES: Tuple[str, ...] = ("-B", "-C", "-R", "-M", "-P", "-Q", "-S", "-W", "-T")
+
+_ALLOWED_RAW_TYPES: set[str] = {
+    "2002-1611/1000-541",
+    "2002-1611/1000-836",
+    "2002-3201",
+    "2002-3207",
+    "RXZE2S114M",
+    "RXM4GB2BD",
+    "RXG22P7",
+    "RXG22BD",
+    "RGZE1S48M",
+    "A9F04604",
+    "RE17LCBM",
+    "RE22R1AMR",
+    "39.00.8.230.8240",
+}
+
+_WAGO_RAW_TYPES: set[str] = {
+    "2002-1611/1000-541",
+    "2002-1611/1000-836",
+    "2002-3201",
+    "2002-3207",
+    "249-116",
+    "2002-991",
+    "2002-3292",
+}
+
+_SE_TYPE_MAP: Dict[str, str] = {
+    "RGZE1S48M": "SE.RGZE1S48M",
+    "RXG22P7": "SE.RXG22P7",
+    "RXG22BD": "SE.RXG22BD",
+    "RXM4GB2BD": "SE.RXM4GB2BD",
+    "RXZE2S114M": "SE.RXZE2S114M",
+    "A9F04604": "SE.A9F04604",
+}
+
+_ADV_TYPE_MAP: Dict[str, str] = {
+    "WAGO.2002-3207": "WAGO.2002-3207_ADV",
+    "WAGO.2002-3201": "WAGO.2002-3201_ADV",
+    "WAGO.2002-3292": "WAGO.2002-3292_ADV",
+    "WAGO.2002-991": "WAGO.2002-991_ADV",
+    "WAGO.249-116": "WAGO.249-116_ADV",
+    "WAGO.2002-1611/1000-541": "WAGO.2002-1611/1000-541_ADV",
+    "WAGO.2002-1611/1000-836": "WAGO.2002-1611/1000-836_ADV",
+    "SE.A9F04604": "SE.A9F04604_ADV",
+}
+
+_RELAY_TYPE_MAP: Dict[str, str] = {
+    "RE17LCBM": "SE.RE17LCBM_ADV",
+    "RE22R1AMR": "SE.RE22R1AMR_ADV",
+    "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
+}
+
+_TERMINAL_TYPES: set[str] = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+_FUSE_TYPES: set[str] = {
+    "WAGO.2002-1611/1000-541_ADV",
+    "WAGO.2002-1611/1000-836_ADV",
+    "SE.A9F04604_ADV",
+}
+
+
+def normalize_type(raw_type: str) -> str:
+    """Normalize a raw component type using the same mapping sequence as STEP 4."""
+    if raw_type is None or pd.isna(raw_type):
+        return ""
+
+    type_value = str(raw_type).strip()
+    if not type_value:
+        return ""
+
+    if type_value in _WAGO_RAW_TYPES:
+        type_value = f"WAGO.{type_value}"
+
+    type_value = _SE_TYPE_MAP.get(type_value, type_value)
+    type_value = _ADV_TYPE_MAP.get(type_value, type_value)
+    type_value = _RELAY_TYPE_MAP.get(type_value, type_value)
+
+    return str(type_value)
+
+
+def classify_component(name: str, raw_type: str, group_sorting: Any) -> Dict[str, Any]:
+    """Classify one component row without mutating external state."""
+    name_str = "" if name is None or pd.isna(name) else str(name)
+    raw_type_str = "" if raw_type is None or pd.isna(raw_type) else str(raw_type).strip()
+    normalized_type = normalize_type(raw_type)
+
+    gs_num = pd.to_numeric(group_sorting, errors="coerce")
+    gs_numeric = None if pd.isna(gs_num) else float(gs_num)
+    gs_is_non_numeric = bool(
+        not pd.isna(group_sorting)
+        and str(group_sorting).strip() != ""
+        and pd.isna(gs_num)
+    )
+
+    removed_by_name_prefix = name_str.startswith(_REMOVE_PREFIXES)
+    allowed_raw_type = raw_type_str in _ALLOWED_RAW_TYPES
+    would_be_processed = (not removed_by_name_prefix) and (not gs_is_non_numeric) and allowed_raw_type
+
+    if normalized_type in _TERMINAL_TYPES:
+        domain = "terminal"
+    elif normalized_type in _FUSE_TYPES:
+        domain = "fuse"
+    elif allowed_raw_type:
+        domain = "relay"
+    else:
+        domain = "other"
+
+    reason = "ok"
+    if removed_by_name_prefix:
+        reason = "removed_name_prefix"
+    elif gs_is_non_numeric:
+        reason = "gs_non_numeric"
+    elif not allowed_raw_type:
+        reason = "type_not_allowed"
+
+    return {
+        "name": name_str,
+        "raw_type": raw_type_str,
+        "normalized_type": normalized_type,
+        "gs_numeric": gs_numeric,
+        "removed_by_name_prefix": removed_by_name_prefix,
+        "gs_is_non_numeric": gs_is_non_numeric,
+        "allowed_raw_type": allowed_raw_type,
+        "would_be_processed": would_be_processed,
+        "domain": domain,
+        "reason": reason,
+    }
+
+
+def _sanity_check_type_helpers() -> None:
+    """Manual smoke checks (not executed automatically).
+
+    Example expectations:
+    - normalize_type("2002-3201") -> "WAGO.2002-3201_ADV"
+    - normalize_type("SE.A9F04604") -> "SE.A9F04604_ADV"
+    - normalize_type("RE22R1AMR") -> "SE.RE22R1AMR_ADV"
+    """
+
+# -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 def _drop_unnamed_cols(df: pd.DataFrame) -> pd.DataFrame:
