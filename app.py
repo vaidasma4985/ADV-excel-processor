@@ -78,19 +78,88 @@ def render_component_correction() -> None:
                 uploaded.getvalue(), terminal_list_bytes=terminal_uploaded.getvalue() if terminal_uploaded else None
             )
 
-            st.subheader("Statistika")
-            st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
-            st.write(f"Cleaned eilučių: **{stats['cleaned_rows']}**")
-            st.write(f"Removed eilučių: **{stats['removed_rows']}**")
+            with st.expander("Debug", expanded=False):
+                st.subheader("Statistika")
+                st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
+                st.write(f"Cleaned eilučių: **{stats['cleaned_rows']}**")
+                st.write(f"Removed eilučių: **{stats['removed_rows']}**")
 
-            st.subheader("Apdoroti duomenys (Cleaned)")
-            st.dataframe(cleaned_df, use_container_width=True)
+                st.subheader("Apdoroti duomenys (Cleaned)")
+                st.dataframe(cleaned_df, use_container_width=True)
 
-            st.subheader("Ištrintos eilutės (Removed)")
-            if removed_df.empty:
-                st.info("Ištrintų eilučių nėra.")
-            else:
-                st.dataframe(removed_df, use_container_width=True)
+                st.subheader("Ištrintos eilutės (Removed)")
+                if removed_df.empty:
+                    st.info("Ištrintų eilučių nėra.")
+                else:
+                    st.dataframe(removed_df, use_container_width=True)
+
+                st.subheader("Unrecognized components")
+                raw_component_df = pd.read_excel(uploaded.getvalue(), sheet_name=0)
+                normalized_columns = {col: str(col).strip().lower() for col in raw_component_df.columns}
+
+                name_col = next(
+                    (original for original, normalized in normalized_columns.items() if normalized == "name"),
+                    None,
+                )
+                type_col = next(
+                    (original for original, normalized in normalized_columns.items() if normalized == "type"),
+                    None,
+                )
+                gs_col = next(
+                    (
+                        original
+                        for original, normalized in normalized_columns.items()
+                        if normalized in {"group sorting", "group sortin"}
+                    ),
+                    None,
+                )
+
+                if name_col is None or type_col is None:
+                    st.info("Unrecognized components lentelei trūksta 'Name' arba 'Type' stulpelio.")
+                else:
+                    df = raw_component_df.copy()
+                    name_series = df[name_col].astype(str).str.strip()
+                    type_series = df[type_col].astype(str).str.strip()
+
+                    extracted_token = name_series.str.extract(r"(-[XFTCGK]\w+)", expand=False)
+                    normalized_token = extracted_token.fillna("").str.upper()
+                    prefix_ok = normalized_token.str.startswith(tuple(f"-{p}" for p in "XFTCGK"))
+
+                    type_upper = type_series.str.upper()
+                    recognized_type = (
+                        type_upper.str.startswith("WAGO.")
+                        | type_upper.str.startswith("SE.")
+                        | type_upper.str.startswith("FIN.")
+                        | type_upper.str.startswith("A9")
+                        | type_upper.str.contains("GV2", na=False)
+                    )
+
+                    unrecognized_mask = prefix_ok & type_series.ne("") & ~recognized_type
+                    unrecognized_df = df.loc[unrecognized_mask].copy()
+
+                    optional_columns = [
+                        col
+                        for col in ["Quantity", "Function", "Original_Name", "Original_Type", "Original_Group Sorting"]
+                        if col in unrecognized_df.columns
+                    ]
+
+                    selected_columns = [name_col, type_col]
+                    if gs_col is not None:
+                        selected_columns.append(gs_col)
+                    selected_columns.extend([col for col in optional_columns if col not in selected_columns])
+
+                    if unrecognized_df.empty:
+                        st.info("Unrecognized components nerasta.")
+                    else:
+                        dedupe_subset = [name_col, type_col]
+                        if gs_col is not None:
+                            dedupe_subset.append(gs_col)
+                        unrecognized_df = (
+                            unrecognized_df[selected_columns]
+                            .drop_duplicates(subset=dedupe_subset)
+                            .sort_values(by=[type_col, name_col], na_position="last")
+                        )
+                        st.dataframe(unrecognized_df, use_container_width=True)
 
             st.download_button(
                 label="Atsisiųsti rezultatą (Excel)",
