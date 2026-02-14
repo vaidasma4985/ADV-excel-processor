@@ -210,9 +210,7 @@ def render_component_correction() -> None:
                 st.info("Unrecognized components nerasta.")
             else:
                 search = st.text_input("Paieška (Name/Type)", "")
-                domain_options = ["All"] + sorted(unrec_df["Domain"].astype(str).unique().tolist())
                 reason_options = ["All"] + sorted(unrec_df["Reason"].astype(str).unique().tolist())
-                domain_filter = st.selectbox("Domain", domain_options)
                 reason_filter = st.selectbox("Reason", reason_options)
                 only_type_not_allowed = st.checkbox("Rodyti tik type_not_allowed", value=True)
 
@@ -223,8 +221,6 @@ def render_component_correction() -> None:
                         filtered_df["Name"].astype(str).str.lower().str.contains(q, na=False)
                         | filtered_df["Type"].astype(str).str.lower().str.contains(q, na=False)
                     ]
-                if domain_filter != "All":
-                    filtered_df = filtered_df[filtered_df["Domain"] == domain_filter]
                 if reason_filter != "All":
                     filtered_df = filtered_df[filtered_df["Reason"] == reason_filter]
                 if only_type_not_allowed:
