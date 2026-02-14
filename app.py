@@ -78,23 +78,127 @@ def render_component_correction() -> None:
                 st.warning(
                     "⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus."
                 )
-            cleaned_df, removed_df, out_bytes, stats = process_excel(
+            cleaned_df, removed_df, out_bytes, _stats = process_excel(
                 uploaded.getvalue(), terminal_list_bytes=terminal_uploaded.getvalue() if terminal_uploaded else None
             )
 
-            st.subheader("Statistika")
-            st.write(f"Įvesties eilučių: **{stats['input_rows']}**")
-            st.write(f"Cleaned eilučių: **{stats['cleaned_rows']}**")
-            st.write(f"Removed eilučių: **{stats['removed_rows']}**")
+            with st.expander("Debug", expanded=False):
+                tab_unrecognized, tab_cleaned, tab_removed, tab_raw = st.tabs(
+                    ["Unrecognized", "Cleaned", "Removed", "Raw preview"]
+                )
 
-            st.subheader("Apdoroti duomenys (Cleaned)")
-            st.dataframe(cleaned_df, use_container_width=True)
+                with tab_unrecognized:
+                    try:
+                        raw_df = pd.read_excel(
+                            BytesIO(uploaded.getvalue()),
+                            sheet_name=0,
+                            engine="openpyxl",
+                        )
+                        raw_df.columns = raw_df.columns.astype(str).str.strip()
 
-            st.subheader("Ištrintos eilutės (Removed)")
-            if removed_df.empty:
-                st.info("Ištrintų eilučių nėra.")
-            else:
-                st.dataframe(removed_df, use_container_width=True)
+                        required_debug_cols = ["Name", "Type", "Quantity", "Group Sorting"]
+                        missing_debug_cols = [c for c in required_debug_cols if c not in raw_df.columns]
+
+                        if missing_debug_cols:
+                            st.info(
+                                "Debug: trūksta stulpelių neapdorotų komponentų analizei: "
+                                + ", ".join(missing_debug_cols)
+                            )
+                        else:
+                            rows = []
+                            prefix_pattern = r"(-[XFTCGK][A-Z0-9]+)"
+                            for _, row in raw_df.iterrows():
+                                name = row.get("Name", "")
+                                raw_type = row.get("Type", "")
+                                group_sorting = row.get("Group Sorting", "")
+                                info = classify_component(name, raw_type, group_sorting)
+
+                                name_str = "" if pd.isna(name) else str(name)
+                                prefix_ok = bool(pd.notna(name) and re.search(prefix_pattern, name_str))
+                                is_unrecognized = (
+                                    prefix_ok
+                                    and (not info.get("allowed_raw_type", False))
+                                    and (not info.get("removed_by_name_prefix", False))
+                                )
+                                if not is_unrecognized:
+                                    continue
+
+                                rows.append(
+                                    {
+                                        "Name": name_str,
+                                        "Type": "" if pd.isna(raw_type) else str(raw_type),
+                                        "Normalized Type": info.get("normalized_type", ""),
+                                        "Group Sorting": "" if pd.isna(group_sorting) else group_sorting,
+                                        "Domain": info.get("domain", "other"),
+                                        "Reason": info.get("reason", "type_not_allowed"),
+                                        "Allowed raw type": info.get("allowed_raw_type", False),
+                                        "Would be processed": info.get("would_be_processed", False),
+                                    }
+                                )
+
+                            if rows:
+                                unrec_df = pd.DataFrame(rows)
+                                unrec_df = unrec_df.drop_duplicates(subset=["Name", "Type", "Group Sorting"])
+                                unrec_df = unrec_df.sort_values(by=["Type", "Name"], kind="stable")
+
+                                search = st.text_input("Paieška (Name/Type)", "")
+                                domain_options = ["All"] + sorted(unrec_df["Domain"].astype(str).unique().tolist())
+                                reason_options = ["All"] + sorted(unrec_df["Reason"].astype(str).unique().tolist())
+                                domain_filter = st.selectbox("Domain", domain_options)
+                                reason_filter = st.selectbox("Reason", reason_options)
+                                only_type_not_allowed = st.checkbox("Rodyti tik type_not_allowed", value=True)
+
+                                filtered_df = unrec_df.copy()
+                                if search.strip():
+                                    q = search.strip().lower()
+                                    filtered_df = filtered_df[
+                                        filtered_df["Name"].astype(str).str.lower().str.contains(q, na=False)
+                                        | filtered_df["Type"].astype(str).str.lower().str.contains(q, na=False)
+                                    ]
+                                if domain_filter != "All":
+                                    filtered_df = filtered_df[filtered_df["Domain"] == domain_filter]
+                                if reason_filter != "All":
+                                    filtered_df = filtered_df[filtered_df["Reason"] == reason_filter]
+                                if only_type_not_allowed:
+                                    filtered_df = filtered_df[filtered_df["Reason"] == "type_not_allowed"]
+
+                                if filtered_df.empty:
+                                    st.info("Unrecognized components nerasta pagal pasirinktus filtrus.")
+                                else:
+                                    st.dataframe(filtered_df, use_container_width=True)
+                            else:
+                                st.info("Unrecognized components nerasta.")
+                    except Exception as debug_exc:
+                        st.warning(f"Debug lentelės nepavyko sugeneruoti: {debug_exc}")
+                        st.exception(debug_exc)
+
+                with tab_cleaned:
+                    if cleaned_df.empty:
+                        st.info("Cleaned duomenų nėra.")
+                    else:
+                        st.dataframe(cleaned_df, use_container_width=True)
+
+                with tab_removed:
+                    if removed_df.empty:
+                        st.info("Ištrintų eilučių nėra.")
+                    else:
+                        st.dataframe(removed_df, use_container_width=True)
+
+                with tab_raw:
+                    try:
+                        raw_preview_df = pd.read_excel(
+                            BytesIO(uploaded.getvalue()),
+                            sheet_name=0,
+                            engine="openpyxl",
+                        )
+                        raw_preview_df.columns = raw_preview_df.columns.astype(str).str.strip()
+                        if raw_preview_df.empty:
+                            st.info("Raw preview tuščias.")
+                        else:
+                            st.dataframe(raw_preview_df, use_container_width=True)
+                    except Exception as raw_exc:
+                        st.warning(f"Raw preview nepavyko nuskaityti: {raw_exc}")
+                        st.exception(raw_exc)
 
             st.download_button(
                 label="Atsisiųsti rezultatą (Excel)",
@@ -102,69 +206,6 @@ def render_component_correction() -> None:
                 file_name="processed_components.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-
-            with st.expander("Debug", expanded=False):
-                try:
-                    raw_df = pd.read_excel(
-                        BytesIO(uploaded.getvalue()),
-                        sheet_name=0,
-                        engine="openpyxl",
-                    )
-                    raw_df.columns = raw_df.columns.astype(str).str.strip()
-
-                    required_debug_cols = ["Name", "Type", "Quantity", "Group Sorting"]
-                    missing_debug_cols = [c for c in required_debug_cols if c not in raw_df.columns]
-                    if missing_debug_cols:
-                        st.info(
-                            "Debug: trūksta stulpelių neapdorotų komponentų analizei: "
-                            + ", ".join(missing_debug_cols)
-                        )
-                    else:
-                        rows = []
-                        prefix_pattern = r"(-[XFTCGK][A-Z0-9]+)"
-                        for _, row in raw_df.iterrows():
-                            name = row.get("Name", "")
-                            raw_type = row.get("Type", "")
-                            group_sorting = row.get("Group Sorting", "")
-                            info = classify_component(name, raw_type, group_sorting)
-                            normalized_type = info.get("normalized_type", "")
-
-                            name_str = "" if pd.isna(name) else str(name)
-                            prefix_ok = bool(pd.notna(name) and re.search(prefix_pattern, name_str))
-                            is_unrecognized = (
-                                prefix_ok
-                                and (not info.get("allowed_raw_type", False))
-                                and (not info.get("removed_by_name_prefix", False))
-                            )
-                            if not is_unrecognized:
-                                continue
-
-                            rows.append(
-                                {
-                                    "Name": name_str,
-                                    "Type": "" if pd.isna(raw_type) else str(raw_type),
-                                    "Normalized Type": normalized_type,
-                                    "Group Sorting": "" if pd.isna(group_sorting) else group_sorting,
-                                    "Domain": info.get("domain", "other"),
-                                    "Reason": info.get("reason", "type_not_allowed"),
-                                    "Allowed raw type": info.get("allowed_raw_type", False),
-                                    "Would be processed": info.get("would_be_processed", False),
-                                }
-                            )
-
-                        st.subheader("Unrecognized components")
-                        if rows:
-                            unrec_df = pd.DataFrame(rows)
-                            unrec_df = unrec_df.drop_duplicates(
-                                subset=["Name", "Type", "Group Sorting"]
-                            )
-                            unrec_df = unrec_df.sort_values(by=["Type", "Name"], kind="stable")
-                            st.dataframe(unrec_df, use_container_width=True)
-                        else:
-                            st.info("Unrecognized components nerasta.")
-                except Exception as debug_exc:
-                    st.warning(f"Debug lentelės nepavyko sugeneruoti: {debug_exc}")
-                    st.exception(debug_exc)
 
         except ValueError as e:
             st.error(f"Klaida: {e}")
