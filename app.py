@@ -9,13 +9,10 @@ import streamlit as st
 
 def render_component_correction() -> None:
     # Lazy import to isolate tools
-    from component_correction.processor import (
-        classify_component,
-        normalize_type,
-        process_excel,
-    )  # DO NOT TOUCH processor.py
+    from component_correction.processor import classify_component, process_excel  # DO NOT TOUCH processor.py
 
     st.subheader("Component correction")
+    st.caption("UI build: debug-v2 (type recognition via processor.classify_component)")
 
     uploaded = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
     terminal_uploaded = st.file_uploader(
@@ -124,13 +121,13 @@ def render_component_correction() -> None:
                         )
                     else:
                         rows = []
-                        prefix_pattern = r"-[XFTCGK][A-Z0-9]+"
+                        prefix_pattern = r"(-[XFTCGK][A-Z0-9]+)"
                         for _, row in raw_df.iterrows():
                             name = row.get("Name", "")
                             raw_type = row.get("Type", "")
                             group_sorting = row.get("Group Sorting", "")
                             info = classify_component(name, raw_type, group_sorting)
-                            normalized_type = info.get("normalized_type") or normalize_type(raw_type)
+                            normalized_type = info.get("normalized_type", "")
 
                             name_str = "" if pd.isna(name) else str(name)
                             prefix_ok = bool(pd.notna(name) and re.search(prefix_pattern, name_str))
@@ -150,8 +147,8 @@ def render_component_correction() -> None:
                                     "Group Sorting": "" if pd.isna(group_sorting) else group_sorting,
                                     "Domain": info.get("domain", "other"),
                                     "Reason": info.get("reason", "type_not_allowed"),
-                                    "Would be processed": info.get("would_be_processed", False),
                                     "Allowed raw type": info.get("allowed_raw_type", False),
+                                    "Would be processed": info.get("would_be_processed", False),
                                 }
                             )
 
@@ -159,7 +156,7 @@ def render_component_correction() -> None:
                         if rows:
                             unrec_df = pd.DataFrame(rows)
                             unrec_df = unrec_df.drop_duplicates(
-                                subset=["Name", "Type", "Group Sorting", "Normalized Type"]
+                                subset=["Name", "Type", "Group Sorting"]
                             )
                             unrec_df = unrec_df.sort_values(by=["Type", "Name"], kind="stable")
                             st.dataframe(unrec_df, use_container_width=True)
@@ -167,6 +164,7 @@ def render_component_correction() -> None:
                             st.info("Unrecognized components nerasta.")
                 except Exception as debug_exc:
                     st.warning(f"Debug lentelės nepavyko sugeneruoti: {debug_exc}")
+                    st.exception(debug_exc)
 
         except ValueError as e:
             st.error(f"Klaida: {e}")
