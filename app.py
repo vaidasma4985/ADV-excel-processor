@@ -92,7 +92,15 @@ def render_component_correction() -> None:
         st.session_state["terminal_name"] = terminal_file.name
 
     if st.button("Išvalyti", key="comp_clear"):
-        for k in ["component_bytes", "component_name", "terminal_bytes", "terminal_name", "results", "run_id"]:
+        for k in [
+            "component_bytes",
+            "component_name",
+            "terminal_bytes",
+            "terminal_name",
+            "results",
+            "run_id",
+            "corrected_raw_df",
+        ]:
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -201,9 +209,7 @@ def render_component_correction() -> None:
     excel_bytes = results.get("excel_bytes", b"")
 
     with st.expander("Debug", expanded=False):
-        tab_unrecognized, tab_cleaned, tab_removed, tab_raw = st.tabs(
-            ["Unrecognized", "Cleaned", "Removed", "Raw preview"]
-        )
+        tab_unrecognized, tab_errors, tab_raw = st.tabs(["Unrecognized", "Errors", "Raw preview"])
 
         with tab_unrecognized:
             if unrec_df.empty:
@@ -231,17 +237,74 @@ def render_component_correction() -> None:
                 else:
                     st.dataframe(filtered_df, use_container_width=True)
 
-        with tab_cleaned:
-            if cleaned_df.empty:
-                st.info("Cleaned duomenų nėra.")
-            else:
-                st.dataframe(cleaned_df, use_container_width=True)
+        with tab_errors:
+            try:
+                raw_df = pd.read_excel(
+                    BytesIO(component_bytes),
+                    sheet_name=0,
+                    engine="openpyxl",
+                )
+                raw_df.columns = raw_df.columns.astype(str).str.strip()
 
-        with tab_removed:
-            if removed_df.empty:
-                st.info("Ištrintų eilučių nėra.")
-            else:
-                st.dataframe(removed_df, use_container_width=True)
+                required_cols = ["Name", "Type", "Group Sorting"]
+                missing_cols = [c for c in required_cols if c not in raw_df.columns]
+                if missing_cols:
+                    st.warning("Errors tikrinimui trūksta stulpelių: " + ", ".join(missing_cols))
+                else:
+                    name_series = raw_df["Name"].astype(str)
+                    gs_series = raw_df["Group Sorting"]
+                    prefix_ok = name_series.str.contains(r"-X\d+", regex=True, na=False)
+                    gs_missing = gs_series.isna() | (gs_series.astype(str).str.strip() == "")
+                    errors_df = raw_df[prefix_ok & gs_missing].copy()
+
+                    if errors_df.empty:
+                        st.success("Terminalų be GS nerasta.")
+                    else:
+                        editor_source = errors_df[["Name", "Type", "Group Sorting"]].copy()
+                        edited_df = st.data_editor(
+                            editor_source,
+                            num_rows="fixed",
+                            use_container_width=True,
+                            key="missing_gs_editor",
+                        )
+
+                        if st.button("Taikyti GS pataisymus"):
+                            gs_values = edited_df["Group Sorting"]
+                            gs_as_text = gs_values.astype(str).str.strip()
+                            gs_numeric = pd.to_numeric(gs_values, errors="coerce")
+                            invalid_mask = gs_as_text.eq("") | gs_numeric.isna()
+
+                            if invalid_mask.any():
+                                st.error("Klaida: visi Group Sorting laukai turi būti užpildyti skaičiais.")
+                            else:
+                                corrected_raw_df = raw_df.copy()
+                                corrected_raw_df.loc[errors_df.index, "Group Sorting"] = gs_numeric.values
+
+                                output_buffer = BytesIO()
+                                with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+                                    corrected_raw_df.to_excel(writer, index=False)
+                                corrected_bytes = output_buffer.getvalue()
+
+                                current_terminal_bytes = st.session_state.get("terminal_bytes")
+                                cleaned_df_new, removed_df_new, excel_bytes_new, _stats = process_excel(
+                                    corrected_bytes,
+                                    terminal_list_bytes=current_terminal_bytes,
+                                )
+                                unrec_df_new = _build_unrecognized_df(corrected_bytes)
+
+                                st.session_state["corrected_raw_df"] = corrected_raw_df
+                                st.session_state["results"] = {
+                                    "cleaned_df": cleaned_df_new,
+                                    "removed_df": removed_df_new,
+                                    "unrec_df": unrec_df_new,
+                                    "excel_bytes": excel_bytes_new,
+                                }
+                                st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+                                st.success("GS pataisymai pritaikyti.")
+                                st.rerun()
+            except Exception as err_exc:
+                st.warning(f"Errors tab nepavyko nuskaityti: {err_exc}")
+                st.exception(err_exc)
 
         with tab_raw:
             try:
