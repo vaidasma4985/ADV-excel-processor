@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import re
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 
 
 def render_component_correction() -> None:
     # Lazy import to isolate tools
-    from component_correction.processor import process_excel  # DO NOT TOUCH processor.py
+    from component_correction.processor import (
+        classify_component,
+        normalize_type,
+        process_excel,
+    )  # DO NOT TOUCH processor.py
 
     st.subheader("Component correction")
 
@@ -98,6 +105,68 @@ def render_component_correction() -> None:
                 file_name="processed_components.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+
+            with st.expander("Debug", expanded=False):
+                try:
+                    raw_df = pd.read_excel(
+                        BytesIO(uploaded.getvalue()),
+                        sheet_name=0,
+                        engine="openpyxl",
+                    )
+                    raw_df.columns = raw_df.columns.astype(str).str.strip()
+
+                    required_debug_cols = ["Name", "Type", "Quantity", "Group Sorting"]
+                    missing_debug_cols = [c for c in required_debug_cols if c not in raw_df.columns]
+                    if missing_debug_cols:
+                        st.info(
+                            "Debug: trūksta stulpelių neapdorotų komponentų analizei: "
+                            + ", ".join(missing_debug_cols)
+                        )
+                    else:
+                        rows = []
+                        prefix_pattern = r"-[XFTCGK][A-Z0-9]+"
+                        for _, row in raw_df.iterrows():
+                            name = row.get("Name", "")
+                            raw_type = row.get("Type", "")
+                            group_sorting = row.get("Group Sorting", "")
+                            info = classify_component(name, raw_type, group_sorting)
+                            normalized_type = info.get("normalized_type") or normalize_type(raw_type)
+
+                            name_str = "" if pd.isna(name) else str(name)
+                            prefix_ok = bool(pd.notna(name) and re.search(prefix_pattern, name_str))
+                            is_unrecognized = (
+                                prefix_ok
+                                and (not info.get("allowed_raw_type", False))
+                                and (not info.get("removed_by_name_prefix", False))
+                            )
+                            if not is_unrecognized:
+                                continue
+
+                            rows.append(
+                                {
+                                    "Name": name_str,
+                                    "Type": "" if pd.isna(raw_type) else str(raw_type),
+                                    "Normalized Type": normalized_type,
+                                    "Group Sorting": "" if pd.isna(group_sorting) else group_sorting,
+                                    "Domain": info.get("domain", "other"),
+                                    "Reason": info.get("reason", "type_not_allowed"),
+                                    "Would be processed": info.get("would_be_processed", False),
+                                    "Allowed raw type": info.get("allowed_raw_type", False),
+                                }
+                            )
+
+                        st.subheader("Unrecognized components")
+                        if rows:
+                            unrec_df = pd.DataFrame(rows)
+                            unrec_df = unrec_df.drop_duplicates(
+                                subset=["Name", "Type", "Group Sorting", "Normalized Type"]
+                            )
+                            unrec_df = unrec_df.sort_values(by=["Type", "Name"], kind="stable")
+                            st.dataframe(unrec_df, use_container_width=True)
+                        else:
+                            st.info("Unrecognized components nerasta.")
+                except Exception as debug_exc:
+                    st.warning(f"Debug lentelės nepavyko sugeneruoti: {debug_exc}")
 
         except ValueError as e:
             st.error(f"Klaida: {e}")
