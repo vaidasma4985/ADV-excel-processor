@@ -137,7 +137,7 @@ def render_component_correction() -> None:
             st.session_state["component_bytes"] = new_component_bytes
             st.session_state["component_name"] = component_file.name
             st.session_state["component_upload_sig"] = new_upload_sig
-            for k in ["results", "gs_fix_df", "workflow_state", "gs_fix_applied_flash", "gs_fix_editor"]:
+            for k in ["results", "gs_fix_df", "gs_fix_draft", "workflow_state", "gs_fix_applied_flash", "gs_fix_editor"]:
                 st.session_state.pop(k, None)
             st.session_state["workflow_state"] = "idle"
 
@@ -206,7 +206,12 @@ def render_component_correction() -> None:
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
 
-    if workflow_state != "needs_gs_fix" and st.button("Apdoroti failą", key="comp_run"):
+    show_process_button = not (
+        workflow_state == "needs_gs_fix"
+        or (workflow_state == "ready" and st.session_state.get("results") is not None)
+    )
+
+    if show_process_button and st.button("Apdoroti failą", key="comp_run"):
         try:
             missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
 
@@ -216,6 +221,7 @@ def render_component_correction() -> None:
                 st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
             elif not missing_gs_errors_df.empty:
                 st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
+                st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
                 st.session_state["workflow_state"] = "needs_gs_fix"
                 st.session_state.pop("results", None)
                 st.session_state.pop("gs_fix_editor", None)
@@ -227,6 +233,9 @@ def render_component_correction() -> None:
                     )
 
                 st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
+                st.session_state.pop("gs_fix_df", None)
+                st.session_state.pop("gs_fix_draft", None)
+                st.session_state.pop("gs_fix_editor", None)
                 st.session_state["workflow_state"] = "ready"
                 st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
                 st.rerun()
@@ -243,17 +252,22 @@ def render_component_correction() -> None:
 
         if "gs_fix_df" not in st.session_state:
             st.session_state["gs_fix_df"] = pd.DataFrame(columns=["Name", "Type", "Group Sorting", "_idx"])
+        if "gs_fix_draft" not in st.session_state:
+            st.session_state["gs_fix_draft"] = st.session_state["gs_fix_df"].copy()
 
-        editor_df = st.data_editor(
-            st.session_state["gs_fix_df"],
-            num_rows="fixed",
-            use_container_width=True,
-            key="gs_fix_editor",
-        )
-        st.session_state["gs_fix_df"] = editor_df
+        with st.form("gs_fix_form"):
+            edited_draft = st.data_editor(
+                st.session_state["gs_fix_draft"],
+                num_rows="fixed",
+                use_container_width=True,
+                key="gs_fix_editor",
+            )
+            apply_clicked = st.form_submit_button("Taikyti pakeitimus")
 
-        if st.button("Taikyti pakeitimus", key="apply_gs_fixes_main"):
-            df_fix = st.session_state.get("gs_fix_df", pd.DataFrame())
+        st.session_state["gs_fix_draft"] = edited_draft
+
+        if apply_clicked:
+            df_fix = st.session_state.get("gs_fix_draft", pd.DataFrame())
             gs_values = df_fix["Group Sorting"] if "Group Sorting" in df_fix.columns else pd.Series(dtype=float)
             gs_as_text = gs_values.astype(str).str.strip()
             gs_numeric = pd.to_numeric(gs_values, errors="coerce")
@@ -283,6 +297,7 @@ def render_component_correction() -> None:
                         st.session_state["workflow_state"] = "ready"
                         st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
                         st.session_state.pop("gs_fix_df", None)
+                        st.session_state.pop("gs_fix_draft", None)
                         st.session_state.pop("gs_fix_editor", None)
                         st.session_state["gs_fix_applied_flash"] = True
                         st.rerun()
@@ -357,6 +372,7 @@ def render_component_correction() -> None:
                 "results",
                 "run_id",
                 "gs_fix_df",
+                "gs_fix_draft",
                 "gs_fix_editor",
                 "gs_fix_applied_flash",
                 "workflow_state",
