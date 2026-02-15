@@ -73,31 +73,85 @@ def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
     return unrec_df
 
 
-def render_component_correction() -> None:
-    # Lazy import to isolate tools
-    from component_correction.processor import process_excel  # DO NOT TOUCH processor.py
+def _build_missing_gs_terminals_df(component_bytes: bytes) -> tuple[pd.DataFrame | None, pd.DataFrame, list[str]]:
+    try:
+        raw_df = pd.read_excel(
+            BytesIO(component_bytes),
+            sheet_name=0,
+            engine="openpyxl",
+        )
+        raw_df.columns = raw_df.columns.astype(str).str.strip()
+    except Exception:
+        return None, pd.DataFrame(), ["read_error"]
 
+    required_cols = ["Type", "Group Sorting"]
+    missing_cols = [c for c in required_cols if c not in raw_df.columns]
+    if missing_cols:
+        return raw_df, pd.DataFrame(), missing_cols
+
+    raw_type_str = raw_df["Type"].astype(str).str.strip()
+    terminal_type_mask = (
+        raw_type_str.isin(["2002-3201", "2002-3207"])
+        | raw_type_str.isin(["WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"])
+        | raw_type_str.str.contains(r"\b2002-3201\b|\b2002-3207\b", regex=True, na=False)
+    )
+
+    gs = raw_df["Group Sorting"]
+    gs_missing = gs.isna() | (gs.astype(str).str.strip() == "")
+
+    errors_df = raw_df.loc[terminal_type_mask & gs_missing, ["Name", "Type", "Group Sorting"]].copy()
+    errors_df["_idx"] = errors_df.index
+    return raw_df, errors_df, []
+
+
+def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dict[str, pd.DataFrame | bytes]:
+    from component_correction.processor import process_excel
+
+    cleaned_df, removed_df, excel_bytes, _stats = process_excel(
+        component_bytes,
+        terminal_list_bytes=terminal_bytes,
+    )
+    unrec_df = _build_unrecognized_df(component_bytes)
+    return {
+        "cleaned_df": cleaned_df,
+        "removed_df": removed_df,
+        "unrec_df": unrec_df,
+        "excel_bytes": excel_bytes,
+    }
+
+
+def render_component_correction() -> None:
     st.subheader("Component correction")
     st.caption("UI build: debug-v2 (type recognition via processor.classify_component)")
+
+    if "workflow_state" not in st.session_state:
+        st.session_state["workflow_state"] = "idle"
 
     component_file = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
     terminal_file = st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
 
     if component_file is not None:
-        st.session_state["component_bytes"] = component_file.getvalue()
-        st.session_state["component_name"] = component_file.name
+        new_component_bytes = component_file.getvalue()
+        new_upload_sig = f"{component_file.name}:{len(new_component_bytes)}"
+        if st.session_state.get("component_upload_sig") != new_upload_sig:
+            st.session_state["component_bytes"] = new_component_bytes
+            st.session_state["component_name"] = component_file.name
+            st.session_state["component_upload_sig"] = new_upload_sig
+            for k in ["results", "gs_fix_df", "gs_fix_draft", "workflow_state", "gs_fix_applied_flash", "gs_fix_editor"]:
+                st.session_state.pop(k, None)
+            st.session_state["workflow_state"] = "idle"
 
     if terminal_file is not None:
         st.session_state["terminal_bytes"] = terminal_file.getvalue()
         st.session_state["terminal_name"] = terminal_file.name
 
-    if st.button("Išvalyti", key="comp_clear"):
-        for k in ["component_bytes", "component_name", "terminal_bytes", "terminal_name", "results", "run_id"]:
-            st.session_state.pop(k, None)
-        st.rerun()
+    if st.session_state.get("gs_fix_applied_flash"):
+        st.success("GS pritaikyti. Duomenys perapdoroti.")
+        st.session_state["gs_fix_applied_flash"] = False
 
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
+    workflow_state = st.session_state.get("workflow_state", "idle")
 
     if component_bytes is None and terminal_bytes is not None:
         st.info("Component list privalomas. Įkelkite Component list failą.")
@@ -152,119 +206,180 @@ def render_component_correction() -> None:
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
 
-    if st.button("Apdoroti failą", key="comp_run"):
-        if "component_bytes" not in st.session_state:
-            st.warning("Pirmiausia įkelkite Component list failą.")
-            return
+    show_process_button = not (
+        workflow_state == "needs_gs_fix"
+        or (workflow_state == "ready" and st.session_state.get("results") is not None)
+    )
 
+    if show_process_button and st.button("Apdoroti failą", key="comp_run"):
         try:
-            if terminal_bytes is None:
-                st.warning(
-                    "⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus."
-                )
+            missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
 
-            component_io = BytesIO(st.session_state["component_bytes"])
-            component_io.seek(0)
-            current_component_bytes = component_io.getvalue()
+            if missing_gs_cols and missing_gs_cols != ["read_error"]:
+                st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
+            elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
+                st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
+            elif not missing_gs_errors_df.empty:
+                st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
+                st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
+                st.session_state["workflow_state"] = "needs_gs_fix"
+                st.session_state.pop("results", None)
+                st.session_state.pop("gs_fix_editor", None)
+                st.rerun()
+            else:
+                if terminal_bytes is None:
+                    st.warning(
+                        "⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus."
+                    )
 
-            current_terminal_bytes = None
-            if "terminal_bytes" in st.session_state:
-                terminal_io = BytesIO(st.session_state["terminal_bytes"])
-                terminal_io.seek(0)
-                current_terminal_bytes = terminal_io.getvalue()
-
-            cleaned_df, removed_df, excel_bytes, _stats = process_excel(
-                current_component_bytes,
-                terminal_list_bytes=current_terminal_bytes,
-            )
-
-            unrec_df = _build_unrecognized_df(current_component_bytes)
-
-            st.session_state["results"] = {
-                "cleaned_df": cleaned_df,
-                "removed_df": removed_df,
-                "unrec_df": unrec_df,
-                "excel_bytes": excel_bytes,
-            }
-            st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+                st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
+                st.session_state.pop("gs_fix_df", None)
+                st.session_state.pop("gs_fix_draft", None)
+                st.session_state.pop("gs_fix_editor", None)
+                st.session_state["workflow_state"] = "ready"
+                st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+                st.rerun()
 
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
+    if st.session_state.get("workflow_state") == "needs_gs_fix":
+        st.error(
+            "Neužpildyti Group Sorting laukai terminalams (2002-3201 / 2002-3207). "
+            "Užpildyk žemiau ir spausk 'Taikyti pakeitimus'."
+        )
+        st.subheader("Trūkstami Group Sorting (terminalai)")
+
+        if "gs_fix_df" not in st.session_state:
+            st.session_state["gs_fix_df"] = pd.DataFrame(columns=["Name", "Type", "Group Sorting", "_idx"])
+        if "gs_fix_draft" not in st.session_state:
+            st.session_state["gs_fix_draft"] = st.session_state["gs_fix_df"].copy()
+
+        with st.form("gs_fix_form"):
+            edited_draft = st.data_editor(
+                st.session_state["gs_fix_draft"],
+                num_rows="fixed",
+                use_container_width=True,
+                key="gs_fix_editor",
+            )
+            apply_clicked = st.form_submit_button("Taikyti pakeitimus")
+
+        st.session_state["gs_fix_draft"] = edited_draft
+
+        if apply_clicked:
+            df_fix = st.session_state.get("gs_fix_draft", pd.DataFrame())
+            gs_values = df_fix["Group Sorting"] if "Group Sorting" in df_fix.columns else pd.Series(dtype=float)
+            gs_as_text = gs_values.astype(str).str.strip()
+            gs_numeric = pd.to_numeric(gs_values, errors="coerce")
+            invalid_mask = gs_as_text.eq("") | gs_numeric.isna() | (gs_numeric % 1 != 0)
+            if "_idx" not in df_fix.columns:
+                invalid_mask = pd.Series([True])
+
+            if invalid_mask.any():
+                st.error("Klaida: terminalų (2002-3201 / 2002-3207) Group Sorting turi būti sveiki skaičiai.")
+            else:
+                try:
+                    raw_df, _errors_df, missing_cols = _build_missing_gs_terminals_df(component_bytes)
+                    if raw_df is None or missing_cols:
+                        st.warning("Nepavyko pritaikyti GS pataisymų: trūksta stulpelių arba failas neperskaitomas.")
+                    else:
+                        corrected_raw_df = raw_df.copy()
+                        for _, row in df_fix.iterrows():
+                            corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
+
+                        output_buffer = BytesIO()
+                        with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+                            corrected_raw_df.to_excel(writer, index=False)
+                        corrected_bytes = output_buffer.getvalue()
+
+                        st.session_state["component_bytes"] = corrected_bytes
+                        st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
+                        st.session_state["workflow_state"] = "ready"
+                        st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+                        st.session_state.pop("gs_fix_df", None)
+                        st.session_state.pop("gs_fix_draft", None)
+                        st.session_state.pop("gs_fix_editor", None)
+                        st.session_state["gs_fix_applied_flash"] = True
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Įvyko klaida taikant GS pataisymus: {e}")
+
     results = st.session_state.get("results")
-    if not results:
-        return
+    ready_state = st.session_state.get("workflow_state") == "ready" and results is not None
 
-    cleaned_df = results.get("cleaned_df", pd.DataFrame())
-    removed_df = results.get("removed_df", pd.DataFrame())
-    unrec_df = results.get("unrec_df", pd.DataFrame())
-    excel_bytes = results.get("excel_bytes", b"")
+    if ready_state:
+        excel_bytes = results.get("excel_bytes", b"")
 
-    with st.expander("Debug", expanded=False):
-        tab_unrecognized, tab_cleaned, tab_removed, tab_raw = st.tabs(
-            ["Unrecognized", "Cleaned", "Removed", "Raw preview"]
+        st.download_button(
+            label="Atsisiųsti rezultatą (Excel)",
+            data=excel_bytes,
+            file_name="processed_components.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        with tab_unrecognized:
-            if unrec_df.empty:
-                st.info("Unrecognized components nerasta.")
-            else:
-                search = st.text_input("Paieška (Name/Type)", "")
-                reason_options = ["All"] + sorted(unrec_df["Reason"].astype(str).unique().tolist())
-                reason_filter = st.selectbox("Reason", reason_options)
-                only_type_not_allowed = st.checkbox("Rodyti tik type_not_allowed", value=True)
+        with st.expander("Debug", expanded=False):
+            tab_unrecognized, tab_raw = st.tabs(["Unrecognized", "Raw preview"])
 
-                filtered_df = unrec_df.copy()
-                if search.strip():
-                    q = search.strip().lower()
-                    filtered_df = filtered_df[
-                        filtered_df["Name"].astype(str).str.lower().str.contains(q, na=False)
-                        | filtered_df["Type"].astype(str).str.lower().str.contains(q, na=False)
-                    ]
-                if reason_filter != "All":
-                    filtered_df = filtered_df[filtered_df["Reason"] == reason_filter]
-                if only_type_not_allowed:
-                    filtered_df = filtered_df[filtered_df["Reason"] == "type_not_allowed"]
-
-                if filtered_df.empty:
-                    st.info("Unrecognized components nerasta pagal pasirinktus filtrus.")
+            with tab_unrecognized:
+                unrec_df = results.get("unrec_df", pd.DataFrame())
+                if unrec_df.empty:
+                    st.info("Unrecognized components nerasta.")
                 else:
-                    st.dataframe(filtered_df, use_container_width=True)
+                    search = st.text_input("Paieška (Name/Type)", "")
+                    reason_options = ["All"] + sorted(unrec_df["Reason"].astype(str).unique().tolist())
+                    reason_filter = st.selectbox("Reason", reason_options)
+                    only_type_not_allowed = st.checkbox("Rodyti tik type_not_allowed", value=True)
 
-        with tab_cleaned:
-            if cleaned_df.empty:
-                st.info("Cleaned duomenų nėra.")
-            else:
-                st.dataframe(cleaned_df, use_container_width=True)
+                    filtered_df = unrec_df.copy()
+                    if search.strip():
+                        q = search.strip().lower()
+                        filtered_df = filtered_df[
+                            filtered_df["Name"].astype(str).str.lower().str.contains(q, na=False)
+                            | filtered_df["Type"].astype(str).str.lower().str.contains(q, na=False)
+                        ]
+                    if reason_filter != "All":
+                        filtered_df = filtered_df[filtered_df["Reason"] == reason_filter]
+                    if only_type_not_allowed:
+                        filtered_df = filtered_df[filtered_df["Reason"] == "type_not_allowed"]
 
-        with tab_removed:
-            if removed_df.empty:
-                st.info("Ištrintų eilučių nėra.")
-            else:
-                st.dataframe(removed_df, use_container_width=True)
+                    if filtered_df.empty:
+                        st.info("Unrecognized components nerasta pagal pasirinktus filtrus.")
+                    else:
+                        st.dataframe(filtered_df, use_container_width=True)
 
-        with tab_raw:
-            try:
-                raw_preview_df = pd.read_excel(
-                    BytesIO(component_bytes),
-                    sheet_name=0,
-                    engine="openpyxl",
-                )
-                raw_preview_df.columns = raw_preview_df.columns.astype(str).str.strip()
-                if raw_preview_df.empty:
-                    st.info("Raw preview tuščias.")
-                else:
-                    st.dataframe(raw_preview_df, use_container_width=True)
-            except Exception as raw_exc:
-                st.warning(f"Raw preview nepavyko nuskaityti: {raw_exc}")
-                st.exception(raw_exc)
+            with tab_raw:
+                try:
+                    raw_preview_df = pd.read_excel(
+                        BytesIO(st.session_state["component_bytes"]),
+                        sheet_name=0,
+                        engine="openpyxl",
+                    )
+                    raw_preview_df.columns = raw_preview_df.columns.astype(str).str.strip()
+                    if raw_preview_df.empty:
+                        st.info("Raw preview tuščias.")
+                    else:
+                        st.dataframe(raw_preview_df, use_container_width=True)
+                except Exception as raw_exc:
+                    st.warning(f"Raw preview nepavyko nuskaityti: {raw_exc}")
+                    st.exception(raw_exc)
 
-    st.download_button(
-        label="Atsisiųsti rezultatą (Excel)",
-        data=excel_bytes,
-        file_name="processed_components.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        if st.button("Išvalyti", key="comp_clear"):
+            for k in [
+                "component_bytes",
+                "component_name",
+                "terminal_bytes",
+                "terminal_name",
+                "results",
+                "run_id",
+                "gs_fix_df",
+                "gs_fix_draft",
+                "gs_fix_editor",
+                "gs_fix_applied_flash",
+                "workflow_state",
+                "component_upload_sig",
+            ]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 
 def render_wire_tool() -> None:
