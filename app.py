@@ -132,10 +132,12 @@ def render_component_correction() -> None:
 
     if component_file is not None:
         new_component_bytes = component_file.getvalue()
-        if st.session_state.get("component_bytes") != new_component_bytes:
+        new_upload_sig = f"{component_file.name}:{len(new_component_bytes)}"
+        if st.session_state.get("component_upload_sig") != new_upload_sig:
             st.session_state["component_bytes"] = new_component_bytes
             st.session_state["component_name"] = component_file.name
-            for k in ["results", "pending_gs_df", "workflow_state", "gs_fix_applied", "gs_fix_editor"]:
+            st.session_state["component_upload_sig"] = new_upload_sig
+            for k in ["results", "gs_fix_df", "workflow_state", "gs_fix_applied_flash", "gs_fix_editor"]:
                 st.session_state.pop(k, None)
             st.session_state["workflow_state"] = "idle"
 
@@ -143,9 +145,9 @@ def render_component_correction() -> None:
         st.session_state["terminal_bytes"] = terminal_file.getvalue()
         st.session_state["terminal_name"] = terminal_file.name
 
-    if st.session_state.get("gs_fix_applied"):
+    if st.session_state.get("gs_fix_applied_flash"):
         st.success("GS pritaikyti. Duomenys perapdoroti.")
-        st.session_state["gs_fix_applied"] = False
+        st.session_state["gs_fix_applied_flash"] = False
 
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
@@ -213,9 +215,10 @@ def render_component_correction() -> None:
             elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
                 st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
             elif not missing_gs_errors_df.empty:
-                st.session_state["pending_gs_df"] = missing_gs_errors_df
+                st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
                 st.session_state["workflow_state"] = "needs_gs_fix"
                 st.session_state.pop("results", None)
+                st.session_state.pop("gs_fix_editor", None)
                 st.rerun()
             else:
                 if terminal_bytes is None:
@@ -238,20 +241,25 @@ def render_component_correction() -> None:
         )
         st.subheader("Trūkstami Group Sorting (terminalai)")
 
-        pending_gs_df = st.session_state.get("pending_gs_df", pd.DataFrame())
+        if "gs_fix_df" not in st.session_state:
+            st.session_state["gs_fix_df"] = pd.DataFrame(columns=["Name", "Type", "Group Sorting", "_idx"])
+
         editor_df = st.data_editor(
-            pending_gs_df,
+            st.session_state["gs_fix_df"],
             num_rows="fixed",
             use_container_width=True,
             key="gs_fix_editor",
         )
-        st.session_state["pending_gs_df"] = editor_df
+        st.session_state["gs_fix_df"] = editor_df
 
         if st.button("Taikyti pakeitimus", key="apply_gs_fixes_main"):
-            gs_values = editor_df["Group Sorting"]
+            df_fix = st.session_state.get("gs_fix_df", pd.DataFrame())
+            gs_values = df_fix["Group Sorting"] if "Group Sorting" in df_fix.columns else pd.Series(dtype=float)
             gs_as_text = gs_values.astype(str).str.strip()
             gs_numeric = pd.to_numeric(gs_values, errors="coerce")
             invalid_mask = gs_as_text.eq("") | gs_numeric.isna() | (gs_numeric % 1 != 0)
+            if "_idx" not in df_fix.columns:
+                invalid_mask = pd.Series([True])
 
             if invalid_mask.any():
                 st.error("Klaida: terminalų (2002-3201 / 2002-3207) Group Sorting turi būti sveiki skaičiai.")
@@ -262,7 +270,7 @@ def render_component_correction() -> None:
                         st.warning("Nepavyko pritaikyti GS pataisymų: trūksta stulpelių arba failas neperskaitomas.")
                     else:
                         corrected_raw_df = raw_df.copy()
-                        for _, row in editor_df.iterrows():
+                        for _, row in df_fix.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
 
                         output_buffer = BytesIO()
@@ -274,9 +282,9 @@ def render_component_correction() -> None:
                         st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
                         st.session_state["workflow_state"] = "ready"
                         st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
-                        st.session_state.pop("pending_gs_df", None)
+                        st.session_state.pop("gs_fix_df", None)
                         st.session_state.pop("gs_fix_editor", None)
-                        st.session_state["gs_fix_applied"] = True
+                        st.session_state["gs_fix_applied_flash"] = True
                         st.rerun()
                 except Exception as e:
                     st.error(f"Įvyko klaida taikant GS pataisymus: {e}")
@@ -348,10 +356,11 @@ def render_component_correction() -> None:
                 "terminal_name",
                 "results",
                 "run_id",
-                "pending_gs_df",
+                "gs_fix_df",
                 "gs_fix_editor",
-                "gs_fix_applied",
+                "gs_fix_applied_flash",
                 "workflow_state",
+                "component_upload_sig",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
