@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from io import BytesIO
 
@@ -8,12 +9,51 @@ import streamlit as st
 
 
 TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
+TERMINAL_TYPE_MAP = {"2002-3201": "WAGO.2002-3201_ADV", "2002-3207": "WAGO.2002-3207_ADV"}
 
 
 def _normalize_selected_terminal_type(type_value: str) -> str:
     value = "" if type_value is None else str(type_value).strip()
     token_match = re.search(r"2002-3201|2002-3207", value)
     return token_match.group(0) if token_match else value
+
+
+def _bytes_sig(name: str, b: bytes) -> tuple[str, int, str]:
+    return (name or "", len(b), hashlib.md5(b).hexdigest())
+
+
+def _maybe_store_upload(upl, bytes_key: str, sig_key: str, name_key: str | None = None) -> None:
+    if upl is None:
+        return
+
+    b = upl.getvalue()
+    sig = _bytes_sig(getattr(upl, "name", ""), b)
+    if st.session_state.get(sig_key) == sig:
+        return
+
+    st.session_state[bytes_key] = b
+    st.session_state[sig_key] = sig
+    if name_key is not None:
+        st.session_state[name_key] = getattr(upl, "name", "")
+
+    for k in [
+        "workflow_state",
+        "processed",
+        "results",
+        "missing_gs_draft",
+        "type_fix_draft",
+        "missing_gs_df",
+        "unrec_type_df",
+        "gs_fix_df",
+        "gs_fix_draft",
+        "type_fix_df",
+        "fix_applied_flash",
+        "gs_fix_editor",
+        "type_fix_editor",
+    ]:
+        st.session_state.pop(k, None)
+
+    st.session_state["workflow_state"] = "idle"
 
 
 def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
@@ -199,30 +239,8 @@ def render_component_correction() -> None:
     component_file = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
     terminal_file = st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
 
-    if component_file is not None:
-        new_component_bytes = component_file.getvalue()
-        new_upload_sig = f"{component_file.name}:{len(new_component_bytes)}"
-        if st.session_state.get("component_upload_sig") != new_upload_sig:
-            st.session_state["component_bytes"] = new_component_bytes
-            st.session_state["component_name"] = component_file.name
-            st.session_state["component_upload_sig"] = new_upload_sig
-            for k in [
-                "results",
-                "gs_fix_df",
-                "gs_fix_draft",
-                "type_fix_df",
-                "type_fix_draft",
-                "workflow_state",
-                "fix_applied_flash",
-                "gs_fix_editor",
-                "type_fix_editor",
-            ]:
-                st.session_state.pop(k, None)
-            st.session_state["workflow_state"] = "idle"
-
-    if terminal_file is not None:
-        st.session_state["terminal_bytes"] = terminal_file.getvalue()
-        st.session_state["terminal_name"] = terminal_file.name
+    _maybe_store_upload(component_file, "component_bytes", "component_sig", name_key="component_name")
+    _maybe_store_upload(terminal_file, "terminal_bytes", "terminal_sig", name_key="terminal_name")
 
     if st.session_state.get("fix_applied_flash"):
         st.success("Pakeitimai pritaikyti. Duomenys perapdoroti.")
@@ -419,9 +437,8 @@ def render_component_correction() -> None:
                         for _, row in gs_fix_df.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
                         for _, row in type_fix_df.iterrows():
-                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = _normalize_selected_terminal_type(
-                                row.get("Correct Type", "")
-                            )
+                            normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
+                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = TERMINAL_TYPE_MAP[normalized_choice]
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
@@ -429,6 +446,11 @@ def render_component_correction() -> None:
                         corrected_bytes = output_buffer.getvalue()
 
                         st.session_state["component_bytes"] = corrected_bytes
+                        existing_name = st.session_state.get("component_name", "")
+                        existing_sig = st.session_state.get("component_sig")
+                        if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
+                            existing_name = existing_sig[0]
+                        st.session_state["component_sig"] = _bytes_sig(existing_name, corrected_bytes)
                         st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
                         st.session_state["workflow_state"] = "ready"
                         st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
@@ -517,7 +539,8 @@ def render_component_correction() -> None:
                 "type_fix_editor",
                 "fix_applied_flash",
                 "workflow_state",
-                "component_upload_sig",
+                "component_sig",
+                "terminal_sig",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
