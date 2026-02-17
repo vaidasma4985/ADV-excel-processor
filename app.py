@@ -9,7 +9,7 @@ import streamlit as st
 
 
 TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
-TERMINAL_TYPE_MAP = {"2002-3201": "WAGO.2002-3201_ADV", "2002-3207": "WAGO.2002-3207_ADV"}
+TERMINAL_TYPE_MAP = {"2002-3201": "2002-3201", "2002-3207": "2002-3207"}
 
 
 def _normalize_selected_terminal_type(type_value: str) -> str:
@@ -463,7 +463,7 @@ def render_component_correction() -> None:
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
                         for _, row in type_fix_df.iterrows():
                             normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
-                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = TERMINAL_TYPE_MAP[normalized_choice]
+                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = normalized_choice
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
