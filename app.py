@@ -10,6 +10,12 @@ import streamlit as st
 TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
 
 
+def _normalize_selected_terminal_type(type_value: str) -> str:
+    value = "" if type_value is None else str(type_value).strip()
+    token_match = re.search(r"2002-3201|2002-3207", value)
+    return token_match.group(0) if token_match else value
+
+
 def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
     raw_df = pd.read_excel(
         BytesIO(component_bytes),
@@ -339,51 +345,52 @@ def render_component_correction() -> None:
         if "type_fix_draft" not in st.session_state:
             st.session_state["type_fix_draft"] = st.session_state["type_fix_df"].copy()
 
-        left_col, right_col = st.columns(2)
+        with st.form("fix_form", clear_on_submit=False):
+            left_col, right_col = st.columns(2)
 
-        with left_col:
-            st.markdown("### Missing Group sorting for terminals")
-            edited_gs_draft = st.data_editor(
-                st.session_state["gs_fix_draft"],
-                num_rows="fixed",
-                use_container_width=True,
-                key="gs_fix_editor",
-                disabled=["Name", "Type", "_idx"],
-                column_config={
-                    "_idx": None,
-                    "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
-                },
-            )
+            with left_col:
+                st.markdown("### Missing Group sorting for terminals")
+                edited_gs_draft = st.data_editor(
+                    st.session_state["gs_fix_draft"],
+                    num_rows="fixed",
+                    use_container_width=True,
+                    key="gs_fix_editor",
+                    disabled=["Name", "Type", "_idx"],
+                    column_config={
+                        "_idx": None,
+                        "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
+                    },
+                )
 
-        with right_col:
-            st.markdown("### Unrecognized type number for terminals")
-            with st.expander("Terminal type options", expanded=False):
-                st.write(TERMINAL_TYPE_OPTIONS)
+            with right_col:
+                st.markdown("### Unrecognized type number for terminals")
+                with st.expander("Terminal type options", expanded=False):
+                    st.write(TERMINAL_TYPE_OPTIONS)
 
-            edited_type_draft = st.data_editor(
-                st.session_state["type_fix_draft"],
-                num_rows="fixed",
-                use_container_width=True,
-                key="type_fix_editor",
-                disabled=["Name", "Type", "Group Sorting", "_idx"],
-                column_config={
-                    "_idx": None,
-                    "Correct Type": st.column_config.SelectboxColumn(
-                        "Correct Type",
-                        options=TERMINAL_TYPE_OPTIONS,
-                        required=True,
-                    ),
-                },
-            )
+                edited_type_draft = st.data_editor(
+                    st.session_state["type_fix_draft"],
+                    num_rows="fixed",
+                    use_container_width=True,
+                    key="type_fix_editor",
+                    disabled=["Name", "Type", "Group Sorting", "_idx"],
+                    column_config={
+                        "_idx": None,
+                        "Correct Type": st.column_config.SelectboxColumn(
+                            "Correct Type",
+                            options=TERMINAL_TYPE_OPTIONS,
+                            required=True,
+                        ),
+                    },
+                )
 
-        st.session_state["gs_fix_draft"] = edited_gs_draft
-        st.session_state["type_fix_draft"] = edited_type_draft
-
-        apply_clicked = st.button("Taikyti pakeitimus", key="apply_all_fixes")
+            apply_clicked = st.form_submit_button("Taikyti pakeitimus")
 
         if apply_clicked:
-            gs_fix_df = st.session_state.get("gs_fix_draft", pd.DataFrame())
-            type_fix_df = st.session_state.get("type_fix_draft", pd.DataFrame())
+            st.session_state["gs_fix_draft"] = edited_gs_draft
+            st.session_state["type_fix_draft"] = edited_type_draft
+
+            gs_fix_df = edited_gs_draft.copy()
+            type_fix_df = edited_type_draft.copy()
 
             gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=float)
             gs_as_text = gs_values.astype(str).str.strip()
@@ -393,8 +400,8 @@ def render_component_correction() -> None:
                 invalid_mask = pd.Series([True])
 
             type_values = type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=str)
-            type_as_text = type_values.astype(str).str.strip()
-            invalid_type_mask = (~type_as_text.isin(TERMINAL_TYPE_OPTIONS))
+            normalized_types = type_values.map(_normalize_selected_terminal_type)
+            invalid_type_mask = ~normalized_types.astype(str).str.strip().isin(TERMINAL_TYPE_OPTIONS)
             if "_idx" not in type_fix_df.columns:
                 invalid_type_mask = pd.Series([True])
 
@@ -412,7 +419,9 @@ def render_component_correction() -> None:
                         for _, row in gs_fix_df.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
                         for _, row in type_fix_df.iterrows():
-                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = str(row["Correct Type"]).strip()
+                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = _normalize_selected_terminal_type(
+                                row.get("Correct Type", "")
+                            )
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
