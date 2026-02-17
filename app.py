@@ -22,17 +22,30 @@ def _bytes_sig(name: str, b: bytes) -> tuple[str, int, str]:
     return (name or "", len(b), hashlib.md5(b).hexdigest())
 
 
-def _maybe_store_upload(upl, bytes_key: str, sig_key: str, name_key: str | None = None) -> None:
+def _uploader_changed(upl, sig_key: str) -> tuple[bool, tuple[str, int, str] | None]:
     if upl is None:
-        return
+        return (False, None)
 
     b = upl.getvalue()
     sig = _bytes_sig(getattr(upl, "name", ""), b)
-    if st.session_state.get(sig_key) == sig:
+    return (st.session_state.get(sig_key) != sig, sig)
+
+
+def _load_from_uploader_if_new(
+    upl,
+    bytes_key: str,
+    active_sig_key: str,
+    uploader_sig_key: str,
+    name_key: str | None = None,
+) -> None:
+    changed, sig = _uploader_changed(upl, uploader_sig_key)
+    if not changed or sig is None:
         return
 
+    b = upl.getvalue()
     st.session_state[bytes_key] = b
-    st.session_state[sig_key] = sig
+    st.session_state[active_sig_key] = sig
+    st.session_state[uploader_sig_key] = sig
     if name_key is not None:
         st.session_state[name_key] = getattr(upl, "name", "")
 
@@ -239,8 +252,20 @@ def render_component_correction() -> None:
     component_file = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
     terminal_file = st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
 
-    _maybe_store_upload(component_file, "component_bytes", "component_sig", name_key="component_name")
-    _maybe_store_upload(terminal_file, "terminal_bytes", "terminal_sig", name_key="terminal_name")
+    _load_from_uploader_if_new(
+        component_file,
+        "component_bytes",
+        "component_active_sig",
+        "component_uploader_sig",
+        name_key="component_name",
+    )
+    _load_from_uploader_if_new(
+        terminal_file,
+        "terminal_bytes",
+        "terminal_active_sig",
+        "terminal_uploader_sig",
+        name_key="terminal_name",
+    )
 
     if st.session_state.get("fix_applied_flash"):
         st.success("Pakeitimai pritaikyti. Duomenys perapdoroti.")
@@ -447,10 +472,10 @@ def render_component_correction() -> None:
 
                         st.session_state["component_bytes"] = corrected_bytes
                         existing_name = st.session_state.get("component_name", "")
-                        existing_sig = st.session_state.get("component_sig")
+                        existing_sig = st.session_state.get("component_active_sig")
                         if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
                             existing_name = existing_sig[0]
-                        st.session_state["component_sig"] = _bytes_sig(existing_name, corrected_bytes)
+                        st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
                         st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
                         st.session_state["workflow_state"] = "ready"
                         st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
@@ -539,8 +564,10 @@ def render_component_correction() -> None:
                 "type_fix_editor",
                 "fix_applied_flash",
                 "workflow_state",
-                "component_sig",
-                "terminal_sig",
+                "component_active_sig",
+                "component_uploader_sig",
+                "terminal_active_sig",
+                "terminal_uploader_sig",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
