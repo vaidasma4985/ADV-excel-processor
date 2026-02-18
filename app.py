@@ -1,10 +1,72 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+
+
+TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
+TERMINAL_TYPE_MAP = {"2002-3201": "WAGO.2002-3201_ADV", "2002-3207": "WAGO.2002-3207_ADV"}
+
+
+def _normalize_selected_terminal_type(type_value: str) -> str:
+    value = "" if type_value is None else str(type_value).strip()
+    token_match = re.search(r"2002-3201|2002-3207", value)
+    return token_match.group(0) if token_match else value
+
+
+def _bytes_sig(name: str, b: bytes) -> tuple[str, int, str]:
+    return (name or "", len(b), hashlib.md5(b).hexdigest())
+
+
+def _uploader_changed(upl, sig_key: str) -> tuple[bool, tuple[str, int, str] | None]:
+    if upl is None:
+        return (False, None)
+
+    b = upl.getvalue()
+    sig = _bytes_sig(getattr(upl, "name", ""), b)
+    return (st.session_state.get(sig_key) != sig, sig)
+
+
+def _load_from_uploader_if_new(
+    upl,
+    bytes_key: str,
+    active_sig_key: str,
+    uploader_sig_key: str,
+    name_key: str | None = None,
+) -> None:
+    changed, sig = _uploader_changed(upl, uploader_sig_key)
+    if not changed or sig is None:
+        return
+
+    b = upl.getvalue()
+    st.session_state[bytes_key] = b
+    st.session_state[active_sig_key] = sig
+    st.session_state[uploader_sig_key] = sig
+    if name_key is not None:
+        st.session_state[name_key] = getattr(upl, "name", "")
+
+    for k in [
+        "workflow_state",
+        "processed",
+        "results",
+        "missing_gs_draft",
+        "type_fix_draft",
+        "missing_gs_df",
+        "unrec_type_df",
+        "gs_fix_df",
+        "gs_fix_draft",
+        "type_fix_df",
+        "fix_applied_flash",
+        "gs_fix_editor",
+        "type_fix_editor",
+    ]:
+        st.session_state.pop(k, None)
+
+    st.session_state["workflow_state"] = "idle"
 
 
 def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
@@ -104,6 +166,66 @@ def _build_missing_gs_terminals_df(component_bytes: bytes) -> tuple[pd.DataFrame
     return raw_df, errors_df, []
 
 
+def _build_unrecognized_terminal_types_df(component_bytes: bytes) -> tuple[pd.DataFrame | None, pd.DataFrame, list[str]]:
+    try:
+        raw_df = pd.read_excel(
+            BytesIO(component_bytes),
+            sheet_name=0,
+            engine="openpyxl",
+        )
+        raw_df.columns = raw_df.columns.astype(str).str.strip()
+    except Exception:
+        return None, pd.DataFrame(), ["read_error"]
+
+    required_cols = ["Name", "Type", "Group Sorting"]
+    missing_cols = [c for c in required_cols if c not in raw_df.columns]
+    if missing_cols:
+        return raw_df, pd.DataFrame(), missing_cols
+
+    from component_correction.processor import classify_component
+
+    rows = []
+    for idx, row in raw_df.iterrows():
+        name = row.get("Name", "")
+        raw_type = row.get("Type", "")
+        group_sorting = row.get("Group Sorting", "")
+
+        name_str = "" if pd.isna(name) else str(name)
+        if not re.search(r"-X\d+", name_str):
+            continue
+
+        gs_present = (not pd.isna(group_sorting)) and (str(group_sorting).strip() != "")
+        if not gs_present:
+            continue
+
+        type_str = "" if pd.isna(raw_type) else str(raw_type).strip()
+        if type_str in {"2002-1301", "2002-1307"}:
+            continue
+
+        info = classify_component(name, raw_type, group_sorting)
+        is_unrecognized = (not info.get("allowed_raw_type", False)) and (not info.get("removed_by_name_prefix", False))
+        if not is_unrecognized:
+            continue
+
+        rows.append(
+            {
+                "Name": name_str,
+                "Type": type_str,
+                "Group Sorting": group_sorting,
+                "Correct Type": "",
+                "_idx": idx,
+            }
+        )
+
+    if not rows:
+        return raw_df, pd.DataFrame(columns=["Name", "Type", "Group Sorting", "Correct Type", "_idx"]), []
+
+    unrec_df = pd.DataFrame(rows)
+    unrec_df = unrec_df.drop_duplicates(subset=["Name", "Type", "Group Sorting", "_idx"])
+    unrec_df = unrec_df.sort_values(by=["Type", "Name"], kind="stable")
+    return raw_df, unrec_df, []
+
+
 def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dict[str, pd.DataFrame | bytes]:
     from component_correction.processor import process_excel
 
@@ -130,24 +252,24 @@ def render_component_correction() -> None:
     component_file = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
     terminal_file = st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
 
-    if component_file is not None:
-        new_component_bytes = component_file.getvalue()
-        new_upload_sig = f"{component_file.name}:{len(new_component_bytes)}"
-        if st.session_state.get("component_upload_sig") != new_upload_sig:
-            st.session_state["component_bytes"] = new_component_bytes
-            st.session_state["component_name"] = component_file.name
-            st.session_state["component_upload_sig"] = new_upload_sig
-            for k in ["results", "gs_fix_df", "gs_fix_draft", "workflow_state", "gs_fix_applied_flash", "gs_fix_editor"]:
-                st.session_state.pop(k, None)
-            st.session_state["workflow_state"] = "idle"
+    _load_from_uploader_if_new(
+        component_file,
+        "component_bytes",
+        "component_active_sig",
+        "component_uploader_sig",
+        name_key="component_name",
+    )
+    _load_from_uploader_if_new(
+        terminal_file,
+        "terminal_bytes",
+        "terminal_active_sig",
+        "terminal_uploader_sig",
+        name_key="terminal_name",
+    )
 
-    if terminal_file is not None:
-        st.session_state["terminal_bytes"] = terminal_file.getvalue()
-        st.session_state["terminal_name"] = terminal_file.name
-
-    if st.session_state.get("gs_fix_applied_flash"):
-        st.success("GS pritaikyti. Duomenys perapdoroti.")
-        st.session_state["gs_fix_applied_flash"] = False
+    if st.session_state.get("fix_applied_flash"):
+        st.success("Pakeitimai pritaikyti. Duomenys perapdoroti.")
+        st.session_state["fix_applied_flash"] = False
 
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
@@ -207,24 +329,32 @@ def render_component_correction() -> None:
         st.warning("Missing columns for transformer check.")
 
     show_process_button = not (
-        workflow_state == "needs_gs_fix"
+        workflow_state == "needs_fix"
         or (workflow_state == "ready" and st.session_state.get("results") is not None)
     )
 
     if show_process_button and st.button("Apdoroti failą", key="comp_run"):
         try:
             missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
+            _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
 
             if missing_gs_cols and missing_gs_cols != ["read_error"]:
                 st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
+            elif type_fix_cols and type_fix_cols != ["read_error"]:
+                st.warning("Type tikrinimui trūksta stulpelių: " + ", ".join(type_fix_cols))
             elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
                 st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
-            elif not missing_gs_errors_df.empty:
+            elif type_fix_cols == ["read_error"]:
+                st.warning("Type tikrinimui nepavyko nuskaityti Component failo.")
+            elif (not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty):
                 st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
                 st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
-                st.session_state["workflow_state"] = "needs_gs_fix"
+                st.session_state["type_fix_df"] = type_fix_errors_df.copy()
+                st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
+                st.session_state["workflow_state"] = "needs_fix"
                 st.session_state.pop("results", None)
                 st.session_state.pop("gs_fix_editor", None)
+                st.session_state.pop("type_fix_editor", None)
                 st.rerun()
             else:
                 if terminal_bytes is None:
@@ -235,7 +365,10 @@ def render_component_correction() -> None:
                 st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
                 st.session_state.pop("gs_fix_df", None)
                 st.session_state.pop("gs_fix_draft", None)
+                st.session_state.pop("type_fix_df", None)
+                st.session_state.pop("type_fix_draft", None)
                 st.session_state.pop("gs_fix_editor", None)
+                st.session_state.pop("type_fix_editor", None)
                 st.session_state["workflow_state"] = "ready"
                 st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
                 st.rerun()
@@ -243,49 +376,107 @@ def render_component_correction() -> None:
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
-    if st.session_state.get("workflow_state") == "needs_gs_fix":
-        st.error(
-            "Neužpildyti Group Sorting laukai terminalams (2002-3201 / 2002-3207). "
-            "Užpildyk žemiau ir spausk 'Taikyti pakeitimus'."
-        )
-        st.subheader("Trūkstami Group Sorting (terminalai)")
+    if st.session_state.get("workflow_state") == "needs_fix":
+        st.subheader("Terminal corrections")
 
         if "gs_fix_df" not in st.session_state:
             st.session_state["gs_fix_df"] = pd.DataFrame(columns=["Name", "Type", "Group Sorting", "_idx"])
         if "gs_fix_draft" not in st.session_state:
             st.session_state["gs_fix_draft"] = st.session_state["gs_fix_df"].copy()
-
-        with st.form("gs_fix_form"):
-            edited_draft = st.data_editor(
-                st.session_state["gs_fix_draft"],
-                num_rows="fixed",
-                use_container_width=True,
-                key="gs_fix_editor",
+        if "type_fix_df" not in st.session_state:
+            st.session_state["type_fix_df"] = pd.DataFrame(
+                columns=["Name", "Type", "Group Sorting", "Correct Type", "_idx"]
             )
+        if "type_fix_draft" not in st.session_state:
+            st.session_state["type_fix_draft"] = st.session_state["type_fix_df"].copy()
+
+        with st.form("fix_form", clear_on_submit=False):
+            left_col, right_col = st.columns(2)
+
+            with left_col:
+                st.markdown("### Missing Group sorting for terminals")
+                edited_gs_draft = st.data_editor(
+                    st.session_state["gs_fix_draft"],
+                    num_rows="fixed",
+                    use_container_width=True,
+                    key="gs_fix_editor",
+                    disabled=["Name", "Type", "_idx"],
+                    column_config={
+                        "_idx": None,
+                        "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
+                    },
+                )
+
+            with right_col:
+                st.markdown("### Unrecognized type number for terminals")
+                with st.expander("Terminal type options", expanded=False):
+                    st.write(TERMINAL_TYPE_OPTIONS)
+
+                edited_type_draft = st.data_editor(
+                    st.session_state["type_fix_draft"],
+                    num_rows="fixed",
+                    use_container_width=True,
+                    key="type_fix_editor",
+                    disabled=["Name", "Type", "Group Sorting", "_idx"],
+                    column_config={
+                        "_idx": None,
+                        "Correct Type": st.column_config.SelectboxColumn(
+                            "Correct Type",
+                            options=TERMINAL_TYPE_OPTIONS,
+                            required=True,
+                        ),
+                    },
+                )
+
             apply_clicked = st.form_submit_button("Taikyti pakeitimus")
 
-        st.session_state["gs_fix_draft"] = edited_draft
-
         if apply_clicked:
-            df_fix = st.session_state.get("gs_fix_draft", pd.DataFrame())
-            gs_values = df_fix["Group Sorting"] if "Group Sorting" in df_fix.columns else pd.Series(dtype=float)
+            st.session_state["gs_fix_draft"] = edited_gs_draft
+            st.session_state["type_fix_draft"] = edited_type_draft
+
+            gs_fix_df = edited_gs_draft.copy()
+            type_fix_df = edited_type_draft.copy()
+
+            gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=float)
             gs_as_text = gs_values.astype(str).str.strip()
             gs_numeric = pd.to_numeric(gs_values, errors="coerce")
             invalid_mask = gs_as_text.eq("") | gs_numeric.isna() | (gs_numeric % 1 != 0)
-            if "_idx" not in df_fix.columns:
+            if "_idx" not in gs_fix_df.columns:
                 invalid_mask = pd.Series([True])
+
+            type_values = (
+                type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=str)
+            )
+            normalized_types = type_values.map(_normalize_selected_terminal_type)
+            invalid_type_mask = ~normalized_types.astype(str).str.strip().isin(TERMINAL_TYPE_OPTIONS)
+            if "_idx" not in type_fix_df.columns:
+                invalid_type_mask = pd.Series([True])
 
             if invalid_mask.any():
                 st.error("Klaida: terminalų (2002-3201 / 2002-3207) Group Sorting turi būti sveiki skaičiai.")
+            elif invalid_type_mask.any():
+                st.error("Klaida: parink Correct Type iš leidžiamų reikšmių.")
             else:
                 try:
-                    raw_df, _errors_df, missing_cols = _build_missing_gs_terminals_df(component_bytes)
-                    if raw_df is None or missing_cols:
-                        st.warning("Nepavyko pritaikyti GS pataisymų: trūksta stulpelių arba failas neperskaitomas.")
+                    # --- CRITICAL FIX: load raw_df directly from bytes (single source of truth) ---
+                    raw_df = pd.read_excel(BytesIO(component_bytes), sheet_name=0, engine="openpyxl")
+                    raw_df.columns = raw_df.columns.astype(str).str.strip()
+
+                    required_apply_cols = ["Name", "Type", "Group Sorting"]
+                    missing_apply_cols = [c for c in required_apply_cols if c not in raw_df.columns]
+                    if missing_apply_cols:
+                        st.warning("Nepavyko pritaikyti pataisymų: trūksta stulpelių: " + ", ".join(missing_apply_cols))
                     else:
                         corrected_raw_df = raw_df.copy()
-                        for _, row in df_fix.iterrows():
+
+                        # Apply GS fixes
+                        for _, row in gs_fix_df.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
+
+                        # Apply Type fixes (WRITE BASE TYPE ONLY)
+                        for _, row in type_fix_df.iterrows():
+                            normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
+                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = normalized_choice
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
@@ -293,16 +484,24 @@ def render_component_correction() -> None:
                         corrected_bytes = output_buffer.getvalue()
 
                         st.session_state["component_bytes"] = corrected_bytes
+                        existing_name = st.session_state.get("component_name", "")
+                        existing_sig = st.session_state.get("component_active_sig")
+                        if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
+                            existing_name = existing_sig[0]
+                        st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
                         st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
                         st.session_state["workflow_state"] = "ready"
                         st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
                         st.session_state.pop("gs_fix_df", None)
                         st.session_state.pop("gs_fix_draft", None)
+                        st.session_state.pop("type_fix_df", None)
+                        st.session_state.pop("type_fix_draft", None)
                         st.session_state.pop("gs_fix_editor", None)
-                        st.session_state["gs_fix_applied_flash"] = True
+                        st.session_state.pop("type_fix_editor", None)
+                        st.session_state["fix_applied_flash"] = True
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Įvyko klaida taikant GS pataisymus: {e}")
+                    st.error(f"Įvyko klaida taikant pataisymus: {e}")
 
     results = st.session_state.get("results")
     ready_state = st.session_state.get("workflow_state") == "ready" and results is not None
@@ -361,7 +560,6 @@ def render_component_correction() -> None:
                         st.dataframe(raw_preview_df, use_container_width=True)
                 except Exception as raw_exc:
                     st.warning(f"Raw preview nepavyko nuskaityti: {raw_exc}")
-                    st.exception(raw_exc)
 
         if st.button("Išvalyti", key="comp_clear"):
             for k in [
@@ -373,10 +571,16 @@ def render_component_correction() -> None:
                 "run_id",
                 "gs_fix_df",
                 "gs_fix_draft",
+                "type_fix_df",
+                "type_fix_draft",
                 "gs_fix_editor",
-                "gs_fix_applied_flash",
+                "type_fix_editor",
+                "fix_applied_flash",
                 "workflow_state",
-                "component_upload_sig",
+                "component_active_sig",
+                "component_uploader_sig",
+                "terminal_active_sig",
+                "terminal_uploader_sig",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
