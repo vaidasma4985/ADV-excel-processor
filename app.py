@@ -462,8 +462,10 @@ def render_component_correction() -> None:
                         for _, row in gs_fix_df.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
                         for _, row in type_fix_df.iterrows():
-                            normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
-                            corrected_raw_df.loc[int(row["_idx"]), "Type"] = TERMINAL_TYPE_MAP[normalized_choice]
+                        normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
+    
+                        # WRITE RAW BASE TYPE ONLY
+                        corrected_raw_df.loc[int(row["_idx"]), "Type"] = normalized_choice
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
