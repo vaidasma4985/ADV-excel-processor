@@ -384,7 +384,9 @@ def render_component_correction() -> None:
         if "gs_fix_draft" not in st.session_state:
             st.session_state["gs_fix_draft"] = st.session_state["gs_fix_df"].copy()
         if "type_fix_df" not in st.session_state:
-            st.session_state["type_fix_df"] = pd.DataFrame(columns=["Name", "Type", "Group Sorting", "Correct Type", "_idx"])
+            st.session_state["type_fix_df"] = pd.DataFrame(
+                columns=["Name", "Type", "Group Sorting", "Correct Type", "_idx"]
+            )
         if "type_fix_draft" not in st.session_state:
             st.session_state["type_fix_draft"] = st.session_state["type_fix_df"].copy()
 
@@ -442,7 +444,9 @@ def render_component_correction() -> None:
             if "_idx" not in gs_fix_df.columns:
                 invalid_mask = pd.Series([True])
 
-            type_values = type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=str)
+            type_values = (
+                type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=str)
+            )
             normalized_types = type_values.map(_normalize_selected_terminal_type)
             invalid_type_mask = ~normalized_types.astype(str).str.strip().isin(TERMINAL_TYPE_OPTIONS)
             if "_idx" not in type_fix_df.columns:
@@ -454,22 +458,25 @@ def render_component_correction() -> None:
                 st.error("Klaida: parink Correct Type iš leidžiamų reikšmių.")
             else:
                 try:
-                    raw_df, _errors_df, missing_cols = _build_missing_gs_terminals_df(component_bytes)
-                    if raw_df is None or missing_cols:
-                        st.warning("Nepavyko pritaikyti pataisymų: trūksta stulpelių arba failas neperskaitomas.")
+                    # --- CRITICAL FIX: load raw_df directly from bytes (single source of truth) ---
+                    raw_df = pd.read_excel(BytesIO(component_bytes), sheet_name=0, engine="openpyxl")
+                    raw_df.columns = raw_df.columns.astype(str).str.strip()
+
+                    required_apply_cols = ["Name", "Type", "Group Sorting"]
+                    missing_apply_cols = [c for c in required_apply_cols if c not in raw_df.columns]
+                    if missing_apply_cols:
+                        st.warning("Nepavyko pritaikyti pataisymų: trūksta stulpelių: " + ", ".join(missing_apply_cols))
                     else:
                         corrected_raw_df = raw_df.copy()
+
+                        # Apply GS fixes
                         for _, row in gs_fix_df.iterrows():
                             corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
 
+                        # Apply Type fixes (WRITE BASE TYPE ONLY)
                         for _, row in type_fix_df.iterrows():
-                            normalized_choice = _normalize_selected_terminal_type(
-                                row.get("Correct Type", "")
-                            )
-
-                            # WRITE RAW BASE TYPE ONLY
+                            normalized_choice = _normalize_selected_terminal_type(row.get("Correct Type", ""))
                             corrected_raw_df.loc[int(row["_idx"]), "Type"] = normalized_choice
-
 
                         output_buffer = BytesIO()
                         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
