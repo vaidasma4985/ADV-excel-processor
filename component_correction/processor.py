@@ -504,7 +504,10 @@ def process_excel(
         "RE22R1AMR",
         "39.00.8.230.8240",
     }
-    m3 = df["Type"].isin(allowed_types)
+    type_for_allow = df["Type"].astype(str).str.strip()
+    type_for_allow = type_for_allow.str.replace(r"^(WAGO|SE|ABB)\.", "", regex=True)
+    type_for_allow = type_for_allow.str.replace(r"_ADV$", "", regex=True)
+    m3 = type_for_allow.isin(allowed_types)
     _append_removed(removed_parts, df[~m3], "Removed by Type filter (not in allowed list)")
     df = df[m3].copy()
 
