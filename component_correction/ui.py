@@ -10,6 +10,16 @@ import streamlit as st
 
 TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
 TERMINAL_TYPE_MAP = {"2002-3201": "WAGO.2002-3201_ADV", "2002-3207": "WAGO.2002-3207_ADV"}
+RELAY_ALLOWED_RAW_TYPES = {
+    "RGZE1S48M",
+    "RXG22P7",
+    "RXG22BD",
+    "RE17LCBM",
+    "RXM4GB2P7",
+    "RXZE2S114M",
+    "RXM4GB2BD",
+}
+FUSE_CONFLICT_TYPES = {"2002-1611/1000-836", "2002-1611/1000-541"}
 
 
 def _normalize_selected_terminal_type(type_value: str) -> str:
@@ -226,6 +236,68 @@ def _build_unrecognized_terminal_types_df(component_bytes: bytes) -> tuple[pd.Da
     return raw_df, unrec_df, []
 
 
+def _detect_conflicting_duplicates(component_bytes: bytes) -> tuple[pd.DataFrame, pd.DataFrame]:
+    raw_df = pd.read_excel(
+        BytesIO(component_bytes),
+        sheet_name=0,
+        engine="openpyxl",
+    )
+    raw_df.columns = raw_df.columns.astype(str).str.strip()
+    raw_df["_idx"] = raw_df.index
+
+    if "Name" not in raw_df.columns or "Type" not in raw_df.columns:
+        return raw_df, pd.DataFrame(columns=["Name", "Type", "Delete", "_idx", "Rule"])
+
+    work_df = raw_df.copy()
+    work_df["Name"] = work_df["Name"].fillna("").astype(str).str.strip()
+    work_df["Type"] = work_df["Type"].fillna("").astype(str).str.strip()
+
+    relay_pattern = "|".join(re.escape(token) for token in sorted(RELAY_ALLOWED_RAW_TYPES, key=len, reverse=True))
+    fuse_pattern = "|".join(re.escape(token) for token in sorted(FUSE_CONFLICT_TYPES, key=len, reverse=True))
+
+    def _extract_type_token(type_value: str) -> str:
+        relay_match = re.search(relay_pattern, type_value)
+        if relay_match:
+            return relay_match.group(0)
+        fuse_match = re.search(fuse_pattern, type_value)
+        if fuse_match:
+            return fuse_match.group(0)
+        return type_value
+
+    work_df["_type_token"] = work_df["Type"].map(_extract_type_token)
+    conflicts_frames: list[pd.DataFrame] = []
+
+    f_df = work_df[work_df["Name"].str.startswith("-F", na=False)].copy()
+    for name, group in f_df.groupby("Name", sort=False):
+        type_tokens = set(group["_type_token"].tolist())
+        if not FUSE_CONFLICT_TYPES.issubset(type_tokens):
+            continue
+        conflict_rows = group[group["_type_token"].isin(FUSE_CONFLICT_TYPES)][["Name", "Type", "_idx"]].copy()
+        conflict_rows["Rule"] = "FUSE_PAIR"
+        conflicts_frames.append(conflict_rows)
+
+    k_df = work_df[work_df["Name"].str.startswith("-K", na=False)].copy()
+    for name, group in k_df.groupby("Name", sort=False):
+        distinct_types = set(group["_type_token"].tolist())
+        if len(distinct_types) < 2:
+            continue
+        all_relay = distinct_types.issubset(RELAY_ALLOWED_RAW_TYPES)
+        if (not all_relay) or (all_relay and len(distinct_types) >= 3):
+            conflict_rows = group[["Name", "Type", "_idx"]].copy()
+            conflict_rows["Rule"] = "K_MIXED" if not all_relay else "K_RELAY_3PLUS"
+            conflicts_frames.append(conflict_rows)
+
+    if not conflicts_frames:
+        return raw_df, pd.DataFrame(columns=["Name", "Type", "Delete", "_idx", "Rule"])
+
+    conflicts_df = pd.concat(conflicts_frames, ignore_index=True)
+    conflicts_df = conflicts_df.drop_duplicates(subset=["_idx"], keep="first")
+    conflicts_df["Delete"] = False
+    conflicts_df = conflicts_df[["Name", "Type", "Delete", "_idx", "Rule"]]
+    conflicts_df = conflicts_df.sort_values(by=["Name", "Type", "_idx"], kind="stable")
+    return raw_df, conflicts_df
+
+
 def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dict[str, pd.DataFrame | bytes]:
     from component_correction.processor import process_excel
 
@@ -242,15 +314,142 @@ def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dic
     }
 
 
+def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | None) -> None:
+    missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
+    _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
+
+    if missing_gs_cols and missing_gs_cols != ["read_error"]:
+        st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
+        return
+    if type_fix_cols and type_fix_cols != ["read_error"]:
+        st.warning("Type tikrinimui trūksta stulpelių: " + ", ".join(type_fix_cols))
+        return
+    if missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
+        st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
+        return
+    if type_fix_cols == ["read_error"]:
+        st.warning("Type tikrinimui nepavyko nuskaityti Component failo.")
+        return
+
+    if (not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty):
+        st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
+        st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
+        st.session_state["type_fix_df"] = type_fix_errors_df.copy()
+        st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
+        st.session_state["workflow_state"] = "needs_fix"
+        st.session_state.pop("results", None)
+        st.session_state.pop("gs_fix_editor", None)
+        st.session_state.pop("type_fix_editor", None)
+        st.rerun()
+
+    if terminal_bytes is None:
+        st.warning("⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus.")
+
+    st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
+    st.session_state.pop("gs_fix_df", None)
+    st.session_state.pop("gs_fix_draft", None)
+    st.session_state.pop("type_fix_df", None)
+    st.session_state.pop("type_fix_draft", None)
+    st.session_state.pop("gs_fix_editor", None)
+    st.session_state.pop("type_fix_editor", None)
+    st.session_state["workflow_state"] = "ready"
+    st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+    st.rerun()
+
+
 def render_component_correction() -> None:
     st.subheader("Component correction")
     st.caption("UI build: debug-v2 (type recognition via processor.classify_component)")
+    if "workflow_state" not in st.session_state:
+        st.session_state["workflow_state"] = "idle"
+
+    pre_component_bytes = st.session_state.get("component_bytes")
+    if pre_component_bytes is not None:
+        try:
+            conflict_raw_df, conflicts_df = _detect_conflicting_duplicates(pre_component_bytes)
+        except Exception as conflict_exc:
+            st.error(f"Nepavyko patikrinti konfliktuojančių dublikatų: {conflict_exc}")
+            return
+
+        if not conflicts_df.empty:
+            terminal_bytes = st.session_state.get("terminal_bytes")
+            st.error("Different components share the same Name.\nDelete the wrong rows and correct the drawings.")
+            st.session_state["dup_conflicts_df"] = conflicts_df.copy()
+            edited_conflicts_df = st.data_editor(
+                st.session_state["dup_conflicts_df"],
+                num_rows="fixed",
+                use_container_width=True,
+                key="dup_conflicts_draft",
+                disabled=["Name", "Type", "_idx", "Rule"],
+                column_config={
+                    "_idx": None,
+                    "Rule": None,
+                    "Delete": st.column_config.CheckboxColumn("Delete"),
+                },
+            )
+
+            if st.button("Delete selected", key="delete_dup_conflicts"):
+                selected_idx = (
+                    edited_conflicts_df.loc[edited_conflicts_df["Delete"] == True, "_idx"].astype(int).drop_duplicates()
+                )
+                if selected_idx.empty:
+                    st.warning("Pasirinkite bent vieną eilutę ištrynimui.")
+                else:
+                    corrected_raw_df = conflict_raw_df.loc[~conflict_raw_df["_idx"].isin(selected_idx)].copy()
+                    corrected_raw_df = corrected_raw_df.drop(columns=["_idx"], errors="ignore")
+
+                    output_buffer = BytesIO()
+                    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+                        corrected_raw_df.to_excel(writer, index=False)
+                    corrected_bytes = output_buffer.getvalue()
+
+                    st.session_state["component_bytes"] = corrected_bytes
+                    existing_name = st.session_state.get("component_name", "")
+                    existing_sig = st.session_state.get("component_active_sig")
+                    if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
+                        existing_name = existing_sig[0]
+                    st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
+
+                    for k in [
+                        "processed",
+                        "results",
+                        "missing_gs_draft",
+                        "type_fix_draft",
+                        "missing_gs_df",
+                        "unrec_type_df",
+                        "gs_fix_df",
+                        "gs_fix_draft",
+                        "type_fix_df",
+                        "fix_applied_flash",
+                        "gs_fix_editor",
+                        "type_fix_editor",
+                        "dup_conflicts_draft",
+                    ]:
+                        st.session_state.pop(k, None)
+
+                    _, post_conflicts_df = _detect_conflicting_duplicates(corrected_bytes)
+                    if not post_conflicts_df.empty:
+                        st.session_state["dup_conflicts_df"] = post_conflicts_df.copy()
+                        st.rerun()
+                    else:
+                        st.session_state.pop("dup_conflicts_df", None)
+                        st.session_state.pop("dup_conflicts_draft", None)
+                        _run_precheck_or_process(corrected_bytes, terminal_bytes)
+            return
 
     if "workflow_state" not in st.session_state:
         st.session_state["workflow_state"] = "idle"
 
-    component_file = st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
-    terminal_file = st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
+    component_file = (
+        st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
+        if st.session_state.get("component_bytes") is None
+        else None
+    )
+    terminal_file = (
+        st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
+        if st.session_state.get("component_bytes") is None
+        else None
+    )
 
     _load_from_uploader_if_new(
         component_file,
@@ -327,6 +526,77 @@ def render_component_correction() -> None:
         )
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
+
+    try:
+        conflict_raw_df, conflicts_df = _detect_conflicting_duplicates(component_bytes)
+    except Exception as conflict_exc:
+        st.error(f"Nepavyko patikrinti konfliktuojančių dublikatų: {conflict_exc}")
+        return
+
+    if not conflicts_df.empty:
+        st.error("Different components share the same Name.\nDelete the wrong rows and correct the drawings.")
+        st.session_state["dup_conflicts_df"] = conflicts_df.copy()
+        edited_conflicts_df = st.data_editor(
+            st.session_state["dup_conflicts_df"],
+            num_rows="fixed",
+            use_container_width=True,
+            key="dup_conflicts_draft",
+            disabled=["Name", "Type", "_idx", "Rule"],
+            column_config={
+                "_idx": None,
+                "Rule": None,
+                "Delete": st.column_config.CheckboxColumn("Delete"),
+            },
+        )
+
+        if st.button("Delete selected", key="delete_dup_conflicts"):
+            selected_idx = (
+                edited_conflicts_df.loc[edited_conflicts_df["Delete"] == True, "_idx"].astype(int).drop_duplicates()
+            )
+            if selected_idx.empty:
+                st.warning("Pasirinkite bent vieną eilutę ištrynimui.")
+            else:
+                corrected_raw_df = conflict_raw_df.loc[~conflict_raw_df["_idx"].isin(selected_idx)].copy()
+                corrected_raw_df = corrected_raw_df.drop(columns=["_idx"], errors="ignore")
+
+                output_buffer = BytesIO()
+                with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+                    corrected_raw_df.to_excel(writer, index=False)
+                corrected_bytes = output_buffer.getvalue()
+
+                st.session_state["component_bytes"] = corrected_bytes
+                existing_name = st.session_state.get("component_name", "")
+                existing_sig = st.session_state.get("component_active_sig")
+                if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
+                    existing_name = existing_sig[0]
+                st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
+
+                for k in [
+                    "processed",
+                    "results",
+                    "missing_gs_draft",
+                    "type_fix_draft",
+                    "missing_gs_df",
+                    "unrec_type_df",
+                    "gs_fix_df",
+                    "gs_fix_draft",
+                    "type_fix_df",
+                    "fix_applied_flash",
+                    "gs_fix_editor",
+                    "type_fix_editor",
+                    "dup_conflicts_draft",
+                ]:
+                    st.session_state.pop(k, None)
+
+                    _, post_conflicts_df = _detect_conflicting_duplicates(corrected_bytes)
+                    if not post_conflicts_df.empty:
+                        st.session_state["dup_conflicts_df"] = post_conflicts_df.copy()
+                        st.rerun()
+                    else:
+                        st.session_state.pop("dup_conflicts_df", None)
+                        st.session_state.pop("dup_conflicts_draft", None)
+                        _run_precheck_or_process(corrected_bytes, terminal_bytes)
+        return
 
     show_process_button = not (
         workflow_state == "needs_fix"
@@ -584,4 +854,3 @@ def render_component_correction() -> None:
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
-
