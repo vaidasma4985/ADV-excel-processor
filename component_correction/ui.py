@@ -281,6 +281,8 @@ def _detect_conflicting_duplicates(component_bytes: bytes) -> tuple[pd.DataFrame
         distinct_types = set(group["_type_token"].tolist())
         if len(distinct_types) < 2:
             continue
+        if (group["Type"] == "AK-OB 110").any():
+            continue
         all_relay = distinct_types.issubset(RELAY_ALLOWED_RAW_TYPES)
         if (not all_relay) or (all_relay and len(distinct_types) >= 3):
             conflict_rows = group[["Name", "Type", "_idx"]].copy()
