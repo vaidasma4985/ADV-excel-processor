@@ -58,6 +58,7 @@ def _load_from_uploader_if_new(
     st.session_state[uploader_sig_key] = sig
     if name_key is not None:
         st.session_state[name_key] = getattr(upl, "name", "")
+    st.session_state["terminal_layout_mode"] = None
 
     for k in [
         "workflow_state",
@@ -449,7 +450,7 @@ def render_component_correction() -> None:
     )
     terminal_file = (
         st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
-        if st.session_state.get("component_bytes") is None
+        if st.session_state.get("terminal_bytes") is None
         else None
     )
 
@@ -475,6 +476,15 @@ def render_component_correction() -> None:
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
     workflow_state = st.session_state.get("workflow_state", "idle")
+    st.session_state.setdefault("terminal_missing", False)
+    if "terminal_layout_mode" not in st.session_state:
+        st.session_state["terminal_layout_mode"] = None
+    if "needs_layout_choice" not in st.session_state:
+        st.session_state["needs_layout_choice"] = False
+    terminal_missing_condition = (
+        st.session_state.get("component_bytes") is not None and st.session_state.get("terminal_bytes") is None
+    )
+    st.session_state["terminal_missing"] = bool(terminal_missing_condition)
 
     if component_bytes is None and terminal_bytes is not None:
         st.info("Component list privalomas. Įkelkite Component list failą.")
@@ -482,6 +492,8 @@ def render_component_correction() -> None:
     if component_bytes is None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
+    if st.session_state.get("terminal_missing"):
+        st.warning("⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus.")
 
     transformer_needed = False
     missing_transformer_columns = False
@@ -600,12 +612,111 @@ def render_component_correction() -> None:
                         _run_precheck_or_process(corrected_bytes, terminal_bytes)
         return
 
+    if workflow_state == "idle" and st.session_state.get("results") is None:
+        missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
+        _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
+        if (
+            missing_gs_cols != ["read_error"]
+            and type_fix_cols != ["read_error"]
+            and (not missing_gs_cols)
+            and (not type_fix_cols)
+            and ((not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty))
+        ):
+            st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
+            st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
+            st.session_state["type_fix_df"] = type_fix_errors_df.copy()
+            st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
+            st.session_state["workflow_state"] = "needs_fix"
+            st.session_state.pop("results", None)
+            st.session_state.pop("gs_fix_editor", None)
+            st.session_state.pop("type_fix_editor", None)
+            st.rerun()
+
     show_process_button = not (
         workflow_state == "needs_fix"
         or (workflow_state == "ready" and st.session_state.get("results") is not None)
     )
 
-    if show_process_button and st.button("Apdoroti failą", key="comp_run"):
+    if show_process_button and component_bytes is not None:
+        IMG_W = 360
+        selected_mode = st.session_state.get("terminal_layout_mode")
+        left_button_type = "primary" if selected_mode == "two_rails" else "secondary"
+        right_button_type = "primary" if selected_mode == "one_rail" else "secondary"
+        st.markdown(
+            """
+            <style>
+            .layout-header-wrap {
+                min-height: 58px;
+                display: flex;
+                align-items: flex-start;
+                width: 100%;
+            }
+            .layout-test-banner {
+                border: 1px solid rgba(255,173,51,0.75);
+                background: rgba(255,173,51,0.18);
+                color: #fff3d6;
+                border-radius: 10px;
+                padding: 10px 12px;
+                min-height: 42px;
+                display: flex;
+                align-items: center;
+                font-weight: 600;
+                width: 100%;
+            }
+            .layout-header-spacer {
+                width: 100%;
+                min-height: 42px;
+            }
+            .layout-title {
+                width: 100%;
+                text-align: center;
+                font-weight: 700;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        left_col, right_col = st.columns(2, vertical_alignment="top")
+
+        with left_col:
+            with st.container(border=True):
+                st.markdown('<div class="layout-header-wrap"><div class="layout-test-banner">This function is being tested.</div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="layout-title">Terminal layout: 2 DIN rails</div>', unsafe_allow_html=True)
+                try:
+                    st.image("component_correction/Pictures/layout_2_din.png", width=IMG_W)
+                except Exception:
+                    st.caption("Image not found.")
+                if st.button(
+                    "Select 2 DIN rails",
+                    key="layout_two_rails",
+                    use_container_width=True,
+                    type=left_button_type,
+                ):
+                    st.session_state["terminal_layout_mode"] = "two_rails"
+                    st.rerun()
+
+        with right_col:
+            with st.container(border=True):
+                st.markdown('<div class="layout-header-wrap"><div class="layout-header-spacer"></div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="layout-title">Terminal layout: 1 DIN rail</div>', unsafe_allow_html=True)
+                try:
+                    st.image("component_correction/Pictures/layout_1_din.png", width=IMG_W)
+                except Exception:
+                    st.caption("Image not found.")
+                if st.button(
+                    "Select 1 DIN rail",
+                    key="layout_one_rail",
+                    use_container_width=True,
+                    type=right_button_type,
+                ):
+                    st.session_state["terminal_layout_mode"] = "one_rail"
+                    st.rerun()
+
+    if show_process_button and st.button(
+        "Apdoroti failą",
+        key="comp_run",
+        disabled=(component_bytes is None or st.session_state.get("terminal_layout_mode") is None),
+    ):
         try:
             missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
             _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
@@ -629,11 +740,6 @@ def render_component_correction() -> None:
                 st.session_state.pop("type_fix_editor", None)
                 st.rerun()
             else:
-                if terminal_bytes is None:
-                    st.warning(
-                        "⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus."
-                    )
-
                 st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
                 st.session_state.pop("gs_fix_df", None)
                 st.session_state.pop("gs_fix_draft", None)
@@ -761,9 +867,10 @@ def render_component_correction() -> None:
                         if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
                             existing_name = existing_sig[0]
                         st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
-                        st.session_state["results"] = _run_processing(corrected_bytes, terminal_bytes)
-                        st.session_state["workflow_state"] = "ready"
-                        st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+                        st.session_state["workflow_state"] = "idle"
+                        st.session_state["results"] = None
+                        st.session_state["terminal_layout_mode"] = None
+                        st.session_state["needs_layout_choice"] = True
                         st.session_state.pop("gs_fix_df", None)
                         st.session_state.pop("gs_fix_draft", None)
                         st.session_state.pop("type_fix_df", None)
