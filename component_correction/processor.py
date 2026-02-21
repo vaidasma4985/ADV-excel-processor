@@ -866,10 +866,18 @@ def process_excel(
 
         name_src = fuse_data["_name_orig"] if "_name_orig" in fuse_data.columns else fuse_data["Name"]
         crankcase_token = name_src.astype(str).str.extract(r"(-F\d{3})", expand=False)
-        crankcase_mask = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
+        any_fxx8 = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
+        valid_fxx8 = crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
+        invalid_fxx8 = any_fxx8 & (~valid_fxx8)
+        if invalid_fxx8.any():
+            to_remove = fuse_data.loc[invalid_fxx8].copy()
+            to_remove = to_remove.drop(columns=[c for c in to_remove.columns if str(c).startswith("_")], errors="ignore")
+            _append_removed(removed_parts, to_remove, "Removed: invalid F**8 fuse code")
+            fuse_data = fuse_data[~invalid_fxx8].copy()
+            valid_fxx8 = valid_fxx8.reindex(fuse_data.index, fill_value=False)
         missing_defaults = pd.Series(None, index=fuse_data.index, dtype="float")
         # Strict crankcase matching keeps unrelated F*** devices out of GS=0 (EPLAN ordering relies on GS).
-        missing_defaults.loc[crankcase_mask] = 0
+        missing_defaults.loc[valid_fxx8] = 0
         fuse_data["_terminal_sort"] = fuse_data["_fuse_order_val"].where(
             fuse_data["_fuse_order_val"].notna(), 10**9 + fuse_data["_orig_order"]
         )
