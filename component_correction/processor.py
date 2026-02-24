@@ -868,7 +868,8 @@ def process_excel(
         crankcase_token = name_src.astype(str).str.extract(r"(-F\d{3})", expand=False)
         any_fxx8 = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
         valid_fxx8 = crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
-        invalid_fxx8 = any_fxx8 & (~valid_fxx8)
+        # Exempt WAGO fuse variants that legitimately use F**8 codes.
+        invalid_fxx8 = any_fxx8 & (~valid_fxx8) & ~(is_541 | is_836)
         if invalid_fxx8.any():
             to_remove = fuse_data.loc[invalid_fxx8].copy()
             to_remove = to_remove.drop(columns=[c for c in to_remove.columns if str(c).startswith("_")], errors="ignore")
