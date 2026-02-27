@@ -69,7 +69,7 @@ _RELAY_TYPE_MAP: Dict[str, str] = {
     "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
 }
 
-_TERMINAL_TYPES: set[str] = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+_TERMINAL_TYPES: set[str] = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L", "WAGO.2002-3207_ADV"}
 _FUSE_TYPES: set[str] = {
     "WAGO.2002-1611/1000-541_ADV",
     "WAGO.2002-1611/1000-836_ADV",
@@ -222,6 +222,7 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
             "SE.RGZE1S48M + SE.RXG22P7": "2POLE",
             "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
             "WAGO.2002-3201_ADV": "CONTROL",
+            "WAGO.2002-3201_ADV_L": "CONTROL",
             "WAGO.2002-3207_ADV": "CONTROL",
             "SE.RE22R1AMR_ADV": "2POLE",
             "FIN.39.00.8.230.8240_ADV": "1POLE",
@@ -393,7 +394,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
       - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
       - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
     """
-    terminal_types = {"WAGO.2002-3201_ADV"}
+    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
@@ -434,7 +435,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # Main processing
 # -----------------------------------------------------------------------------
 def process_excel(
-    file_bytes: bytes, terminal_list_bytes: bytes | None = None
+    file_bytes: bytes, terminal_list_bytes: bytes | None = None, terminal_layout_mode: str | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
     df = _drop_unnamed_cols(df)
@@ -597,7 +598,7 @@ def process_excel(
     # -------------------------------------------------------------------------
     # Category pipelines
     # -------------------------------------------------------------------------
-    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L", "WAGO.2002-3207_ADV"}
     fuse_types = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV", "SE.A9F04604_ADV"}
     relay_types = set(df["Type"].unique()) - terminal_types - fuse_types
 
@@ -889,12 +890,21 @@ def process_excel(
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(
-        term_data: pd.DataFrame, pe_requirements: Dict[int, int]
+        term_data: pd.DataFrame, pe_requirements: Dict[int, int], terminal_layout_mode: str | None = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
+
+        if terminal_layout_mode == "two_rails":
+            name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
+            x_prefix_mask = name_src.astype(str).str.contains(r"-X", regex=True, na=False)
+            type_mask = term_data["Type"].astype(str).eq("WAGO.2002-3201_ADV")
+            gs_numeric = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+            gs_mask = gs_numeric.notna() & (gs_numeric >= 2010)
+            change_mask = x_prefix_mask & type_mask & gs_mask
+            term_data.loc[change_mask, "Type"] = "WAGO.2002-3201_ADV_L"
 
         term_data = apply_x192a_terminal_gs_rules(term_data)
 
@@ -1103,7 +1113,9 @@ def process_excel(
 
     relay_clean, relay_removed = process_relays(relay_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
-    terminal_clean, terminal_removed = process_terminals(terminal_df, required_pe_qty_by_gs)
+    terminal_clean, terminal_removed = process_terminals(
+        terminal_df, required_pe_qty_by_gs, terminal_layout_mode=terminal_layout_mode
+    )
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
     removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
@@ -1145,9 +1157,11 @@ def process_excel(
         kind="stable",
     )
 
-    # Single secondary accessory on the globally last WAGO.2002-3201_ADV terminal
-    mask_primary_terminal = cleaned_df["Type"].astype(str).eq("WAGO.2002-3201_ADV")
-    if mask_primary_terminal.any():
+    # Single secondary accessory on the globally last terminal for each primary terminal type
+    for terminal_type in ["WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"]:
+        mask_primary_terminal = cleaned_df["Type"].astype(str).eq(terminal_type)
+        if not mask_primary_terminal.any():
+            continue
         last_idx = cleaned_df[mask_primary_terminal].index[-1]
         if str(cleaned_df.at[last_idx, "Accessories2"]).strip() == "":
             cleaned_df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"

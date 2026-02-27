@@ -1,3 +1,7 @@
 component_correction/Pictures/layout_2_din.png
 
 component_correction/Pictures/layout_1_din.png
+
+
+WAGO.2002-3201_ADV_L
+WAGO.2002-3201_ADV

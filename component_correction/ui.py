@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import re
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -30,6 +32,11 @@ def _normalize_selected_terminal_type(type_value: str) -> str:
 
 def _bytes_sig(name: str, b: bytes) -> tuple[str, int, str]:
     return (name or "", len(b), hashlib.md5(b).hexdigest())
+
+
+def _img_to_data_url(path: str) -> str:
+    b = Path(path).read_bytes()
+    return "data:image/png;base64," + base64.b64encode(b).decode("utf-8")
 
 
 def _uploader_changed(upl, sig_key: str) -> tuple[bool, tuple[str, int, str] | None]:
@@ -362,7 +369,6 @@ def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | Non
 
 def render_component_correction() -> None:
     st.subheader("Component correction")
-    st.caption("UI build: debug-v2 (type recognition via processor.classify_component)")
     if "workflow_state" not in st.session_state:
         st.session_state["workflow_state"] = "idle"
 
@@ -638,39 +644,22 @@ def render_component_correction() -> None:
     )
 
     if show_process_button and component_bytes is not None:
-        IMG_W = 360
         selected_mode = st.session_state.get("terminal_layout_mode")
         left_button_type = "primary" if selected_mode == "two_rails" else "secondary"
         right_button_type = "primary" if selected_mode == "one_rail" else "secondary"
         st.markdown(
             """
             <style>
-            .layout-header-wrap {
-                min-height: 58px;
+            .layout-image-wrapper {
+                height: 420px;
                 display: flex;
-                align-items: flex-start;
-                width: 100%;
-            }
-            .layout-test-banner {
-                border: 1px solid rgba(255,173,51,0.75);
-                background: rgba(255,173,51,0.18);
-                color: #fff3d6;
-                border-radius: 10px;
-                padding: 10px 12px;
-                min-height: 42px;
-                display: flex;
+                justify-content: center;
                 align-items: center;
-                font-weight: 600;
-                width: 100%;
             }
-            .layout-header-spacer {
-                width: 100%;
-                min-height: 42px;
-            }
-            .layout-title {
-                width: 100%;
-                text-align: center;
-                font-weight: 700;
+            .layout-image {
+                max-height: 400px;
+                max-width: 100%;
+                object-fit: contain;
             }
             </style>
             """,
@@ -680,12 +669,19 @@ def render_component_correction() -> None:
 
         with left_col:
             with st.container(border=True):
-                st.markdown('<div class="layout-header-wrap"><div class="layout-test-banner">This function is being tested.</div></div>', unsafe_allow_html=True)
-                st.markdown('<div class="layout-title">Terminal layout: 2 DIN rails</div>', unsafe_allow_html=True)
+                st.markdown("**Terminal layout: 2 DIN rails**")
                 try:
-                    st.image("component_correction/Pictures/layout_2_din.png", width=IMG_W)
+                    img_src = _img_to_data_url("component_correction/Pictures/layout_2_din.png")
+                    st.markdown(
+                        f"""
+                        <div class="layout-image-wrapper">
+                            <img src="{img_src}" class="layout-image"/>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
                 except Exception:
-                    st.caption("Image not found.")
+                    st.caption("Image not found: component_correction/Pictures/layout_2_din.png")
                 if st.button(
                     "Select 2 DIN rails",
                     key="layout_two_rails",
@@ -697,12 +693,19 @@ def render_component_correction() -> None:
 
         with right_col:
             with st.container(border=True):
-                st.markdown('<div class="layout-header-wrap"><div class="layout-header-spacer"></div></div>', unsafe_allow_html=True)
-                st.markdown('<div class="layout-title">Terminal layout: 1 DIN rail</div>', unsafe_allow_html=True)
+                st.markdown("**Terminal layout: 1 DIN rail**")
                 try:
-                    st.image("component_correction/Pictures/layout_1_din.png", width=IMG_W)
+                    img_src = _img_to_data_url("component_correction/Pictures/layout_1_din.png")
+                    st.markdown(
+                        f"""
+                        <div class="layout-image-wrapper">
+                            <img src="{img_src}" class="layout-image"/>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
                 except Exception:
-                    st.caption("Image not found.")
+                    st.caption("Image not found: component_correction/Pictures/layout_1_din.png")
                 if st.button(
                     "Select 1 DIN rail",
                     key="layout_one_rail",
