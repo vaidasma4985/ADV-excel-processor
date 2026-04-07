@@ -180,6 +180,37 @@ def _to_num(v: Any) -> float | None:
     return None if pd.isna(x) else float(x)
 
 
+def _normalize_schema_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep text columns textual and quantity columns numeric."""
+    df = df.copy()
+
+    text_columns = [
+        "Accessories",
+        "Accessories1",
+        "Accessories2",
+        "Type",
+        "Name",
+        "Function Designation",
+        "Designation",
+    ]
+    for col in text_columns:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+
+    qty_columns = [
+        "Quantity",
+        "Accessories1 Quantity",
+        "Accessories2 Quantity",
+        "Quantity of accessories",
+        "Quantity of accessories2",
+    ]
+    for col in qty_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
 def _gs_int(v: Any) -> int | None:
     n = _to_num(v)
     return None if n is None else int(n)
@@ -458,6 +489,8 @@ def process_excel(
     ]:
         if col not in df.columns:
             df[col] = default
+
+    df = _normalize_schema_dtypes(df)
 
     removed_parts: List[pd.DataFrame] = []
 
@@ -937,6 +970,7 @@ def process_excel(
                 rows.append(d)
 
         term_data = pd.DataFrame(rows)
+        term_data = _normalize_schema_dtypes(term_data)
 
         # PE mapping and /3 reduction
         pe_mask = term_data["Type"].astype(str).str.contains("2002-3207", na=False)
@@ -1118,6 +1152,7 @@ def process_excel(
     )
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
+    cleaned_df = _normalize_schema_dtypes(cleaned_df)
     removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
     removed_df = pd.concat(removed_parts + removed_df_parts, ignore_index=True) if (removed_parts or removed_df_parts) else pd.DataFrame()
     if removed_df.empty:
@@ -1170,6 +1205,7 @@ def process_excel(
     cleaned_df = cleaned_df.drop(
         columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order", "_relay_type_order"], errors="ignore"
     )
+    cleaned_df = _normalize_schema_dtypes(cleaned_df)
 
     # Workbook output
     wb = Workbook()
