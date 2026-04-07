@@ -849,6 +849,10 @@ def render_component_correction() -> None:
                         st.warning("Nepavyko pritaikyti pataisymų: trūksta stulpelių: " + ", ".join(missing_apply_cols))
                     else:
                         corrected_raw_df = raw_df.copy()
+                        if "Group Sorting" in corrected_raw_df.columns:
+                            corrected_raw_df["Group Sorting"] = pd.to_numeric(
+                                corrected_raw_df["Group Sorting"], errors="coerce"
+                            )
 
                         # Apply GS fixes
                         for _, row in gs_fix_df.iterrows():
