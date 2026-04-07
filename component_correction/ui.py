@@ -314,6 +314,7 @@ def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dic
     cleaned_df, removed_df, excel_bytes, _stats = process_excel(
         component_bytes,
         terminal_list_bytes=terminal_bytes,
+        terminal_layout_mode=st.session_state.get("terminal_layout_mode"),
     )
     unrec_df = _build_unrecognized_df(component_bytes)
     return {
