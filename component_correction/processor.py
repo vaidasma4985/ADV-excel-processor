@@ -411,6 +411,15 @@ def _normalize_terminal_name(name: str) -> str:
     return re.sub(r"^\+\d+", "", s)
 
 
+def _extract_crankcase_token(name_series: pd.Series) -> pd.Series:
+    return name_series.astype(str).str.extract(r"(-F\d{3})", expand=False)
+
+
+def _valid_crankcase_mask(name_series: pd.Series) -> pd.Series:
+    crankcase_token = _extract_crankcase_token(name_series)
+    return crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
+
+
 # -----------------------------------------------------------------------------
 # Terminal rule: X192A insertion inside one base GS group
 # -----------------------------------------------------------------------------
@@ -899,9 +908,9 @@ def process_excel(
         _apply_accessories(last_836_block, "WAGO.2002-991_ADV", None)
 
         name_src = fuse_data["_name_orig"] if "_name_orig" in fuse_data.columns else fuse_data["Name"]
-        crankcase_token = name_src.astype(str).str.extract(r"(-F\d{3})", expand=False)
+        crankcase_token = _extract_crankcase_token(name_src)
         any_fxx8 = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
-        valid_fxx8 = crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
+        valid_fxx8 = _valid_crankcase_mask(name_src)
         # Exempt WAGO fuse variants that legitimately use F**8 codes.
         invalid_fxx8 = any_fxx8 & (~valid_fxx8) & ~(is_541 | is_836)
         if invalid_fxx8.any():
@@ -1206,6 +1215,39 @@ def process_excel(
         columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order", "_relay_type_order"], errors="ignore"
     )
     cleaned_df = _normalize_schema_dtypes(cleaned_df)
+
+    def _move_cleaned_rows_to_removed(mask: pd.Series, reason: str) -> None:
+        nonlocal cleaned_df, removed_df
+        if not mask.any():
+            return
+        to_remove = cleaned_df.loc[mask].copy()
+        to_remove["Removed Reason"] = reason
+        removed_df = pd.concat([removed_df, to_remove], ignore_index=True)
+        cleaned_df = cleaned_df.loc[~mask].copy()
+
+    if "Group Sorting" in cleaned_df.columns:
+        gs_numeric = pd.to_numeric(cleaned_df["Group Sorting"], errors="coerce")
+        _move_cleaned_rows_to_removed(gs_numeric.isna(), "Removed: missing Group Sorting")
+
+    if not cleaned_df.empty:
+        name_src = cleaned_df["_name_orig"] if "_name_orig" in cleaned_df.columns else cleaned_df["Name"]
+        f9xx_mask = name_src.astype(str).str.contains(r"-F9\d{2}\b", regex=True, na=False)
+        wago_fuse_mask = cleaned_df["Type"].astype(str).isin(
+            ["WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"]
+        )
+        _move_cleaned_rows_to_removed(
+            f9xx_mask & (~wago_fuse_mask),
+            "Removed: invalid F9** non-WAGO fuse",
+        )
+
+    if not cleaned_df.empty:
+        name_src = cleaned_df["_name_orig"] if "_name_orig" in cleaned_df.columns else cleaned_df["Name"]
+        se_a9_mask = cleaned_df["Type"].astype(str).eq("SE.A9F04604_ADV")
+        valid_crankcase_mask = _valid_crankcase_mask(name_src)
+        _move_cleaned_rows_to_removed(
+            se_a9_mask & (~valid_crankcase_mask),
+            "Removed: non-crankcase SE.A9F04604_ADV",
+        )
 
     # Workbook output
     wb = Workbook()
