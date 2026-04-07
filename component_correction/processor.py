@@ -69,7 +69,7 @@ _RELAY_TYPE_MAP: Dict[str, str] = {
     "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
 }
 
-_TERMINAL_TYPES: set[str] = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+_TERMINAL_TYPES: set[str] = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L", "WAGO.2002-3207_ADV"}
 _FUSE_TYPES: set[str] = {
     "WAGO.2002-1611/1000-541_ADV",
     "WAGO.2002-1611/1000-836_ADV",
@@ -180,6 +180,37 @@ def _to_num(v: Any) -> float | None:
     return None if pd.isna(x) else float(x)
 
 
+def _normalize_schema_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep text columns textual and quantity columns numeric."""
+    df = df.copy()
+
+    text_columns = [
+        "Accessories",
+        "Accessories1",
+        "Accessories2",
+        "Type",
+        "Name",
+        "Function Designation",
+        "Designation",
+    ]
+    for col in text_columns:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+
+    qty_columns = [
+        "Quantity",
+        "Accessories1 Quantity",
+        "Accessories2 Quantity",
+        "Quantity of accessories",
+        "Quantity of accessories2",
+    ]
+    for col in qty_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
 def _gs_int(v: Any) -> int | None:
     n = _to_num(v)
     return None if n is None else int(n)
@@ -222,6 +253,7 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
             "SE.RGZE1S48M + SE.RXG22P7": "2POLE",
             "SE.RXZE2S114M + SE.RXM4GB2BD": "4POLE",
             "WAGO.2002-3201_ADV": "CONTROL",
+            "WAGO.2002-3201_ADV_L": "CONTROL",
             "WAGO.2002-3207_ADV": "CONTROL",
             "SE.RE22R1AMR_ADV": "2POLE",
             "FIN.39.00.8.230.8240_ADV": "1POLE",
@@ -379,6 +411,15 @@ def _normalize_terminal_name(name: str) -> str:
     return re.sub(r"^\+\d+", "", s)
 
 
+def _extract_crankcase_token(name_series: pd.Series) -> pd.Series:
+    return name_series.astype(str).str.extract(r"(-F\d{3})", expand=False)
+
+
+def _valid_crankcase_mask(name_series: pd.Series) -> pd.Series:
+    crankcase_token = _extract_crankcase_token(name_series)
+    return crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
+
+
 # -----------------------------------------------------------------------------
 # Terminal rule: X192A insertion inside one base GS group
 # -----------------------------------------------------------------------------
@@ -393,7 +434,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
       - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
       - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
     """
-    terminal_types = {"WAGO.2002-3201_ADV"}
+    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
 
     gs_num = pd.to_numeric(df["Group Sorting"], errors="coerce")
@@ -434,7 +475,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # Main processing
 # -----------------------------------------------------------------------------
 def process_excel(
-    file_bytes: bytes, terminal_list_bytes: bytes | None = None
+    file_bytes: bytes, terminal_list_bytes: bytes | None = None, terminal_layout_mode: str | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
     df = _drop_unnamed_cols(df)
@@ -457,6 +498,8 @@ def process_excel(
     ]:
         if col not in df.columns:
             df[col] = default
+
+    df = _normalize_schema_dtypes(df)
 
     removed_parts: List[pd.DataFrame] = []
 
@@ -597,7 +640,7 @@ def process_excel(
     # -------------------------------------------------------------------------
     # Category pipelines
     # -------------------------------------------------------------------------
-    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"}
+    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L", "WAGO.2002-3207_ADV"}
     fuse_types = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV", "SE.A9F04604_ADV"}
     relay_types = set(df["Type"].unique()) - terminal_types - fuse_types
 
@@ -865,10 +908,11 @@ def process_excel(
         _apply_accessories(last_836_block, "WAGO.2002-991_ADV", None)
 
         name_src = fuse_data["_name_orig"] if "_name_orig" in fuse_data.columns else fuse_data["Name"]
-        crankcase_token = name_src.astype(str).str.extract(r"(-F\d{3})", expand=False)
+        crankcase_token = _extract_crankcase_token(name_src)
         any_fxx8 = crankcase_token.fillna("").str.match(r"^-F\d{2}8$")
-        valid_fxx8 = crankcase_token.fillna("").str.match(r"^-F[1-5][1-9]8$")
-        invalid_fxx8 = any_fxx8 & (~valid_fxx8)
+        valid_fxx8 = _valid_crankcase_mask(name_src)
+        # Exempt WAGO fuse variants that legitimately use F**8 codes.
+        invalid_fxx8 = any_fxx8 & (~valid_fxx8) & ~(is_541 | is_836)
         if invalid_fxx8.any():
             to_remove = fuse_data.loc[invalid_fxx8].copy()
             to_remove = to_remove.drop(columns=[c for c in to_remove.columns if str(c).startswith("_")], errors="ignore")
@@ -888,12 +932,21 @@ def process_excel(
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(
-        term_data: pd.DataFrame, pe_requirements: Dict[int, int]
+        term_data: pd.DataFrame, pe_requirements: Dict[int, int], terminal_layout_mode: str | None = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
+
+        if terminal_layout_mode == "two_rails":
+            name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
+            x_prefix_mask = name_src.astype(str).str.contains(r"-X", regex=True, na=False)
+            type_mask = term_data["Type"].astype(str).eq("WAGO.2002-3201_ADV")
+            gs_numeric = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+            gs_mask = gs_numeric.notna() & (gs_numeric >= 2010)
+            change_mask = x_prefix_mask & type_mask & gs_mask
+            term_data.loc[change_mask, "Type"] = "WAGO.2002-3201_ADV_L"
 
         term_data = apply_x192a_terminal_gs_rules(term_data)
 
@@ -926,6 +979,7 @@ def process_excel(
                 rows.append(d)
 
         term_data = pd.DataFrame(rows)
+        term_data = _normalize_schema_dtypes(term_data)
 
         # PE mapping and /3 reduction
         pe_mask = term_data["Type"].astype(str).str.contains("2002-3207", na=False)
@@ -1102,9 +1156,12 @@ def process_excel(
 
     relay_clean, relay_removed = process_relays(relay_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
-    terminal_clean, terminal_removed = process_terminals(terminal_df, required_pe_qty_by_gs)
+    terminal_clean, terminal_removed = process_terminals(
+        terminal_df, required_pe_qty_by_gs, terminal_layout_mode=terminal_layout_mode
+    )
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
+    cleaned_df = _normalize_schema_dtypes(cleaned_df)
     removed_df_parts = [p for p in [relay_removed, fuse_removed, terminal_removed] if p is not None and not p.empty]
     removed_df = pd.concat(removed_parts + removed_df_parts, ignore_index=True) if (removed_parts or removed_df_parts) else pd.DataFrame()
     if removed_df.empty:
@@ -1144,9 +1201,11 @@ def process_excel(
         kind="stable",
     )
 
-    # Single secondary accessory on the globally last WAGO.2002-3201_ADV terminal
-    mask_primary_terminal = cleaned_df["Type"].astype(str).eq("WAGO.2002-3201_ADV")
-    if mask_primary_terminal.any():
+    # Single secondary accessory on the globally last terminal for each primary terminal type
+    for terminal_type in ["WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"]:
+        mask_primary_terminal = cleaned_df["Type"].astype(str).eq(terminal_type)
+        if not mask_primary_terminal.any():
+            continue
         last_idx = cleaned_df[mask_primary_terminal].index[-1]
         if str(cleaned_df.at[last_idx, "Accessories2"]).strip() == "":
             cleaned_df.at[last_idx, "Accessories2"] = "WAGO.249-116_ADV"
@@ -1155,6 +1214,40 @@ def process_excel(
     cleaned_df = cleaned_df.drop(
         columns=["_gs_sort", "_terminal_sort", "_terminal_sort_order", "_relay_type_order"], errors="ignore"
     )
+    cleaned_df = _normalize_schema_dtypes(cleaned_df)
+
+    def _move_cleaned_rows_to_removed(mask: pd.Series, reason: str) -> None:
+        nonlocal cleaned_df, removed_df
+        if not mask.any():
+            return
+        to_remove = cleaned_df.loc[mask].copy()
+        to_remove["Removed Reason"] = reason
+        removed_df = pd.concat([removed_df, to_remove], ignore_index=True)
+        cleaned_df = cleaned_df.loc[~mask].copy()
+
+    if "Group Sorting" in cleaned_df.columns:
+        gs_numeric = pd.to_numeric(cleaned_df["Group Sorting"], errors="coerce")
+        _move_cleaned_rows_to_removed(gs_numeric.isna(), "Removed: missing Group Sorting")
+
+    if not cleaned_df.empty:
+        name_src = cleaned_df["_name_orig"] if "_name_orig" in cleaned_df.columns else cleaned_df["Name"]
+        f9xx_mask = name_src.astype(str).str.contains(r"-F9\d{2}\b", regex=True, na=False)
+        wago_fuse_mask = cleaned_df["Type"].astype(str).isin(
+            ["WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV"]
+        )
+        _move_cleaned_rows_to_removed(
+            f9xx_mask & (~wago_fuse_mask),
+            "Removed: invalid F9** non-WAGO fuse",
+        )
+
+    if not cleaned_df.empty:
+        name_src = cleaned_df["_name_orig"] if "_name_orig" in cleaned_df.columns else cleaned_df["Name"]
+        se_a9_mask = cleaned_df["Type"].astype(str).eq("SE.A9F04604_ADV")
+        valid_crankcase_mask = _valid_crankcase_mask(name_src)
+        _move_cleaned_rows_to_removed(
+            se_a9_mask & (~valid_crankcase_mask),
+            "Removed: non-crankcase SE.A9F04604_ADV",
+        )
 
     # Workbook output
     wb = Workbook()
