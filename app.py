@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import sys
 import streamlit as st
-import pandas as pd
-import openpyxl
 
 from component_correction.ui import render_component_correction
 from wire_tool.ui import render_wire_tool
@@ -11,10 +8,6 @@ from wire_tool.ui import render_wire_tool
 
 
 def main() -> None:
-    st.write("Python version:", sys.version)
-st.write("Streamlit version:", st.__version__)
-st.write("Pandas version:", pd.__version__)
-st.write("Openpyxl version:", openpyxl.__version__)
     
     st.set_page_config(page_title="Excel įrankiai", layout="wide")
     st.title("Excel įrankiai")
