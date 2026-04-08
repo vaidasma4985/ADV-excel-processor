@@ -1037,6 +1037,46 @@ def process_excel(
 
             term_data = term_data[(~pe_name_mask) | (term_data.index.isin(keep))].copy()
 
+        pe_type_mask = term_data["Type"].astype(str).eq("WAGO.2002-3207_ADV")
+        gs_orig_numeric = pd.to_numeric(term_data.get("_gs_orig", pd.Series([None] * len(term_data))), errors="coerce")
+        gs_numeric_current = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+        has_5025 = (gs_orig_numeric.eq(5025) | gs_numeric_current.eq(5025)).any()
+        has_5020 = (gs_orig_numeric.eq(5020) | gs_numeric_current.eq(5020)).any()
+        if has_5025 or (has_5020 and not has_5025):
+            pe_5025_mask = pe_type_mask & (gs_orig_numeric.eq(5025) | gs_numeric_current.eq(5025))
+            existing_pe_bases = sorted(set(int(x) for x in gs_orig_numeric[pe_type_mask].dropna()))
+            pe_bases_for_naming = sorted(set(existing_pe_bases + [5025]))
+            pe_id_5025 = pe_bases_for_naming.index(5025) + 1
+            pe_name_5025 = f"+5025-PE{pe_id_5025}"
+
+            if pe_5025_mask.any():
+                prototype = term_data.loc[pe_5025_mask].iloc[0].copy()
+            elif pe_type_mask.any():
+                prototype = term_data.loc[pe_type_mask].iloc[0].copy()
+            else:
+                prototype = term_data.iloc[0].copy()
+
+            existing_designations = (
+                term_data.loc[pe_5025_mask & term_data["Name"].astype(str).eq(pe_name_5025), "Designation"]
+                .astype(str)
+                .str.strip()
+            )
+            designation_numbers = pd.to_numeric(existing_designations.replace("", "0"), errors="coerce").dropna()
+            next_designation = "" if designation_numbers.empty else str(int(designation_numbers.max()) + 1)
+
+            prototype["Name"] = pe_name_5025
+            prototype["Type"] = "WAGO.2002-3207_ADV"
+            prototype["Quantity"] = 1
+            prototype["Group Sorting"] = 5025
+            prototype["_gs_orig"] = 5025
+            prototype["Accessories"] = ""
+            prototype["Quantity of accessories"] = 0
+            prototype["Accessories2"] = ""
+            prototype["Quantity of accessories2"] = 0
+            prototype["Designation"] = next_designation
+
+            term_data = pd.concat([term_data, pd.DataFrame([prototype])], ignore_index=True)
+
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
         term_data["Accessories2"] = term_data["Accessories2"].fillna("")
