@@ -311,6 +311,12 @@ def _terminal_base_name(name: str) -> str:
     return s
 
 
+def _excel_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    return df.astype(object).where(pd.notna(df), None)
+
+
 def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
     if df.empty:
         return
@@ -1308,6 +1314,7 @@ def process_excel(
 
     out_clean = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
     out_clean = out_clean.drop(columns=["_gs_orig", "_name_orig"], errors="ignore")
+    out_clean = _excel_safe(out_clean)
     for row in dataframe_to_rows(out_clean, index=False, header=True):
         ws_c.append(row)
 
@@ -1326,6 +1333,7 @@ def process_excel(
     removed_out = removed_df.drop(
         columns=["_gs_orig", "_name_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore"
     )
+    removed_out = _excel_safe(removed_out)
     for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
@@ -1348,4 +1356,5 @@ def process_excel(
         "removed_rows": len(removed_df),
     }
 
+    removed_df = _excel_safe(removed_df)
     return out_clean, removed_df, out_bytes, stats
