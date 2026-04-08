@@ -14,7 +14,7 @@ def main() -> None:
     st.title("Excel įrankiai")
 
     # 🔥 DEBUG blokas (gali išjungti pakeitęs į False)
-    DEBUG = True
+    DEBUG = False
 
     if DEBUG:
         with st.expander("DEBUG INFO"):
