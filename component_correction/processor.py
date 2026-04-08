@@ -353,18 +353,20 @@ def _x_number_endswith_14(name: str) -> bool:
 
 def _terminal_sort_key(name: str) -> int:
     """
-    Rikiavimo raktas, kad X192A* galėtume laikyti "tarp" X1922 ir X1953.
-    Prielaida: X192A3 = 1923 (t.y. 192 + A3).
+    Rikiavimo raktas terminalams:
+      - įprasti X*** terminalai eina pirmi savo šeimoje
+      - X***A* terminalai eina po visų įprastų tos pačios šeimos terminalų
+      - X***A* tarpusavyje rikiuojami pagal A sufikso skaičių
     """
     s = str(name)
 
-    m = re.search(r"-X(\d{4})\b", s)
+    m = re.search(r"-X(\d{3})(\d+)\b", s)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)) * 10_000 + int(m.group(2))
 
-    m = re.search(r"-X(\d{3})A(\d+)\b", s)  # X192A3
+    m = re.search(r"-X(\d{3})A(\d+)\b", s)
     if m:
-        return int(m.group(1) + m.group(2))  # "192"+"3" => 1923
+        return int(m.group(1)) * 10_000 + 5_000 + int(m.group(2))
 
     m = re.search(r"-X(\d+)", s)
     if m:
@@ -429,10 +431,10 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     Bazė = ORIGINALUS GS iš įkelto failo (df['_gs_orig']).
 
-    Vienoje bazinėje GS (pvz. 2010), jei yra X192A*:
-      - iki X192A paliekam esamam GS
-      - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
-      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
+    Vienoje bazinėje GS, jei yra X***A* terminalų:
+      - visi įprasti X*** terminalai eina pirmi
+      - visi X***A* eina po jų
+      - GS perrašomas nuosekliai nuo bazinio GS
     """
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
@@ -450,23 +452,21 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     work["_base_gs"] = work["_gs_orig"].astype(int)
     work["_xkey"] = work["Name"].astype(str).apply(_terminal_sort_key)
-    work["_is_x192a"] = work["Name"].astype(str).str.contains(r"-X192A\d+\b", regex=True, na=False)
+    work["_is_xa_terminal"] = work["Name"].astype(str).str.contains(r"-X\d{3}A\d+\b", regex=True, na=False)
 
     for base_gs, grp in work.groupby("_base_gs", sort=True):
-        if not grp["_is_x192a"].any():
+        if not grp["_is_xa_terminal"].any():
             continue
 
-        gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
-        max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
-        after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
+        ordered_idxs = grp.sort_values(["_xkey", "Name"], kind="stable").index.to_list()
+        if not ordered_idxs:
+            continue
 
-        gs_for_after = None
-        if after_mask.any():
-            gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
-
-        df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
-        if gs_for_after is not None:
-            df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
+        next_gs = int(base_gs)
+        for pos, idx in enumerate(ordered_idxs):
+            if pos > 0:
+                next_gs = _next_free_gs(existing_gs, next_gs + 1)
+            df.at[idx, "Group Sorting"] = next_gs
 
     return df
 
