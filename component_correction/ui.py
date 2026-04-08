@@ -170,16 +170,18 @@ def _build_missing_gs_terminals_df(component_bytes: bytes) -> tuple[pd.DataFrame
         return raw_df, pd.DataFrame(), missing_cols
 
     raw_type_str = raw_df["Type"].astype(str).str.strip()
+    name_str = raw_df["Name"].astype(str) if "Name" in raw_df.columns else pd.Series("", index=raw_df.index, dtype=str)
     terminal_type_mask = (
         raw_type_str.isin(["2002-3201", "2002-3207"])
         | raw_type_str.isin(["WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"])
         | raw_type_str.str.contains(r"\b2002-3201\b|\b2002-3207\b", regex=True, na=False)
     )
+    xtb_mask = name_str.str.contains(r"-XTB", regex=True, na=False)
 
     gs = raw_df["Group Sorting"]
     gs_missing = gs.isna() | (gs.astype(str).str.strip() == "")
 
-    errors_df = raw_df.loc[terminal_type_mask & gs_missing, ["Name", "Type", "Group Sorting"]].copy()
+    errors_df = raw_df.loc[terminal_type_mask & gs_missing & (~xtb_mask), ["Name", "Type", "Group Sorting"]].copy()
     errors_df["_idx"] = errors_df.index
     return raw_df, errors_df, []
 
@@ -210,6 +212,8 @@ def _build_unrecognized_terminal_types_df(component_bytes: bytes) -> tuple[pd.Da
 
         name_str = "" if pd.isna(name) else str(name)
         if not re.search(r"-X\d+", name_str):
+            continue
+        if re.search(r"-XTB", name_str):
             continue
 
         gs_present = (not pd.isna(group_sorting)) and (str(group_sorting).strip() != "")
@@ -819,18 +823,51 @@ def render_component_correction() -> None:
             gs_fix_df = edited_gs_draft.copy()
             type_fix_df = edited_type_draft.copy()
 
-            gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=float)
-            gs_as_text = gs_values.astype(str).str.strip()
-            gs_numeric = pd.to_numeric(gs_values, errors="coerce")
-            invalid_mask = gs_as_text.eq("") | gs_numeric.isna() | (gs_numeric % 1 != 0)
+            if "_idx" in gs_fix_df.columns:
+                gs_fix_df = gs_fix_df.loc[gs_fix_df["_idx"].notna()].copy()
+            if "Group Sorting" in gs_fix_df.columns:
+                gs_fix_df["Group Sorting"] = gs_fix_df["Group Sorting"].astype(str).str.strip()
+                gs_fix_df["Group Sorting"] = gs_fix_df["Group Sorting"].replace(
+                    {"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA}
+                )
+            if "_idx" in gs_fix_df.columns and "Group Sorting" in gs_fix_df.columns:
+                gs_fix_df = gs_fix_df.loc[
+                    ~(gs_fix_df["_idx"].isna() & gs_fix_df["Group Sorting"].isna())
+                ].copy()
+
+            gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=object)
+            gs_text = gs_values.astype(str).str.strip()
+            gs_text = gs_text.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+            gs_numeric = pd.to_numeric(gs_text, errors="coerce")
+            invalid_mask = (
+                (gs_numeric.isna() | (gs_numeric % 1 != 0))
+                if not gs_fix_df.empty and "Group Sorting" in gs_fix_df.columns
+                else pd.Series(False, index=gs_fix_df.index, dtype=bool)
+            )
             if "_idx" not in gs_fix_df.columns:
                 invalid_mask = pd.Series([True])
 
+            if "_idx" in type_fix_df.columns:
+                type_fix_df = type_fix_df.loc[type_fix_df["_idx"].notna()].copy()
+            if "Correct Type" in type_fix_df.columns:
+                type_fix_df["Correct Type"] = type_fix_df["Correct Type"].astype(str).str.strip()
+                type_fix_df["Correct Type"] = type_fix_df["Correct Type"].replace(
+                    {"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA, "empty": pd.NA}
+                )
+            if "_idx" in type_fix_df.columns and "Correct Type" in type_fix_df.columns:
+                type_fix_df = type_fix_df.loc[
+                    ~(type_fix_df["_idx"].isna() & type_fix_df["Correct Type"].isna())
+                ].copy()
+
             type_values = (
-                type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=str)
+                type_fix_df["Correct Type"] if "Correct Type" in type_fix_df.columns else pd.Series(dtype=object)
             )
             normalized_types = type_values.map(_normalize_selected_terminal_type)
-            invalid_type_mask = ~normalized_types.astype(str).str.strip().isin(TERMINAL_TYPE_OPTIONS)
+            invalid_type_mask = (
+                ~normalized_types.astype(str).str.strip().isin(TERMINAL_TYPE_OPTIONS)
+                if not type_fix_df.empty and "Correct Type" in type_fix_df.columns
+                else pd.Series(False, index=type_fix_df.index, dtype=bool)
+            )
             if "_idx" not in type_fix_df.columns:
                 invalid_type_mask = pd.Series([True])
 

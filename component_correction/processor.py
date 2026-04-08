@@ -311,6 +311,12 @@ def _terminal_base_name(name: str) -> str:
     return s
 
 
+def _excel_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    return df.astype(object).where(pd.notna(df), None)
+
+
 def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
     if df.empty:
         return
@@ -353,18 +359,20 @@ def _x_number_endswith_14(name: str) -> bool:
 
 def _terminal_sort_key(name: str) -> int:
     """
-    Rikiavimo raktas, kad X192A* galėtume laikyti "tarp" X1922 ir X1953.
-    Prielaida: X192A3 = 1923 (t.y. 192 + A3).
+    Rikiavimo raktas terminalams:
+      - įprasti X*** terminalai eina pirmi savo šeimoje
+      - X***A* terminalai eina po visų įprastų tos pačios šeimos terminalų
+      - X***A* tarpusavyje rikiuojami pagal A sufikso skaičių
     """
     s = str(name)
 
-    m = re.search(r"-X(\d{4})\b", s)
+    m = re.search(r"-X(\d{3})(\d+)\b", s)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)) * 10_000 + int(m.group(2))
 
-    m = re.search(r"-X(\d{3})A(\d+)\b", s)  # X192A3
+    m = re.search(r"-X(\d{3})A(\d+)\b", s)
     if m:
-        return int(m.group(1) + m.group(2))  # "192"+"3" => 1923
+        return int(m.group(1)) * 10_000 + 5_000 + int(m.group(2))
 
     m = re.search(r"-X(\d+)", s)
     if m:
@@ -429,10 +437,10 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     Bazė = ORIGINALUS GS iš įkelto failo (df['_gs_orig']).
 
-    Vienoje bazinėje GS (pvz. 2010), jei yra X192A*:
-      - iki X192A paliekam esamam GS
-      - visi X192A* perkelti į naują GS = next_free(base+1) (pvz. 2011)
-      - visi terminalai po X192A (pagal X numerį) perkelti į dar sekantį GS (pvz. 2012)
+    Vienoje bazinėje GS, jei yra X***A* terminalų:
+      - visi įprasti X*** terminalai eina pirmi
+      - visi X***A* eina po jų
+      - GS perrašomas nuosekliai nuo bazinio GS
     """
     terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"}
     is_terminal = df["Type"].astype(str).isin(terminal_types)
@@ -450,23 +458,21 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 
     work["_base_gs"] = work["_gs_orig"].astype(int)
     work["_xkey"] = work["Name"].astype(str).apply(_terminal_sort_key)
-    work["_is_x192a"] = work["Name"].astype(str).str.contains(r"-X192A\d+\b", regex=True, na=False)
+    work["_is_xa_terminal"] = work["Name"].astype(str).str.contains(r"-X\d{3}A\d+\b", regex=True, na=False)
 
     for base_gs, grp in work.groupby("_base_gs", sort=True):
-        if not grp["_is_x192a"].any():
+        if not grp["_is_xa_terminal"].any():
             continue
 
-        gs_for_x192a = _next_free_gs(existing_gs, int(base_gs) + 1)
-        max_x192a_key = int(grp.loc[grp["_is_x192a"], "_xkey"].max())
-        after_mask = (grp["_xkey"] > max_x192a_key) & (~grp["_is_x192a"])
+        ordered_idxs = grp.sort_values(["_xkey", "Name"], kind="stable").index.to_list()
+        if not ordered_idxs:
+            continue
 
-        gs_for_after = None
-        if after_mask.any():
-            gs_for_after = _next_free_gs(existing_gs, gs_for_x192a + 1)
-
-        df.loc[grp.loc[grp["_is_x192a"]].index, "Group Sorting"] = gs_for_x192a
-        if gs_for_after is not None:
-            df.loc[grp.loc[after_mask].index, "Group Sorting"] = gs_for_after
+        next_gs = int(base_gs)
+        for pos, idx in enumerate(ordered_idxs):
+            if pos > 0:
+                next_gs = _next_free_gs(existing_gs, next_gs + 1)
+            df.at[idx, "Group Sorting"] = next_gs
 
     return df
 
@@ -939,6 +945,17 @@ def process_excel(
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
 
+        name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
+        xtb_mask = name_src.astype(str).str.contains(r"-XTB", regex=True, na=False)
+        if xtb_mask.any():
+            _append_removed(removed_local, term_data.loc[xtb_mask], "Removed: XTB terminal excluded")
+            term_data = term_data.loc[~xtb_mask].copy()
+        if term_data.empty:
+            empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
+            return term_data.copy(), (
+                pd.concat(removed_local, ignore_index=True) if removed_local else empty_removed
+            )
+
         if terminal_layout_mode == "two_rails":
             name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
             x_prefix_mask = name_src.astype(str).str.contains(r"-X", regex=True, na=False)
@@ -1036,6 +1053,46 @@ def process_excel(
                 keep.extend(idxs[:need])
 
             term_data = term_data[(~pe_name_mask) | (term_data.index.isin(keep))].copy()
+
+        pe_type_mask = term_data["Type"].astype(str).eq("WAGO.2002-3207_ADV")
+        gs_orig_numeric = pd.to_numeric(term_data.get("_gs_orig", pd.Series([None] * len(term_data))), errors="coerce")
+        gs_numeric_current = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+        has_5025 = (gs_orig_numeric.eq(5025) | gs_numeric_current.eq(5025)).any()
+        has_5020 = (gs_orig_numeric.eq(5020) | gs_numeric_current.eq(5020)).any()
+        if has_5025 or (has_5020 and not has_5025):
+            pe_5025_mask = pe_type_mask & (gs_orig_numeric.eq(5025) | gs_numeric_current.eq(5025))
+            existing_pe_bases = sorted(set(int(x) for x in gs_orig_numeric[pe_type_mask].dropna()))
+            pe_bases_for_naming = sorted(set(existing_pe_bases + [5025]))
+            pe_id_5025 = pe_bases_for_naming.index(5025) + 1
+            pe_name_5025 = f"+5025-PE{pe_id_5025}"
+
+            if pe_5025_mask.any():
+                prototype = term_data.loc[pe_5025_mask].iloc[0].copy()
+            elif pe_type_mask.any():
+                prototype = term_data.loc[pe_type_mask].iloc[0].copy()
+            else:
+                prototype = term_data.iloc[0].copy()
+
+            existing_designations = (
+                term_data.loc[pe_5025_mask & term_data["Name"].astype(str).eq(pe_name_5025), "Designation"]
+                .astype(str)
+                .str.strip()
+            )
+            designation_numbers = pd.to_numeric(existing_designations.replace("", "0"), errors="coerce").dropna()
+            next_designation = "" if designation_numbers.empty else str(int(designation_numbers.max()) + 1)
+
+            prototype["Name"] = pe_name_5025
+            prototype["Type"] = "WAGO.2002-3207_ADV"
+            prototype["Quantity"] = 1
+            prototype["Group Sorting"] = 5025
+            prototype["_gs_orig"] = 5025
+            prototype["Accessories"] = ""
+            prototype["Quantity of accessories"] = 0
+            prototype["Accessories2"] = ""
+            prototype["Quantity of accessories2"] = 0
+            prototype["Designation"] = next_designation
+
+            term_data = pd.concat([term_data, pd.DataFrame([prototype])], ignore_index=True)
 
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
@@ -1257,6 +1314,7 @@ def process_excel(
 
     out_clean = cleaned_df.drop(columns=["_highlight_invalid_prefix"], errors="ignore")
     out_clean = out_clean.drop(columns=["_gs_orig", "_name_orig"], errors="ignore")
+    out_clean = _excel_safe(out_clean)
     for row in dataframe_to_rows(out_clean, index=False, header=True):
         ws_c.append(row)
 
@@ -1275,6 +1333,7 @@ def process_excel(
     removed_out = removed_df.drop(
         columns=["_gs_orig", "_name_orig", "_terminal_sort", "_terminal_sort_order"], errors="ignore"
     )
+    removed_out = _excel_safe(removed_out)
     for row in dataframe_to_rows(removed_out, index=False, header=True):
         ws_r.append(row)
 
@@ -1297,4 +1356,5 @@ def process_excel(
         "removed_rows": len(removed_df),
     }
 
+    removed_df = _excel_safe(removed_df)
     return out_clean, removed_df, out_bytes, stats
