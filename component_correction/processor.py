@@ -939,6 +939,17 @@ def process_excel(
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
             return term_data.copy(), empty_removed
 
+        name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
+        xtb_mask = name_src.astype(str).str.contains(r"-XTB", regex=True, na=False)
+        if xtb_mask.any():
+            _append_removed(removed_local, term_data.loc[xtb_mask], "Removed: XTB terminal excluded")
+            term_data = term_data.loc[~xtb_mask].copy()
+        if term_data.empty:
+            empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
+            return term_data.copy(), (
+                pd.concat(removed_local, ignore_index=True) if removed_local else empty_removed
+            )
+
         if terminal_layout_mode == "two_rails":
             name_src = term_data["_name_orig"] if "_name_orig" in term_data.columns else term_data["Name"]
             x_prefix_mask = name_src.astype(str).str.contains(r"-X", regex=True, na=False)

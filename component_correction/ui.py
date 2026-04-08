@@ -170,16 +170,18 @@ def _build_missing_gs_terminals_df(component_bytes: bytes) -> tuple[pd.DataFrame
         return raw_df, pd.DataFrame(), missing_cols
 
     raw_type_str = raw_df["Type"].astype(str).str.strip()
+    name_str = raw_df["Name"].astype(str) if "Name" in raw_df.columns else pd.Series("", index=raw_df.index, dtype=str)
     terminal_type_mask = (
         raw_type_str.isin(["2002-3201", "2002-3207"])
         | raw_type_str.isin(["WAGO.2002-3201_ADV", "WAGO.2002-3207_ADV"])
         | raw_type_str.str.contains(r"\b2002-3201\b|\b2002-3207\b", regex=True, na=False)
     )
+    xtb_mask = name_str.str.contains(r"-XTB", regex=True, na=False)
 
     gs = raw_df["Group Sorting"]
     gs_missing = gs.isna() | (gs.astype(str).str.strip() == "")
 
-    errors_df = raw_df.loc[terminal_type_mask & gs_missing, ["Name", "Type", "Group Sorting"]].copy()
+    errors_df = raw_df.loc[terminal_type_mask & gs_missing & (~xtb_mask), ["Name", "Type", "Group Sorting"]].copy()
     errors_df["_idx"] = errors_df.index
     return raw_df, errors_df, []
 
@@ -210,6 +212,8 @@ def _build_unrecognized_terminal_types_df(component_bytes: bytes) -> tuple[pd.Da
 
         name_str = "" if pd.isna(name) else str(name)
         if not re.search(r"-X\d+", name_str):
+            continue
+        if re.search(r"-XTB", name_str):
             continue
 
         gs_present = (not pd.isna(group_sorting)) and (str(group_sorting).strip() != "")
