@@ -335,7 +335,7 @@ def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dic
 
 def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | None) -> None:
     missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
-    _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
+    _, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
 
     if missing_gs_cols and missing_gs_cols != ["read_error"]:
         st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
@@ -455,9 +455,6 @@ def render_component_correction() -> None:
                         _run_precheck_or_process(corrected_bytes, terminal_bytes)
             return
 
-    if "workflow_state" not in st.session_state:
-        st.session_state["workflow_state"] = "idle"
-
     component_file = (
         st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
         if (
@@ -499,7 +496,7 @@ def render_component_correction() -> None:
     workflow_state = st.session_state.get("workflow_state", "idle")
     if workflow_state == "idle" and component_bytes is not None and st.session_state.get("results") is None:
         missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
-        _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
+        _, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
         if missing_gs_cols and missing_gs_cols != ["read_error"]:
             st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
         elif type_fix_cols and type_fix_cols != ["read_error"]:
