@@ -840,17 +840,14 @@ def render_component_correction() -> None:
                 gs_fix_df["Group Sorting"] = gs_fix_df["Group Sorting"].replace(
                     {"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA}
                 )
-            if "_idx" in gs_fix_df.columns and "Group Sorting" in gs_fix_df.columns:
-                gs_fix_df = gs_fix_df.loc[
-                    ~(gs_fix_df["_idx"].isna() & gs_fix_df["Group Sorting"].isna())
-                ].copy()
+                gs_fix_df = gs_fix_df.loc[gs_fix_df["Group Sorting"].notna()].copy()
 
             gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=object)
             gs_text = gs_values.astype(str).str.strip()
             gs_text = gs_text.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
             gs_numeric = pd.to_numeric(gs_text, errors="coerce")
             invalid_mask = (
-                (gs_numeric.isna() | (gs_numeric % 1 != 0))
+                (gs_text.notna() & (gs_numeric.isna() | (gs_numeric % 1 != 0)))
                 if not gs_fix_df.empty and "Group Sorting" in gs_fix_df.columns
                 else pd.Series(False, index=gs_fix_df.index, dtype=bool)
             )
