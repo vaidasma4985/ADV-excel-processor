@@ -681,13 +681,56 @@ def render_component_correction() -> None:
         if "type_fix_draft" not in st.session_state:
             st.session_state["type_fix_draft"] = st.session_state["type_fix_df"].copy()
 
-        with st.form("fix_form", clear_on_submit=False):
-            left_col, right_col = st.columns(2)
+        gs_editor_source = st.session_state.get("gs_fix_draft", st.session_state["gs_fix_df"])
+        type_editor_source = st.session_state.get("type_fix_draft", st.session_state["type_fix_df"])
+        show_gs_section = not gs_editor_source.empty
+        show_type_section = not type_editor_source.empty
 
-            with left_col:
+        with st.form("fix_form", clear_on_submit=False):
+            edited_gs_draft = gs_editor_source.copy()
+            edited_type_draft = type_editor_source.copy()
+
+            if show_gs_section and show_type_section:
+                left_col, right_col = st.columns(2)
+
+                with left_col:
+                    st.markdown("### Missing Group sorting for terminals")
+                    edited_gs_draft = st.data_editor(
+                        gs_editor_source,
+                        num_rows="fixed",
+                        use_container_width=True,
+                        key="gs_fix_editor",
+                        disabled=["Name", "Type", "_idx"],
+                        column_config={
+                            "_idx": None,
+                            "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
+                        },
+                    )
+
+                with right_col:
+                    st.markdown("### Unrecognized type number for terminals")
+                    with st.expander("Terminal type options", expanded=False):
+                        st.write(TERMINAL_TYPE_OPTIONS)
+
+                    edited_type_draft = st.data_editor(
+                        type_editor_source,
+                        num_rows="fixed",
+                        use_container_width=True,
+                        key="type_fix_editor",
+                        disabled=["Name", "Type", "Group Sorting", "_idx"],
+                        column_config={
+                            "_idx": None,
+                            "Correct Type": st.column_config.SelectboxColumn(
+                                "Correct Type",
+                                options=TERMINAL_TYPE_OPTIONS,
+                                required=True,
+                            ),
+                        },
+                    )
+            elif show_gs_section:
                 st.markdown("### Missing Group sorting for terminals")
                 edited_gs_draft = st.data_editor(
-                    st.session_state["gs_fix_draft"],
+                    gs_editor_source,
                     num_rows="fixed",
                     use_container_width=True,
                     key="gs_fix_editor",
@@ -697,14 +740,13 @@ def render_component_correction() -> None:
                         "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
                     },
                 )
-
-            with right_col:
+            elif show_type_section:
                 st.markdown("### Unrecognized type number for terminals")
                 with st.expander("Terminal type options", expanded=False):
                     st.write(TERMINAL_TYPE_OPTIONS)
 
                 edited_type_draft = st.data_editor(
-                    st.session_state["type_fix_draft"],
+                    type_editor_source,
                     num_rows="fixed",
                     use_container_width=True,
                     key="type_fix_editor",
