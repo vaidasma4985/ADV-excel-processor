@@ -562,77 +562,6 @@ def render_component_correction() -> None:
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
 
-    try:
-        conflict_raw_df, conflicts_df = _detect_conflicting_duplicates(component_bytes)
-    except Exception as conflict_exc:
-        st.error(f"Nepavyko patikrinti konfliktuojančių dublikatų: {conflict_exc}")
-        return
-
-    if not conflicts_df.empty:
-        st.error("Different components share the same Name.\nDelete the wrong rows and correct the drawings.")
-        st.session_state["dup_conflicts_df"] = conflicts_df.copy()
-        edited_conflicts_df = st.data_editor(
-            st.session_state["dup_conflicts_df"],
-            num_rows="fixed",
-            use_container_width=True,
-            key="dup_conflicts_draft",
-            disabled=["Name", "Type", "_idx", "Rule"],
-            column_config={
-                "_idx": None,
-                "Rule": None,
-                "Delete": st.column_config.CheckboxColumn("Delete"),
-            },
-        )
-
-        if st.button("Delete selected", key="delete_dup_conflicts"):
-            selected_idx = (
-                edited_conflicts_df.loc[edited_conflicts_df["Delete"] == True, "_idx"].astype(int).drop_duplicates()
-            )
-            if selected_idx.empty:
-                st.warning("Pasirinkite bent vieną eilutę ištrynimui.")
-            else:
-                corrected_raw_df = conflict_raw_df.loc[~conflict_raw_df["_idx"].isin(selected_idx)].copy()
-                corrected_raw_df = corrected_raw_df.drop(columns=["_idx"], errors="ignore")
-
-                output_buffer = BytesIO()
-                with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-                    corrected_raw_df.to_excel(writer, index=False)
-                corrected_bytes = output_buffer.getvalue()
-
-                st.session_state["component_bytes"] = corrected_bytes
-                existing_name = st.session_state.get("component_name", "")
-                existing_sig = st.session_state.get("component_active_sig")
-                if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
-                    existing_name = existing_sig[0]
-                st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
-
-                for k in [
-                    "processed",
-                    "results",
-                    "missing_gs_draft",
-                    "type_fix_draft",
-                    "missing_gs_df",
-                    "unrec_type_df",
-                    "gs_fix_df",
-                    "gs_fix_draft",
-                    "type_fix_df",
-                    "fix_applied_flash",
-                    "gs_fix_editor",
-                    "type_fix_editor",
-                    "dup_conflicts_draft",
-                ]:
-                    st.session_state.pop(k, None)
-
-                    _, post_conflicts_df = _detect_conflicting_duplicates(corrected_bytes)
-                    if not post_conflicts_df.empty:
-                        st.session_state["dup_conflicts_df"] = post_conflicts_df.copy()
-                        st.rerun()
-                    else:
-                        st.session_state.pop("dup_conflicts_df", None)
-                        st.session_state.pop("dup_conflicts_draft", None)
-                        _run_precheck_or_process(corrected_bytes, terminal_bytes)
-        return
-
     if workflow_state == "idle" and st.session_state.get("results") is None:
         missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
         _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
@@ -653,10 +582,7 @@ def render_component_correction() -> None:
             st.session_state.pop("type_fix_editor", None)
             st.rerun()
 
-    show_process_button = not (
-        workflow_state == "debug"
-        or (workflow_state == "processed" and st.session_state.get("results") is not None)
-    )
+    show_process_button = workflow_state == "ready"
 
     if show_process_button and component_bytes is not None:
         selected_mode = st.session_state.get("terminal_layout_mode")
