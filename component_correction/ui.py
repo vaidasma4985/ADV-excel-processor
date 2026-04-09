@@ -39,6 +39,10 @@ def _img_to_data_url(path: str) -> str:
     return "data:image/png;base64," + base64.b64encode(b).decode("utf-8")
 
 
+def _set_terminal_layout_mode(mode: str) -> None:
+    st.session_state["terminal_layout_mode"] = mode
+
+
 def _uploader_changed(upl, sig_key: str) -> tuple[bool, tuple[str, int, str] | None]:
     if upl is None:
         return (False, None)
@@ -456,12 +460,12 @@ def render_component_correction() -> None:
 
     component_file = (
         st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
-        if st.session_state.get("component_bytes") is None
+        if st.session_state.get("workflow_state") == "idle"
         else None
     )
     terminal_file = (
         st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
-        if st.session_state.get("terminal_bytes") is None
+        if st.session_state.get("workflow_state") == "idle"
         else None
     )
 
@@ -687,14 +691,14 @@ def render_component_correction() -> None:
                     )
                 except Exception:
                     st.caption("Image not found: component_correction/Pictures/layout_2_din.png")
-                if st.button(
+                st.button(
                     "Select 2 DIN rails",
                     key="layout_two_rails",
                     use_container_width=True,
                     type=left_button_type,
-                ):
-                    st.session_state["terminal_layout_mode"] = "two_rails"
-                    st.rerun()
+                    on_click=_set_terminal_layout_mode,
+                    args=("two_rails",),
+                )
 
         with right_col:
             with st.container(border=True):
@@ -711,14 +715,14 @@ def render_component_correction() -> None:
                     )
                 except Exception:
                     st.caption("Image not found: component_correction/Pictures/layout_1_din.png")
-                if st.button(
+                st.button(
                     "Select 1 DIN rail",
                     key="layout_one_rail",
                     use_container_width=True,
                     type=right_button_type,
-                ):
-                    st.session_state["terminal_layout_mode"] = "one_rail"
-                    st.rerun()
+                    on_click=_set_terminal_layout_mode,
+                    args=("one_rail",),
+                )
 
     if show_process_button and st.button(
         "Apdoroti failą",
