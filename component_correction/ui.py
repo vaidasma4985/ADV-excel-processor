@@ -685,6 +685,10 @@ def render_component_correction() -> None:
         type_editor_source = st.session_state.get("type_fix_draft", st.session_state["type_fix_df"])
         show_gs_section = not gs_editor_source.empty
         show_type_section = not type_editor_source.empty
+        if not show_gs_section:
+            st.session_state.pop("gs_fix_editor", None)
+        if not show_type_section:
+            st.session_state.pop("type_fix_editor", None)
 
         with st.form("fix_form", clear_on_submit=False):
             edited_gs_draft = gs_editor_source.copy()
