@@ -351,7 +351,7 @@ def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | Non
         st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
         st.session_state["type_fix_df"] = type_fix_errors_df.copy()
         st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-        st.session_state["workflow_state"] = "needs_fix"
+        st.session_state["workflow_state"] = "debug"
         st.session_state.pop("results", None)
         st.session_state.pop("gs_fix_editor", None)
         st.session_state.pop("type_fix_editor", None)
@@ -367,7 +367,7 @@ def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | Non
     st.session_state.pop("type_fix_draft", None)
     st.session_state.pop("gs_fix_editor", None)
     st.session_state.pop("type_fix_editor", None)
-    st.session_state["workflow_state"] = "ready"
+    st.session_state["workflow_state"] = "processed"
     st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
     st.rerun()
 
@@ -637,15 +637,15 @@ def render_component_correction() -> None:
             st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
             st.session_state["type_fix_df"] = type_fix_errors_df.copy()
             st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-            st.session_state["workflow_state"] = "needs_fix"
+            st.session_state["workflow_state"] = "debug"
             st.session_state.pop("results", None)
             st.session_state.pop("gs_fix_editor", None)
             st.session_state.pop("type_fix_editor", None)
             st.rerun()
 
     show_process_button = not (
-        workflow_state == "needs_fix"
-        or (workflow_state == "ready" and st.session_state.get("results") is not None)
+        workflow_state == "debug"
+        or (workflow_state == "processed" and st.session_state.get("results") is not None)
     )
 
     if show_process_button and component_bytes is not None:
@@ -742,7 +742,7 @@ def render_component_correction() -> None:
                 st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
                 st.session_state["type_fix_df"] = type_fix_errors_df.copy()
                 st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-                st.session_state["workflow_state"] = "needs_fix"
+                st.session_state["workflow_state"] = "debug"
                 st.session_state.pop("results", None)
                 st.session_state.pop("gs_fix_editor", None)
                 st.session_state.pop("type_fix_editor", None)
@@ -755,14 +755,14 @@ def render_component_correction() -> None:
                 st.session_state.pop("type_fix_draft", None)
                 st.session_state.pop("gs_fix_editor", None)
                 st.session_state.pop("type_fix_editor", None)
-                st.session_state["workflow_state"] = "ready"
+                st.session_state["workflow_state"] = "processed"
                 st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
                 st.rerun()
 
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
-    if st.session_state.get("workflow_state") == "needs_fix":
+    if st.session_state.get("workflow_state") == "debug":
         st.subheader("Terminal corrections")
 
         if "gs_fix_df" not in st.session_state:
@@ -928,7 +928,7 @@ def render_component_correction() -> None:
                     st.error(f"Įvyko klaida taikant pataisymus: {e}")
 
     results = st.session_state.get("results")
-    ready_state = st.session_state.get("workflow_state") == "ready" and results is not None
+    ready_state = st.session_state.get("workflow_state") == "processed" and results is not None
 
     if ready_state:
         excel_bytes = results.get("excel_bytes", b"")
