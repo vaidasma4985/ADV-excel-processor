@@ -460,12 +460,18 @@ def render_component_correction() -> None:
 
     component_file = (
         st.file_uploader("Įkelkite Component list", type=["xlsx"], key="comp_uploader")
-        if st.session_state.get("workflow_state") == "idle"
+        if (
+            st.session_state.get("workflow_state") == "idle"
+            and st.session_state.get("component_bytes") is None
+        )
         else None
     )
     terminal_file = (
         st.file_uploader("Įkelkite Terminal list", type=["xlsx"], key="terminal_uploader")
-        if st.session_state.get("workflow_state") == "idle"
+        if (
+            st.session_state.get("terminal_bytes") is None
+            and st.session_state.get("workflow_state") != "processed"
+        )
         else None
     )
 
@@ -916,7 +922,7 @@ def render_component_correction() -> None:
                         if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
                             existing_name = existing_sig[0]
                         st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
-                        st.session_state["workflow_state"] = "idle"
+                        st.session_state["workflow_state"] = "ready"
                         st.session_state["results"] = None
                         st.session_state["terminal_layout_mode"] = None
                         st.session_state["needs_layout_choice"] = True
