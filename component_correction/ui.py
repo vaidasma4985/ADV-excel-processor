@@ -562,26 +562,6 @@ def render_component_correction() -> None:
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
 
-    if workflow_state == "idle" and st.session_state.get("results") is None:
-        missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
-        _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
-        if (
-            missing_gs_cols != ["read_error"]
-            and type_fix_cols != ["read_error"]
-            and (not missing_gs_cols)
-            and (not type_fix_cols)
-            and ((not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty))
-        ):
-            st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
-            st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
-            st.session_state["type_fix_df"] = type_fix_errors_df.copy()
-            st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-            st.session_state["workflow_state"] = "debug"
-            st.session_state.pop("results", None)
-            st.session_state.pop("gs_fix_editor", None)
-            st.session_state.pop("type_fix_editor", None)
-            st.rerun()
-
     show_process_button = workflow_state == "ready"
 
     if show_process_button and component_bytes is not None:
@@ -662,39 +642,7 @@ def render_component_correction() -> None:
         disabled=(component_bytes is None or st.session_state.get("terminal_layout_mode") is None),
     ):
         try:
-            missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
-            _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
-
-            if missing_gs_cols and missing_gs_cols != ["read_error"]:
-                st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
-            elif type_fix_cols and type_fix_cols != ["read_error"]:
-                st.warning("Type tikrinimui trūksta stulpelių: " + ", ".join(type_fix_cols))
-            elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
-                st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
-            elif type_fix_cols == ["read_error"]:
-                st.warning("Type tikrinimui nepavyko nuskaityti Component failo.")
-            elif (not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty):
-                st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
-                st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
-                st.session_state["type_fix_df"] = type_fix_errors_df.copy()
-                st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-                st.session_state["workflow_state"] = "debug"
-                st.session_state.pop("results", None)
-                st.session_state.pop("gs_fix_editor", None)
-                st.session_state.pop("type_fix_editor", None)
-                st.rerun()
-            else:
-                st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
-                st.session_state.pop("gs_fix_df", None)
-                st.session_state.pop("gs_fix_draft", None)
-                st.session_state.pop("type_fix_df", None)
-                st.session_state.pop("type_fix_draft", None)
-                st.session_state.pop("gs_fix_editor", None)
-                st.session_state.pop("type_fix_editor", None)
-                st.session_state["workflow_state"] = "processed"
-                st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
-                st.rerun()
-
+            _run_precheck_or_process(component_bytes, terminal_bytes)
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
