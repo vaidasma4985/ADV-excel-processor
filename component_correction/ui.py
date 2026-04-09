@@ -497,6 +497,30 @@ def render_component_correction() -> None:
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
     workflow_state = st.session_state.get("workflow_state", "idle")
+    if workflow_state == "idle" and component_bytes is not None and st.session_state.get("results") is None:
+        missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
+        _type_raw_df, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
+        if missing_gs_cols and missing_gs_cols != ["read_error"]:
+            st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
+        elif type_fix_cols and type_fix_cols != ["read_error"]:
+            st.warning("Type tikrinimui trūksta stulpelių: " + ", ".join(type_fix_cols))
+        elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
+            st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
+        elif type_fix_cols == ["read_error"]:
+            st.warning("Type tikrinimui nepavyko nuskaityti Component failo.")
+        elif (not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty):
+            st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
+            st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
+            st.session_state["type_fix_df"] = type_fix_errors_df.copy()
+            st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
+            st.session_state.pop("results", None)
+            st.session_state.pop("gs_fix_editor", None)
+            st.session_state.pop("type_fix_editor", None)
+            st.session_state["workflow_state"] = "debug"
+            st.rerun()
+        else:
+            st.session_state["workflow_state"] = "ready"
+            workflow_state = "ready"
     st.session_state.setdefault("terminal_missing", False)
     if "terminal_layout_mode" not in st.session_state:
         st.session_state["terminal_layout_mode"] = None
