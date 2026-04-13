@@ -5,7 +5,11 @@ from typing import Any
 
 import streamlit as st
 
-from marking_tool.processor import PLACEHOLDER_FILENAME, build_placeholder_results, export_placeholder_workbook
+from marking_tool.processor import (
+    build_placeholder_results,
+    derive_output_filename,
+    export_placeholder_workbook,
+)
 
 
 MARKING_STATE_KEYS = [
@@ -16,6 +20,7 @@ MARKING_STATE_KEYS = [
     "marking_wire_bytes",
     "marking_wire_name",
     "marking_results",
+    "marking_user_info",
     "marking_warnings",
     "marking_debug_info",
     "marking_run_id",
@@ -38,6 +43,7 @@ def _ensure_marking_defaults() -> None:
         "marking_wire_bytes": None,
         "marking_wire_name": "",
         "marking_results": None,
+        "marking_user_info": [],
         "marking_warnings": [],
         "marking_debug_info": [],
         "marking_run_id": None,
@@ -86,19 +92,21 @@ def _process_marking_inputs() -> None:
 
     if not has_any_upload:
         st.session_state["marking_results"] = None
+        st.session_state["marking_user_info"] = []
         st.session_state["marking_warnings"] = ["No files uploaded. Upload at least one input file before processing."]
         st.session_state["marking_debug_info"] = ["process skipped: no uploads available"]
         st.session_state["marking_run_id"] = None
         return
 
-    sheets, warnings, debug_info = build_placeholder_results(inputs)
+    sheets, warnings, user_info_messages, debug_info = build_placeholder_results(inputs)
     workbook_bytes = export_placeholder_workbook(sheets)
 
     st.session_state["marking_results"] = {
         "workbook_bytes": workbook_bytes,
-        "filename": PLACEHOLDER_FILENAME,
+        "filename": derive_output_filename(inputs.get("terminal", {}).get("name", "")),
         "sheet_names": list(sheets.keys()),
     }
+    st.session_state["marking_user_info"] = user_info_messages
     st.session_state["marking_warnings"] = warnings
     st.session_state["marking_debug_info"] = debug_info
     st.session_state["marking_run_id"] = uuid.uuid4().hex[:8]
@@ -152,8 +160,9 @@ def render_marking_tool() -> None:
             st.rerun()
     else:
         st.success("Placeholder workbook created.")
+        user_info_messages = st.session_state.get("marking_user_info") or []
         st.download_button(
-            "Download placeholder workbook",
+            f"Download {results['filename']}",
             data=results["workbook_bytes"],
             file_name=results["filename"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -161,7 +170,11 @@ def render_marking_tool() -> None:
         )
         st.caption("Generated sheets: " + ", ".join(results["sheet_names"]))
 
-        with st.expander("Debug / info", expanded=False):
+        with st.expander("Info", expanded=False):
+            for message in user_info_messages or ["No additional info."]:
+                st.text(message)
+
+        with st.expander("Developer debug", expanded=False):
             run_id = st.session_state.get("marking_run_id")
             st.write({"run_id": run_id, "results_ready": results is not None})
             debug_info = st.session_state.get("marking_debug_info") or ["No debug info yet."]
