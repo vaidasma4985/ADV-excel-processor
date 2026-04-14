@@ -26,6 +26,7 @@ _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
 _TERMINAL_MIDDLE_CONN_VALUES = {"230VL", "24VDC", "24VDC1", "24VDC2"}
+_TERMINAL_BOTTOM_CONN_VALUES = {"230VN", "0VDC", "0V"}
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -85,17 +86,76 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
 
 
 def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
-    """Sort numeric connection labels first, then middle values, then text, then blanks, then 230VN."""
+    """Build a stable base sort for later Name-local connection reordering."""
     text = _stringify_cell(value)
     if re.fullmatch(r"\d+", text):
         return (0, int(text), text)
     if text in _TERMINAL_MIDDLE_CONN_VALUES:
         return (1, 10**9, text)
-    if text == "":
-        return (3, 10**9, "")
-    if text == "230VN":
+    if text in _TERMINAL_BOTTOM_CONN_VALUES:
         return (4, 10**9, text)
     return (2, 10**9, text)
+
+
+def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
+    """Reorder one exact Name group to follow the intended flat terminal position flow."""
+    if group_df.empty or "Conns." not in group_df.columns:
+        return group_df
+
+    middle_rows: list[pd.Series] = []
+    signal_rows: list[pd.Series] = []
+    blank_rows: list[pd.Series] = []
+    bottom_rows: list[pd.Series] = []
+
+    for _, row in group_df.iterrows():
+        conns_value = _stringify_cell(row.get("Conns.", ""))
+        if conns_value in _TERMINAL_BOTTOM_CONN_VALUES:
+            bottom_rows.append(row)
+        elif conns_value == "":
+            blank_rows.append(row)
+        elif conns_value in _TERMINAL_MIDDLE_CONN_VALUES:
+            middle_rows.append(row)
+        else:
+            signal_rows.append(row)
+
+    reordered_rows: list[pd.Series] = []
+    signal_index = 0
+    middle_index = 0
+    position_index = 0
+
+    while signal_index < len(signal_rows) or middle_index < len(middle_rows):
+        is_middle_slot = (position_index % 3) == 1
+        if is_middle_slot and middle_index < len(middle_rows):
+            reordered_rows.append(middle_rows[middle_index])
+            middle_index += 1
+        elif signal_index < len(signal_rows):
+            reordered_rows.append(signal_rows[signal_index])
+            signal_index += 1
+        elif middle_index < len(middle_rows):
+            reordered_rows.append(middle_rows[middle_index])
+            middle_index += 1
+        position_index += 1
+
+    reordered_rows.extend(blank_rows)
+    reordered_rows.extend(bottom_rows)
+
+    if not reordered_rows:
+        return group_df.iloc[0:0].copy()
+    return pd.DataFrame(reordered_rows).reset_index(drop=True)
+
+
+def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply Name-local connection ordering while preserving GS and Name group order."""
+    if terminal_df.empty or "Name" not in terminal_df.columns or "Group Sorting" not in terminal_df.columns:
+        return terminal_df
+
+    reordered_groups: list[pd.DataFrame] = []
+    for _, name_group_df in terminal_df.groupby(["Group Sorting", "Name"], sort=False, dropna=False):
+        reordered_groups.append(_reorder_terminal_name_group(name_group_df.reset_index(drop=True)))
+
+    if not reordered_groups:
+        return terminal_df.iloc[0:0].copy()
+    return pd.concat(reordered_groups, ignore_index=True)
 
 
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
@@ -214,6 +274,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         by=["_group_sorting_sort", "_terminal_name_sort", "Name", "_terminal_conns_sort", "_original_order"],
         kind="mergesort",
     ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
+    terminal_df = _reorder_terminal_conns_by_name(terminal_df)
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -233,6 +294,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(f"terminal parser: removed {removed_xtb} rows due to Name startswith -XTB after earlier cleanup")
     developer_debug_messages.append(f"terminal parser: removed {removed_xpe} rows due to Name == -XPE after earlier cleanup")
     developer_debug_messages.append("terminal parser: applied GS/Name/Conns sorting")
+    developer_debug_messages.append("terminal parser: applied Name-local Conns reordering")
     developer_debug_messages.append("terminal parser: applied middle-value sorting (230VL / 24VDC*)")
     developer_debug_messages.append("terminal parser: forced 230VN to end-of-block bottom position")
     developer_debug_messages.append(f"terminal parser: final terminal rows -> {len(terminal_df)}")
@@ -265,6 +327,17 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(
         "terminal parser: first 10 Conns. values for first Name in first GS group -> "
         + (", ".join(first_name_conns) if first_name_conns else "none")
+    )
+    first_name_groups_preview: list[str] = []
+    if not terminal_df.empty and "Conns." in terminal_df.columns:
+        for (group_sorting_value, name_value), name_group_df in terminal_df.groupby(["Group Sorting", "Name"], sort=False):
+            conns_preview = ", ".join(name_group_df["Conns."].head(10).tolist())
+            first_name_groups_preview.append(f"{group_sorting_value}/{name_value}: [{conns_preview}]")
+            if len(first_name_groups_preview) >= 5:
+                break
+    developer_debug_messages.append(
+        "terminal parser: first 5 Name groups after Conns reorder -> "
+        + (" | ".join(first_name_groups_preview) if first_name_groups_preview else "none")
     )
 
     return terminal_df, user_info_messages, developer_debug_messages
