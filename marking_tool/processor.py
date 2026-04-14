@@ -19,11 +19,13 @@ _TERMINAL_EXPECTED_COLUMNS = {
     "name": "Name",
     "conns": "Conns.",
     "group sorting": "Group Sorting",
+    "type": "TYPE",
 }
 
 _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
+_TERMINAL_MIDDLE_CONN_VALUES = {"230VL", "24VDC", "24VDC1", "24VDC2"}
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -80,6 +82,20 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
         )
 
     return (10**9, 10**9, 10**9, text)
+
+
+def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
+    """Sort numeric connection labels first, then middle values, then text, then blanks, then 230VN."""
+    text = _stringify_cell(value)
+    if re.fullmatch(r"\d+", text):
+        return (0, int(text), text)
+    if text in _TERMINAL_MIDDLE_CONN_VALUES:
+        return (1, 10**9, text)
+    if text == "":
+        return (3, 10**9, "")
+    if text == "230VN":
+        return (4, 10**9, text)
+    return (2, 10**9, text)
 
 
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
@@ -149,7 +165,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + (", ".join(missing_columns) if missing_columns else "none")
     )
 
-    for column_name in ("Name", "Conns.", "Group Sorting"):
+    for column_name in ("Name", "Conns.", "Group Sorting", "TYPE"):
         if column_name in terminal_df.columns:
             terminal_df[column_name] = terminal_df[column_name].apply(_stringify_cell)
 
@@ -190,10 +206,14 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     terminal_df["_group_sorting_sort"] = terminal_df["Group Sorting"].astype(int)
     terminal_df["_original_order"] = range(len(terminal_df))
     terminal_df["_terminal_name_sort"] = terminal_df["Name"].apply(_terminal_name_sort_key)
+    if "Conns." in terminal_df.columns:
+        terminal_df["_terminal_conns_sort"] = terminal_df["Conns."].apply(_terminal_conns_sort_key)
+    else:
+        terminal_df["_terminal_conns_sort"] = [(2, 10**9, "")] * len(terminal_df)
     terminal_df = terminal_df.sort_values(
-        by=["_group_sorting_sort", "_terminal_name_sort", "_original_order"],
+        by=["_group_sorting_sort", "_terminal_name_sort", "Name", "_terminal_conns_sort", "_original_order"],
         kind="mergesort",
-    ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_original_order"]).reset_index(drop=True)
+    ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -212,7 +232,9 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(f"terminal parser: removed {removed_group_sorting_7210} rows due to Group Sorting == 7210")
     developer_debug_messages.append(f"terminal parser: removed {removed_xtb} rows due to Name startswith -XTB after earlier cleanup")
     developer_debug_messages.append(f"terminal parser: removed {removed_xpe} rows due to Name == -XPE after earlier cleanup")
-    developer_debug_messages.append("terminal parser: applied A-suffix export sort")
+    developer_debug_messages.append("terminal parser: applied GS/Name/Conns sorting")
+    developer_debug_messages.append("terminal parser: applied middle-value sorting (230VL / 24VDC*)")
+    developer_debug_messages.append("terminal parser: forced 230VN to end-of-block bottom position")
     developer_debug_messages.append(f"terminal parser: final terminal rows -> {len(terminal_df)}")
 
     preview_names = terminal_df["Name"].head(5).tolist()
@@ -224,6 +246,25 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(
         "terminal parser: first 10 sorted Name values -> "
         + (", ".join(sorted_preview_names) if sorted_preview_names else "none")
+    )
+    preview_columns = [column_name for column_name in ("Group Sorting", "Name", "Conns.", "TYPE") if column_name in terminal_df.columns]
+    preview_rows = terminal_df.loc[:, preview_columns].head(15).to_dict(orient="records") if preview_columns else []
+    developer_debug_messages.append(
+        "terminal parser: first 15 sorted rows preview -> "
+        + (" | ".join(str(row) for row in preview_rows) if preview_rows else "none")
+    )
+
+    first_group_value = terminal_df["Group Sorting"].iloc[0] if not terminal_df.empty else ""
+    first_group_df = terminal_df[terminal_df["Group Sorting"].eq(first_group_value)] if first_group_value != "" else pd.DataFrame()
+    first_name_value = first_group_df["Name"].iloc[0] if not first_group_df.empty else ""
+    first_name_conns = (
+        first_group_df.loc[first_group_df["Name"].eq(first_name_value), "Conns."].head(10).tolist()
+        if "Conns." in terminal_df.columns and first_name_value != ""
+        else []
+    )
+    developer_debug_messages.append(
+        "terminal parser: first 10 Conns. values for first Name in first GS group -> "
+        + (", ".join(first_name_conns) if first_name_conns else "none")
     )
 
     return terminal_df, user_info_messages, developer_debug_messages
