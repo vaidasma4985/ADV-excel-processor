@@ -221,10 +221,16 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
     elif terminal_type == "SIGNAL":
         reordered_rows = _signal_style_rows(numeric_rows, top_like_rows, blank_rows, middle_rows, bottom_rows)
     else:
+        normal_top_rows = [*numeric_rows, *top_like_rows]
+        first_top_row = normal_top_rows[0] if normal_top_rows else None
+        remaining_top_rows = normal_top_rows[1:] if len(normal_top_rows) > 1 else []
+        first_middle_row = middle_rows[0] if middle_rows else None
+        remaining_middle_rows = middle_rows[1:] if len(middle_rows) > 1 else []
         reordered_rows = [
-            *numeric_rows,
-            *top_like_rows,
-            *middle_rows,
+            *([first_top_row] if first_top_row is not None else []),
+            *([first_middle_row] if first_middle_row is not None else []),
+            *remaining_top_rows,
+            *remaining_middle_rows,
             *blank_rows,
             *bottom_rows,
         ]
@@ -234,14 +240,15 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(reordered_rows).reset_index(drop=True)
 
 
-def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], list[str]]:
+def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], list[str], list[str]]:
     """Apply Terminal-Type-based Name-local ordering while preserving GS and Name group order."""
     if terminal_df.empty or "Name" not in terminal_df.columns or "Group Sorting" not in terminal_df.columns:
-        return terminal_df, {}, []
+        return terminal_df, {}, [], []
 
     reordered_groups: list[pd.DataFrame] = []
     reordered_group_counts: dict[str, int] = {}
     first_reordered_groups: list[str] = []
+    first_normal_groups: list[str] = []
     for _, name_group_df in terminal_df.groupby(["Group Sorting", "Name"], sort=False, dropna=False):
         ordered_group_df = _reorder_terminal_name_group(name_group_df.reset_index(drop=True))
         reordered_groups.append(ordered_group_df)
@@ -257,10 +264,14 @@ def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> tuple[pd.DataF
             name_value = _stringify_cell(ordered_group_df["Name"].iloc[0]) if "Name" in ordered_group_df.columns and not ordered_group_df.empty else ""
             conns_preview = ", ".join(ordered_group_df["Conns."].head(10).tolist()) if "Conns." in ordered_group_df.columns else ""
             first_reordered_groups.append(f"{name_value} => {terminal_type}: [{conns_preview}]")
+        if terminal_type == "NORMAL" and len(first_normal_groups) < 5:
+            name_value = _stringify_cell(ordered_group_df["Name"].iloc[0]) if "Name" in ordered_group_df.columns and not ordered_group_df.empty else ""
+            conns_preview = ", ".join(ordered_group_df["Conns."].head(10).tolist()) if "Conns." in ordered_group_df.columns else ""
+            first_normal_groups.append(f"{name_value}: [{conns_preview}]")
 
     if not reordered_groups:
-        return terminal_df.iloc[0:0].copy(), reordered_group_counts, first_reordered_groups
-    return pd.concat(reordered_groups, ignore_index=True), reordered_group_counts, first_reordered_groups
+        return terminal_df.iloc[0:0].copy(), reordered_group_counts, first_reordered_groups, first_normal_groups
+    return pd.concat(reordered_groups, ignore_index=True), reordered_group_counts, first_reordered_groups, first_normal_groups
 
 
 def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
@@ -456,7 +467,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         by=["_group_sorting_sort", "_terminal_name_sort", "Name", "_terminal_conns_sort", "_original_order"],
         kind="mergesort",
     ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
-    terminal_df, reordered_group_counts, reordered_groups_preview = _reorder_terminal_conns_by_name(terminal_df)
+    terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview = _reorder_terminal_conns_by_name(terminal_df)
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -494,9 +505,14 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     )
     developer_debug_messages.append("terminal parser: applied GS/Name/Conns sorting")
     developer_debug_messages.append("terminal reorder: applied Terminal Type based Conns ordering")
+    developer_debug_messages.append("terminal reorder: applied NORMAL middle-after-first-signal rule")
     developer_debug_messages.append(
         "terminal reorder: first 5 reordered Name groups -> "
         + (" | ".join(reordered_groups_preview) if reordered_groups_preview else "none")
+    )
+    developer_debug_messages.append(
+        "terminal reorder: first 5 NORMAL groups after reorder -> "
+        + (" | ".join(normal_groups_preview) if normal_groups_preview else "none")
     )
     developer_debug_messages.append(
         "terminal reorder: SPECIAL_GS_7030 groups count -> "
