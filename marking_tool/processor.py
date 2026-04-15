@@ -378,6 +378,36 @@ def _apply_terminal_type_classification(terminal_df: pd.DataFrame) -> tuple[pd.D
     return classified_df, type_counts, first_classified_groups, detection_stats
 
 
+def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
+    """Repack already-sorted flat terminal rows into Top/Middle/Bottom chunks of 3."""
+    tmb_columns = ["Terminal Name", "Top", "Middle", "Bottom"]
+    if terminal_df.empty or "Name" not in terminal_df.columns:
+        return pd.DataFrame(columns=tmb_columns)
+
+    tmb_rows: list[dict[str, str]] = []
+    for _, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
+        group_rows = name_group_df.reset_index(drop=True)
+        terminal_name = _stringify_cell(group_rows["Name"].iloc[0]) if not group_rows.empty else ""
+        conns_values = (
+            group_rows["Conns."].apply(_stringify_cell).tolist()
+            if "Conns." in group_rows.columns
+            else [""] * len(group_rows)
+        )
+
+        for start_index in range(0, len(conns_values), 3):
+            chunk = conns_values[start_index:start_index + 3]
+            tmb_rows.append(
+                {
+                    "Terminal Name": terminal_name,
+                    "Top": chunk[0] if len(chunk) >= 1 else "",
+                    "Middle": chunk[1] if len(chunk) >= 2 else "",
+                    "Bottom": chunk[2] if len(chunk) >= 3 else "",
+                }
+            )
+
+    return pd.DataFrame(tmb_rows, columns=tmb_columns)
+
+
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Parse terminal Excel input into a clean DataFrame with minimal filtering only."""
     user_info_messages: list[str] = []
@@ -651,6 +681,19 @@ def build_placeholder_results(
                 developer_debug_messages.extend(terminal_debug)
                 if terminal_df is not None and not terminal_df.empty:
                     sheets[sheet_name] = terminal_df
+                    developer_debug_messages.append("terminal tmb: generation started")
+                    terminal_tmb_df = _build_terminal_tmb_sheet(terminal_df)
+                    sheets["Terminal TMB"] = terminal_tmb_df
+                    developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+                    terminal_tmb_preview_rows = (
+                        terminal_tmb_df.head(5).to_dict(orient="records")
+                        if terminal_tmb_df is not None and not terminal_tmb_df.empty
+                        else []
+                    )
+                    developer_debug_messages.append(
+                        "terminal tmb: first 5 generated rows preview -> "
+                        + (" | ".join(str(row) for row in terminal_tmb_preview_rows) if terminal_tmb_preview_rows else "none")
+                    )
                 else:
                     sheets[sheet_name] = pd.DataFrame(
                         [
