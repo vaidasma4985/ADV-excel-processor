@@ -239,18 +239,25 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         reordered_rows = _signal_style_rows(numeric_rows, top_like_rows, blank_rows, middle_rows, bottom_rows)
     else:
         normal_top_rows = [*numeric_rows, *top_like_rows]
-        first_top_row = normal_top_rows[0] if normal_top_rows else None
-        remaining_top_rows = normal_top_rows[1:] if len(normal_top_rows) > 1 else []
-        first_middle_row = middle_rows[0] if middle_rows else None
-        remaining_middle_rows = middle_rows[1:] if len(middle_rows) > 1 else []
-        reordered_rows = [
-            *([first_top_row] if first_top_row is not None else []),
-            *([first_middle_row] if first_middle_row is not None else []),
-            *remaining_top_rows,
-            *remaining_middle_rows,
-            *blank_rows,
-            *bottom_rows,
-        ]
+        if not normal_top_rows and middle_rows and bottom_rows:
+            reordered_rows = [
+                *blank_rows,
+                *middle_rows,
+                *bottom_rows,
+            ]
+        else:
+            first_top_row = normal_top_rows[0] if normal_top_rows else None
+            remaining_top_rows = normal_top_rows[1:] if len(normal_top_rows) > 1 else []
+            first_middle_row = middle_rows[0] if middle_rows else None
+            remaining_middle_rows = middle_rows[1:] if len(middle_rows) > 1 else []
+            reordered_rows = [
+                *([first_top_row] if first_top_row is not None else []),
+                *([first_middle_row] if first_middle_row is not None else []),
+                *remaining_top_rows,
+                *remaining_middle_rows,
+                *blank_rows,
+                *bottom_rows,
+            ]
 
     if not reordered_rows:
         return group_df.iloc[0:0].copy()
@@ -378,11 +385,76 @@ def _apply_terminal_type_classification(terminal_df: pd.DataFrame) -> tuple[pd.D
     return classified_df, type_counts, first_classified_groups, detection_stats
 
 
+def _split_terminal_pe_rows(
+    terminal_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int | list[str] | str]]:
+    """Split PE rows out of the normal terminal stream and normalize them for later steps."""
+    if terminal_df.empty or "Conns." not in terminal_df.columns:
+        empty_pe_df = terminal_df.iloc[0:0].copy()
+        if "Terminal Type" not in empty_pe_df.columns:
+            empty_pe_df["Terminal Type"] = ""
+        return terminal_df.copy(), empty_pe_df, {
+            "detected_pe_rows": 0,
+            "name_groups_with_pe": 0,
+            "pe_gs_groups": [],
+            "split_summary": "0 normal rows / 0 PE rows",
+        }
+
+    pe_mask = terminal_df["Conns."].apply(_stringify_cell).eq("\u23DA")
+    detected_pe_rows = int(pe_mask.sum())
+
+    normal_df = terminal_df.loc[~pe_mask].copy().reset_index(drop=True)
+    pe_df = terminal_df.loc[pe_mask].copy().reset_index(drop=True)
+
+    if "Terminal Type" not in normal_df.columns:
+        normal_df["Terminal Type"] = ""
+    if "Terminal Type" not in pe_df.columns:
+        pe_df["Terminal Type"] = ""
+
+    name_groups_with_pe = 0
+    if detected_pe_rows and "Name" in terminal_df.columns:
+        name_groups_with_pe = int(
+            terminal_df.loc[pe_mask, "Name"].apply(_stringify_cell).nunique(dropna=True)
+        )
+
+    if not pe_df.empty:
+        pe_df["Name"] = "PE"
+        pe_df["Conns."] = "PE"
+        pe_df["Terminal Type"] = "PE"
+
+        pe_df["_group_sorting_sort"] = pe_df["Group Sorting"].astype(int)
+        pe_df["_original_order"] = range(len(pe_df))
+        pe_df = pe_df.sort_values(
+            by=["_group_sorting_sort", "Group Sorting", "_original_order"],
+            kind="mergesort",
+        ).drop(columns=["_group_sorting_sort", "_original_order"]).reset_index(drop=True)
+
+    pe_gs_groups = (
+        pe_df["Group Sorting"].drop_duplicates().tolist()
+        if not pe_df.empty and "Group Sorting" in pe_df.columns
+        else []
+    )
+
+    return normal_df, pe_df, {
+        "detected_pe_rows": detected_pe_rows,
+        "name_groups_with_pe": name_groups_with_pe,
+        "pe_gs_groups": pe_gs_groups[:10],
+        "split_summary": f"{len(normal_df)} normal rows / {len(pe_df)} PE rows",
+    }
+
+
 def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     """Repack already-sorted flat terminal rows into Top/Middle/Bottom chunks of 3."""
     tmb_columns = ["Terminal Name", "Top", "Middle", "Bottom"]
     if terminal_df.empty or "Name" not in terminal_df.columns:
         return pd.DataFrame(columns=tmb_columns)
+
+    if "Terminal Type" in terminal_df.columns:
+        terminal_df = terminal_df.loc[
+            terminal_df["Terminal Type"].apply(_stringify_cell).ne("PE")
+        ].copy()
+        if terminal_df.empty:
+            return pd.DataFrame(columns=tmb_columns)
 
     tmb_rows: list[dict[str, str]] = []
     for _, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
@@ -406,6 +478,43 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
             )
 
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
+
+
+def _reintegrate_terminal_pe_rows(normal_terminal_df: pd.DataFrame, pe_terminal_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge normal and PE terminal rows back into one flat stream ordered by GS ascending."""
+    if normal_terminal_df.empty and pe_terminal_df.empty:
+        return pd.DataFrame()
+    if normal_terminal_df.empty:
+        return pe_terminal_df.reset_index(drop=True)
+    if pe_terminal_df.empty:
+        return normal_terminal_df.reset_index(drop=True)
+
+    normal_merged_df = normal_terminal_df.copy()
+    pe_merged_df = pe_terminal_df.copy()
+
+    normal_merged_df["_terminal_output_origin"] = "normal"
+    pe_merged_df["_terminal_output_origin"] = "pe"
+    normal_merged_df["_terminal_output_order"] = range(len(normal_merged_df))
+    pe_merged_df["_terminal_output_order"] = range(len(pe_merged_df))
+
+    terminal_output_df = pd.concat([normal_merged_df, pe_merged_df], ignore_index=True)
+    terminal_output_df["_group_sorting_sort"] = terminal_output_df["Group Sorting"].astype(int)
+    terminal_output_df["_terminal_output_origin_sort"] = (
+        terminal_output_df["_terminal_output_origin"].eq("pe").astype(int)
+    )
+    terminal_output_df = terminal_output_df.sort_values(
+        by=["_group_sorting_sort", "_terminal_output_origin_sort", "_terminal_output_order"],
+        kind="mergesort",
+    ).drop(
+        columns=[
+            "_group_sorting_sort",
+            "_terminal_output_origin",
+            "_terminal_output_origin_sort",
+            "_terminal_output_order",
+        ]
+    ).reset_index(drop=True)
+
+    return terminal_output_df
 
 
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
@@ -525,21 +634,32 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
 
-    developer_debug_messages.append("terminal detection: started")
-    terminal_df, terminal_type_counts, classified_groups_preview, detection_stats = _apply_terminal_type_classification(terminal_df)
+    normal_terminal_df, pe_terminal_df, pe_stats = _split_terminal_pe_rows(terminal_df)
 
-    terminal_df["_group_sorting_sort"] = terminal_df["Group Sorting"].astype(int)
-    terminal_df["_original_order"] = range(len(terminal_df))
-    terminal_df["_terminal_name_sort"] = terminal_df["Name"].apply(_terminal_name_sort_key)
-    if "Conns." in terminal_df.columns:
-        terminal_df["_terminal_conns_sort"] = terminal_df["Conns."].apply(_terminal_conns_sort_key)
+    developer_debug_messages.append(f"terminal pe: detected PE rows -> {pe_stats['detected_pe_rows']}")
+    developer_debug_messages.append(f"terminal pe: split PE from normal rows -> {pe_stats['split_summary']}")
+    developer_debug_messages.append(
+        "terminal pe: PE GS groups -> "
+        + (", ".join(pe_stats["pe_gs_groups"]) if pe_stats["pe_gs_groups"] else "none")
+    )
+    developer_debug_messages.append("terminal pe: renamed PE rows to Name=PE, Conns.=PE")
+    developer_debug_messages.append("terminal detection: started")
+    normal_terminal_df, terminal_type_counts, classified_groups_preview, detection_stats = _apply_terminal_type_classification(normal_terminal_df)
+
+    normal_terminal_df["_group_sorting_sort"] = normal_terminal_df["Group Sorting"].astype(int)
+    normal_terminal_df["_original_order"] = range(len(normal_terminal_df))
+    normal_terminal_df["_terminal_name_sort"] = normal_terminal_df["Name"].apply(_terminal_name_sort_key)
+    if "Conns." in normal_terminal_df.columns:
+        normal_terminal_df["_terminal_conns_sort"] = normal_terminal_df["Conns."].apply(_terminal_conns_sort_key)
     else:
-        terminal_df["_terminal_conns_sort"] = [(2, 10**9, "")] * len(terminal_df)
-    terminal_df = terminal_df.sort_values(
+        normal_terminal_df["_terminal_conns_sort"] = [(2, 10**9, "")] * len(normal_terminal_df)
+    normal_terminal_df = normal_terminal_df.sort_values(
         by=["_group_sorting_sort", "_terminal_name_sort", "Name", "_terminal_conns_sort", "_original_order"],
         kind="mergesort",
     ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
-    terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_gs_7030_groups_preview = _reorder_terminal_conns_by_name(terminal_df)
+    normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_gs_7030_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
+
+    terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, pe_terminal_df)
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -588,6 +708,8 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append("terminal reorder: applied Terminal Type based Conns ordering")
     developer_debug_messages.append("terminal reorder: applied SPECIAL_GS_7030 flat sorting mode")
     developer_debug_messages.append("terminal reorder: applied NORMAL middle-after-first-signal rule")
+    developer_debug_messages.append("terminal reorder: applied NORMAL no-signal blank/middle/bottom rule")
+    developer_debug_messages.append("terminal pe: reinserted PE rows into GS-sorted terminal output")
     developer_debug_messages.append(
         "terminal reorder: first 5 reordered Name groups -> "
         + (" | ".join(reordered_groups_preview) if reordered_groups_preview else "none")
@@ -623,6 +745,11 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(
         "terminal parser: first 10 sorted Name values -> "
         + (", ".join(sorted_preview_names) if sorted_preview_names else "none")
+    )
+    first_gs_values_after_pe_reintegration = terminal_df["Group Sorting"].head(10).tolist() if "Group Sorting" in terminal_df.columns else []
+    developer_debug_messages.append(
+        "terminal output: first 10 GS values after PE reintegration -> "
+        + (", ".join(first_gs_values_after_pe_reintegration) if first_gs_values_after_pe_reintegration else "none")
     )
     preview_columns = [column_name for column_name in ("Group Sorting", "Name", "Conns.", "TYPE", "Terminal Type") if column_name in terminal_df.columns]
     preview_rows = terminal_df.loc[:, preview_columns].head(15).to_dict(orient="records") if preview_columns else []
