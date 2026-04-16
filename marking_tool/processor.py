@@ -29,6 +29,8 @@ _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<o
 _TERMINAL_MIDDLE_CONN_VALUES = {"230VL", "24VDC", "24VDC1", "24VDC2"}
 _TERMINAL_BOTTOM_CONN_VALUES = {"230VN", "0VDC", "0V"}
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
+_TERMINAL_STRIP_TERMINAL_SPACE = 5.27
+_TERMINAL_STRIP_COVER_SPACE = 0.8
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -449,6 +451,24 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     if terminal_df.empty or "Name" not in terminal_df.columns:
         return pd.DataFrame(columns=tmb_columns)
 
+    terminal_blocks = _build_terminal_blocks(terminal_df)
+    tmb_rows = [
+        {
+            "Terminal Name": terminal_block["terminal_name"],
+            "Top": terminal_block["chunk"][0] if len(terminal_block["chunk"]) >= 1 else "",
+            "Middle": terminal_block["chunk"][1] if len(terminal_block["chunk"]) >= 2 else "",
+            "Bottom": terminal_block["chunk"][2] if len(terminal_block["chunk"]) >= 3 else "",
+        }
+        for terminal_block in terminal_blocks
+    ]
+    return pd.DataFrame(tmb_rows, columns=tmb_columns)
+
+
+def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
+    if terminal_df.empty or "Name" not in terminal_df.columns:
+        return []
+
     tmb_rows: list[dict[str, str]] = []
     group_columns = ["Name"]
     if "Group Sorting" in terminal_df.columns:
@@ -462,19 +482,19 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
             if "Conns." in group_rows.columns
             else [""] * len(group_rows)
         )
+        source_indices = name_group_df.index.tolist()
 
         for start_index in range(0, len(conns_values), 3):
             chunk = conns_values[start_index:start_index + 3]
             tmb_rows.append(
                 {
-                    "Terminal Name": terminal_name,
-                    "Top": chunk[0] if len(chunk) >= 1 else "",
-                    "Middle": chunk[1] if len(chunk) >= 2 else "",
-                    "Bottom": chunk[2] if len(chunk) >= 3 else "",
+                    "terminal_name": terminal_name,
+                    "chunk": chunk,
+                    "end_row_index": source_indices[min(start_index + len(chunk) - 1, len(source_indices) - 1)],
                 }
             )
 
-    return pd.DataFrame(tmb_rows, columns=tmb_columns)
+    return tmb_rows
 
 
 def _expand_terminal_pe_rows(
@@ -490,6 +510,7 @@ def _expand_terminal_pe_rows(
             "pe_group_count": 0,
             "generated_pe_flat_rows": 0,
             "first_pe_gs_groups": [],
+            "plus_one_debug_messages": [],
         }
 
     pe_terminal_df = terminal_df.loc[
@@ -500,6 +521,7 @@ def _expand_terminal_pe_rows(
             "pe_group_count": 0,
             "generated_pe_flat_rows": 0,
             "first_pe_gs_groups": [],
+            "plus_one_debug_messages": [],
         }
 
     pe_terminal_df["_group_sorting_sort"] = pe_terminal_df["Group Sorting"].astype(int)
@@ -511,9 +533,18 @@ def _expand_terminal_pe_rows(
 
     expanded_pe_rows: list[dict[str, Any]] = []
     first_pe_gs_groups: list[str] = []
+    plus_one_debug_messages: list[str] = []
+    pe_all_gs_values = set(pe_terminal_df["Group Sorting"].apply(_stringify_cell).tolist())
     for group_sorting_value, pe_group_df in pe_terminal_df.groupby("Group Sorting", sort=False, dropna=False):
+        group_sorting_value = _stringify_cell(group_sorting_value)
         pe_contact_count = len(pe_group_df)
         pe_terminal_count = (pe_contact_count + 2) // 3
+        if group_sorting_value == "5025":
+            pe_terminal_count += 1
+            plus_one_debug_messages.append("terminal pe: +1 PE applied for GS 5025")
+        elif group_sorting_value == "5020" and "5025" not in pe_all_gs_values:
+            pe_terminal_count += 1
+            plus_one_debug_messages.append("terminal pe: +1 PE applied for GS 5020 (no 5025 present)")
         generated_row_count = pe_terminal_count * 3
         if len(first_pe_gs_groups) < 5:
             first_pe_gs_groups.append(
@@ -533,6 +564,7 @@ def _expand_terminal_pe_rows(
         "pe_group_count": int(pe_terminal_df["Group Sorting"].nunique()),
         "generated_pe_flat_rows": len(expanded_pe_df),
         "first_pe_gs_groups": first_pe_gs_groups,
+        "plus_one_debug_messages": plus_one_debug_messages,
     }
 
 
@@ -544,6 +576,181 @@ def _build_terminal_tmb_sheet_with_debug(
     terminal_tmb_df = _build_terminal_tmb_sheet(terminal_df)
     developer_debug_messages.append("terminal pe tmb: using flat Terminal Marking rows as the only PE source")
     return terminal_tmb_df, developer_debug_messages
+
+
+def _build_terminal_strip_sheet_with_debug(
+    terminal_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build terminal strip rows from prepared terminal blocks with strip-only cover placement."""
+    developer_debug_messages = ["terminal strip: generation started"]
+    strip_columns = ["Space", "Text"]
+    if terminal_df.empty:
+        developer_debug_messages.append("terminal strip: generated terminal rows -> 0")
+        developer_debug_messages.append("terminal strip: generated cover rows -> 0")
+        developer_debug_messages.append("terminal strip: first 10 rows preview -> none")
+        return pd.DataFrame(columns=strip_columns), developer_debug_messages
+
+    terminal_blocks = _build_terminal_blocks(terminal_df.reset_index(drop=True))
+    cover_insert_positions, cover_row_count, skipped_duplicate_covers = _compute_terminal_cover_insert_positions(
+        terminal_df
+    )
+    strip_rows: list[dict[str, Any]] = []
+    terminal_row_count = 0
+
+    for terminal_block in terminal_blocks:
+        terminal_count_in_block = len(terminal_block["chunk"])
+        strip_rows.append(
+            {
+                "Space": round(terminal_count_in_block * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
+                "Text": terminal_block["terminal_name"],
+            }
+        )
+        terminal_row_count += 1
+        if terminal_block["end_row_index"] in cover_insert_positions:
+            strip_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""})
+
+    terminal_strip_df = pd.DataFrame(strip_rows, columns=strip_columns)
+    strip_preview_rows = terminal_strip_df.head(10).to_dict(orient="records")
+    developer_debug_messages.append(f"terminal strip: generated terminal rows -> {terminal_row_count}")
+    developer_debug_messages.append(f"terminal strip: generated cover rows -> {cover_row_count}")
+    developer_debug_messages.append(f"terminal strip: skipped duplicate covers -> {skipped_duplicate_covers}")
+    developer_debug_messages.append(
+        "terminal strip: first 10 rows preview -> "
+        + (" | ".join(str(row) for row in strip_preview_rows) if strip_preview_rows else "none")
+    )
+    return terminal_strip_df, developer_debug_messages
+
+
+def _extract_terminal_cover_subgroup(name: Any) -> str:
+    """Extract the 2-digit subgroup used for cover placement in selected GS groups."""
+    match = re.match(r"^-X(?P<subgroup>\d{2})", _stringify_cell(name))
+    return match.group("subgroup") if match else ""
+
+
+def _build_terminal_cover_subgroups(gs_df: pd.DataFrame) -> list[pd.DataFrame]:
+    """Split one GS block into cover-placement subgroups when required."""
+    if gs_df.empty or "Group Sorting" not in gs_df.columns:
+        return [gs_df]
+
+    group_sorting_value = _stringify_cell(gs_df["Group Sorting"].iloc[0])
+    if group_sorting_value not in {"1010", "1110", "1030"} or "Name" not in gs_df.columns:
+        return [gs_df]
+
+    subgroup_values = gs_df["Name"].apply(_extract_terminal_cover_subgroup)
+    if subgroup_values.eq("").any():
+        return [gs_df]
+
+    subgroup_df = gs_df.copy()
+    subgroup_df["_cover_subgroup"] = subgroup_values
+    subgroup_groups = [
+        subgroup_group_df.drop(columns=["_cover_subgroup"]).copy()
+        for _, subgroup_group_df in subgroup_df.groupby("_cover_subgroup", sort=False, dropna=False)
+    ]
+    return subgroup_groups or [gs_df]
+
+
+def _select_terminal_cover_targets(gs_df: pd.DataFrame) -> set[int]:
+    """Return row positions after which one cover row should be inserted."""
+    if gs_df.empty or "Group Sorting" not in gs_df.columns:
+        return set()
+
+    group_sorting_value = _stringify_cell(gs_df["Group Sorting"].iloc[0])
+    subgroup_dfs = _build_terminal_cover_subgroups(gs_df)
+    target_positions: set[int] = set()
+
+    for subgroup_df in subgroup_dfs:
+        if subgroup_df.empty:
+            continue
+
+        subgroup_positions = subgroup_df.index.tolist()
+        if not subgroup_positions:
+            continue
+
+        target_position = subgroup_positions[-1]
+        if group_sorting_value == "1030" and "Name" in subgroup_df.columns:
+            name_series = subgroup_df["Name"].apply(_stringify_cell)
+            ending_14_mask = name_series.str.endswith("14", na=False)
+            if ending_14_mask.any():
+                target_position = subgroup_df.loc[ending_14_mask].index[-1]
+
+        target_positions.add(target_position)
+
+    if group_sorting_value not in {"1010", "1110", "1030"} and not target_positions:
+        target_positions.add(gs_df.index[-1])
+
+    return target_positions
+
+
+def _compute_terminal_cover_insert_positions(
+    terminal_df: pd.DataFrame,
+) -> tuple[set[int], int, int]:
+    """Compute flat row positions that should receive one inserted cover row after them."""
+    if terminal_df.empty or "Group Sorting" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return set(), 0, 0
+
+    terminal_df = terminal_df.reset_index(drop=True)
+    insert_positions: set[int] = set()
+    inserted_cover_rows = 0
+    skipped_duplicate_covers = 0
+
+    for _, gs_df in terminal_df.groupby("Group Sorting", sort=False, dropna=False):
+        group_sorting_value = _stringify_cell(gs_df["Group Sorting"].iloc[0]) if not gs_df.empty else ""
+        if not group_sorting_value:
+            continue
+
+        target_positions = _select_terminal_cover_targets(gs_df)
+        gs_rows = list(gs_df.iterrows())
+
+        for local_index, (row_index, row) in enumerate(gs_rows):
+            if row_index not in target_positions:
+                continue
+
+            current_conns_value = _stringify_cell(row.get("Conns.", ""))
+            next_conns_value = (
+                _stringify_cell(gs_rows[local_index + 1][1].get("Conns.", ""))
+                if local_index + 1 < len(gs_rows)
+                else None
+            )
+            if current_conns_value == "" or next_conns_value == "":
+                skipped_duplicate_covers += 1
+                continue
+
+            insert_positions.add(row_index)
+            inserted_cover_rows += 1
+
+    return insert_positions, inserted_cover_rows, skipped_duplicate_covers
+
+
+def _insert_terminal_cover_rows(
+    terminal_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Insert flat cover rows as blank Conns. rows using GS-specific placement rules."""
+    developer_debug_messages: list[str] = []
+    if terminal_df.empty or "Group Sorting" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return terminal_df.reset_index(drop=True), developer_debug_messages
+
+    terminal_df = terminal_df.reset_index(drop=True)
+    output_rows: list[dict[str, Any]] = []
+    insert_positions, inserted_cover_rows, skipped_duplicate_covers = _compute_terminal_cover_insert_positions(terminal_df)
+
+    for row_index, row in terminal_df.iterrows():
+        output_rows.append(row.to_dict())
+        if row_index not in insert_positions:
+            continue
+
+        cover_row = row.to_dict()
+        cover_row["Conns."] = ""
+        output_rows.append(cover_row)
+
+    covered_terminal_df = pd.DataFrame(output_rows, columns=terminal_df.columns)
+    developer_debug_messages.append(f"terminal cover: inserted cover rows -> {inserted_cover_rows}")
+    developer_debug_messages.append(f"terminal cover: skipped duplicate covers -> {skipped_duplicate_covers}")
+    preview_rows = covered_terminal_df.loc[:, [column_name for column_name in ("Group Sorting", "Name", "Conns.") if column_name in covered_terminal_df.columns]].head(12).to_dict(orient="records")
+    developer_debug_messages.append(
+        "terminal cover: first 12 rows preview -> "
+        + (" | ".join(str(row) for row in preview_rows) if preview_rows else "none")
+    )
+    return covered_terminal_df, developer_debug_messages
 
 
 def _reintegrate_terminal_pe_rows(normal_terminal_df: pd.DataFrame, pe_terminal_df: pd.DataFrame) -> pd.DataFrame:
@@ -718,6 +925,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         "terminal pe: first 5 GS groups with expanded PE -> "
         + (", ".join(expanded_pe_stats.get("first_pe_gs_groups", [])) if expanded_pe_stats.get("first_pe_gs_groups") else "none")
     )
+    developer_debug_messages.extend(expanded_pe_stats.get("plus_one_debug_messages", []))
     for pe_group_summary in expanded_pe_stats.get("first_pe_gs_groups", []):
         developer_debug_messages.append(f"terminal pe: {pe_group_summary}")
     developer_debug_messages.append("terminal detection: started")
@@ -899,6 +1107,9 @@ def build_placeholder_results(
                         "terminal tmb: first 5 generated rows preview -> "
                         + (" | ".join(str(row) for row in terminal_tmb_preview_rows) if terminal_tmb_preview_rows else "none")
                     )
+                    terminal_strip_df, terminal_strip_debug = _build_terminal_strip_sheet_with_debug(terminal_df)
+                    sheets["Terminal Strip"] = terminal_strip_df
+                    developer_debug_messages.extend(terminal_strip_debug)
                 else:
                     sheets[sheet_name] = pd.DataFrame(
                         [
