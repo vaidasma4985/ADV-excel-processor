@@ -480,6 +480,91 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
 
 
+def _build_terminal_pe_tmb_rows(
+    terminal_df: pd.DataFrame,
+) -> tuple[list[dict[str, str]], dict[str, int | list[str]]]:
+    """Generate PE TMB rows by GS using ceil(PE contacts / 3)."""
+    if (
+        terminal_df.empty
+        or "Terminal Type" not in terminal_df.columns
+        or "Group Sorting" not in terminal_df.columns
+    ):
+        return [], {
+            "pe_group_count": 0,
+            "generated_pe_tmb_rows": 0,
+            "first_pe_gs_groups": [],
+        }
+
+    pe_terminal_df = terminal_df.loc[
+        terminal_df["Terminal Type"].apply(_stringify_cell).eq("PE")
+    ].copy()
+    if pe_terminal_df.empty:
+        return [], {
+            "pe_group_count": 0,
+            "generated_pe_tmb_rows": 0,
+            "first_pe_gs_groups": [],
+        }
+
+    pe_terminal_df["_group_sorting_sort"] = pe_terminal_df["Group Sorting"].astype(int)
+    pe_terminal_df["_original_order"] = range(len(pe_terminal_df))
+    pe_terminal_df = pe_terminal_df.sort_values(
+        by=["_group_sorting_sort", "Group Sorting", "_original_order"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    pe_tmb_rows: list[dict[str, str]] = []
+    first_pe_gs_groups: list[str] = []
+    for group_sorting_value, pe_group_df in pe_terminal_df.groupby("Group Sorting", sort=False, dropna=False):
+        pe_contact_count = len(pe_group_df)
+        pe_terminal_count = (pe_contact_count + 2) // 3
+        if len(first_pe_gs_groups) < 5:
+            first_pe_gs_groups.append(f"{group_sorting_value}:{pe_contact_count}->{pe_terminal_count}")
+        for _ in range(pe_terminal_count):
+            pe_tmb_rows.append(
+                {
+                    "Terminal Name": "PE",
+                    "Top": "PE",
+                    "Middle": "PE",
+                    "Bottom": "PE",
+                }
+            )
+
+    return pe_tmb_rows, {
+        "pe_group_count": int(pe_terminal_df["Group Sorting"].nunique()),
+        "generated_pe_tmb_rows": len(pe_tmb_rows),
+        "first_pe_gs_groups": first_pe_gs_groups,
+    }
+
+
+def _build_terminal_tmb_sheet_with_debug(
+    terminal_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build terminal TMB output and report PE TMB generation stats."""
+    developer_debug_messages: list[str] = []
+    non_pe_tmb_df = _build_terminal_tmb_sheet(terminal_df)
+    pe_tmb_rows, pe_tmb_stats = _build_terminal_pe_tmb_rows(terminal_df)
+
+    developer_debug_messages.append(
+        "terminal pe tmb: PE groups detected -> "
+        + str(pe_tmb_stats.get("pe_group_count", 0))
+    )
+    developer_debug_messages.append(
+        "terminal pe tmb: generated PE terminal rows -> "
+        + str(pe_tmb_stats.get("generated_pe_tmb_rows", 0))
+    )
+    developer_debug_messages.append(
+        "terminal pe tmb: first 5 PE GS groups -> "
+        + (", ".join(pe_tmb_stats.get("first_pe_gs_groups", [])) if pe_tmb_stats.get("first_pe_gs_groups") else "none")
+    )
+
+    if not pe_tmb_rows:
+        return non_pe_tmb_df, developer_debug_messages
+
+    pe_tmb_df = pd.DataFrame(pe_tmb_rows, columns=non_pe_tmb_df.columns.tolist() if not non_pe_tmb_df.empty else ["Terminal Name", "Top", "Middle", "Bottom"])
+    terminal_tmb_df = pd.concat([non_pe_tmb_df, pe_tmb_df], ignore_index=True)
+    return terminal_tmb_df, developer_debug_messages
+
+
 def _reintegrate_terminal_pe_rows(normal_terminal_df: pd.DataFrame, pe_terminal_df: pd.DataFrame) -> pd.DataFrame:
     """Merge normal and PE terminal rows back into one flat stream ordered by GS ascending."""
     if normal_terminal_df.empty and pe_terminal_df.empty:
@@ -809,8 +894,9 @@ def build_placeholder_results(
                 if terminal_df is not None and not terminal_df.empty:
                     sheets[sheet_name] = terminal_df
                     developer_debug_messages.append("terminal tmb: generation started")
-                    terminal_tmb_df = _build_terminal_tmb_sheet(terminal_df)
+                    terminal_tmb_df, terminal_pe_tmb_debug = _build_terminal_tmb_sheet_with_debug(terminal_df)
                     sheets["Terminal TMB"] = terminal_tmb_df
+                    developer_debug_messages.extend(terminal_pe_tmb_debug)
                     developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
                     terminal_tmb_preview_rows = (
                         terminal_tmb_df.head(5).to_dict(orient="records")
