@@ -444,20 +444,17 @@ def _split_terminal_pe_rows(
 
 
 def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
-    """Repack already-sorted flat terminal rows into Top/Middle/Bottom chunks of 3."""
+    """Repack already-prepared flat terminal rows into Top/Middle/Bottom chunks of 3."""
     tmb_columns = ["Terminal Name", "Top", "Middle", "Bottom"]
     if terminal_df.empty or "Name" not in terminal_df.columns:
         return pd.DataFrame(columns=tmb_columns)
 
-    if "Terminal Type" in terminal_df.columns:
-        terminal_df = terminal_df.loc[
-            terminal_df["Terminal Type"].apply(_stringify_cell).ne("PE")
-        ].copy()
-        if terminal_df.empty:
-            return pd.DataFrame(columns=tmb_columns)
-
     tmb_rows: list[dict[str, str]] = []
-    for _, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
+    group_columns = ["Name"]
+    if "Group Sorting" in terminal_df.columns:
+        group_columns = ["Group Sorting", "Name"]
+
+    for _, name_group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
         group_rows = name_group_df.reset_index(drop=True)
         terminal_name = _stringify_cell(group_rows["Name"].iloc[0]) if not group_rows.empty else ""
         conns_values = (
@@ -480,18 +477,18 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
 
 
-def _build_terminal_pe_tmb_rows(
+def _expand_terminal_pe_rows(
     terminal_df: pd.DataFrame,
-) -> tuple[list[dict[str, str]], dict[str, int | list[str]]]:
-    """Generate PE TMB rows by GS using ceil(PE contacts / 3)."""
+) -> tuple[pd.DataFrame, dict[str, int | list[str]]]:
+    """Expand PE contacts into flat terminal rows in multiples of 3 per GS."""
     if (
         terminal_df.empty
         or "Terminal Type" not in terminal_df.columns
         or "Group Sorting" not in terminal_df.columns
     ):
-        return [], {
+        return terminal_df.iloc[0:0].copy(), {
             "pe_group_count": 0,
-            "generated_pe_tmb_rows": 0,
+            "generated_pe_flat_rows": 0,
             "first_pe_gs_groups": [],
         }
 
@@ -499,9 +496,9 @@ def _build_terminal_pe_tmb_rows(
         terminal_df["Terminal Type"].apply(_stringify_cell).eq("PE")
     ].copy()
     if pe_terminal_df.empty:
-        return [], {
+        return pe_terminal_df, {
             "pe_group_count": 0,
-            "generated_pe_tmb_rows": 0,
+            "generated_pe_flat_rows": 0,
             "first_pe_gs_groups": [],
         }
 
@@ -512,26 +509,29 @@ def _build_terminal_pe_tmb_rows(
         kind="mergesort",
     ).reset_index(drop=True)
 
-    pe_tmb_rows: list[dict[str, str]] = []
+    expanded_pe_rows: list[dict[str, Any]] = []
     first_pe_gs_groups: list[str] = []
     for group_sorting_value, pe_group_df in pe_terminal_df.groupby("Group Sorting", sort=False, dropna=False):
         pe_contact_count = len(pe_group_df)
         pe_terminal_count = (pe_contact_count + 2) // 3
+        generated_row_count = pe_terminal_count * 3
         if len(first_pe_gs_groups) < 5:
-            first_pe_gs_groups.append(f"{group_sorting_value}:{pe_contact_count}->{pe_terminal_count}")
-        for _ in range(pe_terminal_count):
-            pe_tmb_rows.append(
-                {
-                    "Terminal Name": "PE",
-                    "Top": "PE",
-                    "Middle": "PE",
-                    "Bottom": "PE",
-                }
+            first_pe_gs_groups.append(
+                f"GS {group_sorting_value} -> contacts={pe_contact_count}, terminals={pe_terminal_count}, rows={generated_row_count}"
             )
+        template_row = pe_group_df.iloc[0].to_dict()
+        for _ in range(generated_row_count):
+            expanded_row = template_row.copy()
+            expanded_row["Name"] = "PE"
+            expanded_row["Conns."] = "PE"
+            expanded_row["Group Sorting"] = group_sorting_value
+            expanded_row["Terminal Type"] = "PE"
+            expanded_pe_rows.append(expanded_row)
 
-    return pe_tmb_rows, {
+    expanded_pe_df = pd.DataFrame(expanded_pe_rows, columns=pe_terminal_df.columns)
+    return expanded_pe_df, {
         "pe_group_count": int(pe_terminal_df["Group Sorting"].nunique()),
-        "generated_pe_tmb_rows": len(pe_tmb_rows),
+        "generated_pe_flat_rows": len(expanded_pe_df),
         "first_pe_gs_groups": first_pe_gs_groups,
     }
 
@@ -539,29 +539,10 @@ def _build_terminal_pe_tmb_rows(
 def _build_terminal_tmb_sheet_with_debug(
     terminal_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Build terminal TMB output and report PE TMB generation stats."""
+    """Build terminal TMB output from already-prepared flat terminal rows."""
     developer_debug_messages: list[str] = []
-    non_pe_tmb_df = _build_terminal_tmb_sheet(terminal_df)
-    pe_tmb_rows, pe_tmb_stats = _build_terminal_pe_tmb_rows(terminal_df)
-
-    developer_debug_messages.append(
-        "terminal pe tmb: PE groups detected -> "
-        + str(pe_tmb_stats.get("pe_group_count", 0))
-    )
-    developer_debug_messages.append(
-        "terminal pe tmb: generated PE terminal rows -> "
-        + str(pe_tmb_stats.get("generated_pe_tmb_rows", 0))
-    )
-    developer_debug_messages.append(
-        "terminal pe tmb: first 5 PE GS groups -> "
-        + (", ".join(pe_tmb_stats.get("first_pe_gs_groups", [])) if pe_tmb_stats.get("first_pe_gs_groups") else "none")
-    )
-
-    if not pe_tmb_rows:
-        return non_pe_tmb_df, developer_debug_messages
-
-    pe_tmb_df = pd.DataFrame(pe_tmb_rows, columns=non_pe_tmb_df.columns.tolist() if not non_pe_tmb_df.empty else ["Terminal Name", "Top", "Middle", "Bottom"])
-    terminal_tmb_df = pd.concat([non_pe_tmb_df, pe_tmb_df], ignore_index=True)
+    terminal_tmb_df = _build_terminal_tmb_sheet(terminal_df)
+    developer_debug_messages.append("terminal pe tmb: using flat Terminal Marking rows as the only PE source")
     return terminal_tmb_df, developer_debug_messages
 
 
@@ -719,7 +700,8 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
 
-    normal_terminal_df, pe_terminal_df, pe_stats = _split_terminal_pe_rows(terminal_df)
+    normal_terminal_df, pe_terminal_contacts_df, pe_stats = _split_terminal_pe_rows(terminal_df)
+    expanded_pe_terminal_df, expanded_pe_stats = _expand_terminal_pe_rows(pe_terminal_contacts_df)
 
     developer_debug_messages.append(f"terminal pe: detected PE rows -> {pe_stats['detected_pe_rows']}")
     developer_debug_messages.append(f"terminal pe: split PE from normal rows -> {pe_stats['split_summary']}")
@@ -728,6 +710,16 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + (", ".join(pe_stats["pe_gs_groups"]) if pe_stats["pe_gs_groups"] else "none")
     )
     developer_debug_messages.append("terminal pe: renamed PE rows to Name=PE, Conns.=PE")
+    developer_debug_messages.append(
+        "terminal pe: expanded PE flat rows -> "
+        + str(expanded_pe_stats.get("generated_pe_flat_rows", 0))
+    )
+    developer_debug_messages.append(
+        "terminal pe: first 5 GS groups with expanded PE -> "
+        + (", ".join(expanded_pe_stats.get("first_pe_gs_groups", [])) if expanded_pe_stats.get("first_pe_gs_groups") else "none")
+    )
+    for pe_group_summary in expanded_pe_stats.get("first_pe_gs_groups", []):
+        developer_debug_messages.append(f"terminal pe: {pe_group_summary}")
     developer_debug_messages.append("terminal detection: started")
     normal_terminal_df, terminal_type_counts, classified_groups_preview, detection_stats = _apply_terminal_type_classification(normal_terminal_df)
 
@@ -744,7 +736,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
     normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_gs_7030_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
 
-    terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, pe_terminal_df)
+    terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, expanded_pe_terminal_df)
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -794,7 +786,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append("terminal reorder: applied SPECIAL_GS_7030 flat sorting mode")
     developer_debug_messages.append("terminal reorder: applied NORMAL middle-after-first-signal rule")
     developer_debug_messages.append("terminal reorder: applied NORMAL no-signal blank/middle/bottom rule")
-    developer_debug_messages.append("terminal pe: reinserted PE rows into GS-sorted terminal output")
+    developer_debug_messages.append("terminal pe: expanded PE rows inserted into Terminal Marking")
     developer_debug_messages.append(
         "terminal reorder: first 5 reordered Name groups -> "
         + (" | ".join(reordered_groups_preview) if reordered_groups_preview else "none")
