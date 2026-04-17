@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .component_processor import build_component_placeholder_result
+from .component_processor import process_component_result
 from .terminal_processor import (
     derive_output_filename,
     export_placeholder_workbook,
@@ -51,9 +51,11 @@ def build_placeholder_results(
             developer_debug_messages.extend(terminal_result["developer_debug_messages"])
             debug_workbooks["terminal"] = terminal_result["debug_workbook"]
         elif source_key == "component":
-            component_sheet, component_user_info = build_component_placeholder_result(file_name, source_label)
-            sheets[sheet_name] = component_sheet
-            user_info_messages.extend(component_user_info)
+            component_result = process_component_result(file_bytes, file_name)
+            sheets.update(component_result["sheets"])
+            user_info_messages.extend(component_result["user_info_messages"])
+            developer_debug_messages.extend(component_result["developer_debug_messages"])
+            debug_workbooks["component"] = component_result["debug_workbook"]
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
             sheets[sheet_name] = wire_sheet
