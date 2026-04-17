@@ -1679,9 +1679,9 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
 
 def build_placeholder_results(
     inputs: dict[str, dict[str, Any]]
-) -> tuple[dict[str, pd.DataFrame], list[str], list[str], list[str], dict[str, bytes | None]]:
+) -> tuple[dict[str, Any], list[str], list[str], list[str], dict[str, bytes | None]]:
     """Build placeholder output sheets only for uploaded file types."""
-    sheets: dict[str, pd.DataFrame] = {}
+    sheets: dict[str, Any] = {}
     warnings: list[str] = []
     user_info_messages: list[str] = []
     developer_debug_messages: list[str] = []
@@ -1706,11 +1706,9 @@ def build_placeholder_results(
                 developer_debug_messages.extend(terminal_debug)
                 terminal_debug_messages.extend(terminal_debug)
                 if terminal_df is not None and not terminal_df.empty:
-                    sheets[sheet_name] = terminal_df
                     developer_debug_messages.append("terminal tmb: generation started")
                     terminal_debug_messages.append("terminal tmb: generation started")
                     terminal_tmb_df, terminal_pe_tmb_debug = _build_terminal_tmb_sheet_with_debug(terminal_df)
-                    sheets["Terminal TMB"] = terminal_tmb_df
                     developer_debug_messages.extend(terminal_pe_tmb_debug)
                     terminal_debug_messages.extend(terminal_pe_tmb_debug)
                     developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
@@ -1727,7 +1725,11 @@ def build_placeholder_results(
                     developer_debug_messages.append(terminal_tmb_preview_message)
                     terminal_debug_messages.append(terminal_tmb_preview_message)
                     terminal_strip_df, terminal_strip_debug, terminal_strip_debug_df = _build_terminal_strip_sheet_with_debug(terminal_df)
-                    sheets["Terminal Strip"] = terminal_strip_df
+                    sheets["Terminal markings"] = {
+                        "layout": "terminal_markings",
+                        "terminal_tmb_df": terminal_tmb_df,
+                        "terminal_strip_df": terminal_strip_df,
+                    }
                     developer_debug_messages.extend(terminal_strip_debug)
                     terminal_debug_messages.extend(terminal_strip_debug)
                     terminal_debug_sheets: dict[str, pd.DataFrame] = {
@@ -1735,11 +1737,10 @@ def build_placeholder_results(
                         "General": _build_debug_messages_sheet(terminal_debug_messages),
                     }
                     if terminal_strip_debug_df is not None and not terminal_strip_debug_df.empty:
-                        sheets["Terminal Strip Debug"] = terminal_strip_debug_df
                         terminal_debug_sheets["Terminal Strip Debug"] = terminal_strip_debug_df
                     debug_workbooks["terminal"] = export_placeholder_workbook(terminal_debug_sheets)
                 else:
-                    sheets[sheet_name] = pd.DataFrame(
+                    sheets["Terminal markings"] = pd.DataFrame(
                         [
                             {
                                 "source_file": file_name or "uploaded_file",
@@ -1780,12 +1781,53 @@ def _build_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
     )
 
 
-def export_placeholder_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
+def _write_terminal_markings_sheet(
+    writer: Any,
+    sheet_name: str,
+    terminal_tmb_df: pd.DataFrame,
+    terminal_strip_df: pd.DataFrame,
+) -> None:
+    """Write the combined Terminal markings sheet with TMB and Strip side-by-side."""
+    terminal_tmb_export_df = terminal_tmb_df.copy()
+    terminal_strip_export_df = terminal_strip_df.copy()
+    for export_df in (terminal_tmb_export_df, terminal_strip_export_df):
+        for column_name in export_df.columns:
+            export_df[column_name] = export_df[column_name].apply(_make_excel_text_safe)
+
+    strip_start_col = len(terminal_tmb_export_df.columns) + 2
+    worksheet = writer.book.create_sheet(title=sheet_name)
+    writer.sheets[sheet_name] = worksheet
+    terminal_tmb_export_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0, startcol=0)
+    terminal_strip_export_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0, startcol=strip_start_col)
+
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.number_format = "@"
+            if cell.value is None:
+                cell.value = ""
+            else:
+                cell.value = str(cell.value)
+
+
+def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
     """Write available placeholder sheets to one Excel workbook in memory."""
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            export_df = df.copy()
+        for sheet_name, sheet_content in sheets.items():
+            if (
+                sheet_name == "Terminal markings"
+                and isinstance(sheet_content, dict)
+                and sheet_content.get("layout") == "terminal_markings"
+            ):
+                _write_terminal_markings_sheet(
+                    writer,
+                    sheet_name,
+                    sheet_content.get("terminal_tmb_df", pd.DataFrame()),
+                    sheet_content.get("terminal_strip_df", pd.DataFrame()),
+                )
+                continue
+
+            export_df = sheet_content.copy()
             for column_name in export_df.columns:
                 export_df[column_name] = export_df[column_name].apply(_make_excel_text_safe)
             export_df.to_excel(writer, sheet_name=sheet_name, index=False)
