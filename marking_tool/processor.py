@@ -20,13 +20,25 @@ _SOURCE_LABELS = {
 
 def build_placeholder_results(
     inputs: dict[str, dict[str, Any]]
-) -> tuple[dict[str, Any], list[str], list[str], list[str], dict[str, bytes | None]]:
+) -> tuple[
+    dict[str, Any],
+    list[str],
+    list[str],
+    list[str],
+    dict[str, bytes | None],
+    dict[str, dict[str, bytes | str] | None],
+]:
     """Coordinate component, terminal, and wire processing without holding business logic."""
     sheets: dict[str, Any] = {}
     warnings: list[str] = []
     user_info_messages: list[str] = []
     developer_debug_messages: list[str] = []
     debug_workbooks: dict[str, bytes | None] = {
+        "component": None,
+        "terminal": None,
+        "wire": None,
+    }
+    production_workbooks: dict[str, dict[str, bytes | str] | None] = {
         "component": None,
         "terminal": None,
         "wire": None,
@@ -56,6 +68,11 @@ def build_placeholder_results(
             user_info_messages.extend(component_result["user_info_messages"])
             developer_debug_messages.extend(component_result["developer_debug_messages"])
             debug_workbooks["component"] = component_result["debug_workbook"]
+            if component_result.get("production_workbook"):
+                production_workbooks["component"] = {
+                    "bytes": component_result["production_workbook"],
+                    "filename": component_result["production_filename"],
+                }
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
             sheets[sheet_name] = wire_sheet
@@ -63,4 +80,4 @@ def build_placeholder_results(
 
         developer_debug_messages.append(f"{source_key}: uploaded `{file_name or 'uploaded_file'}` -> sheet `{sheet_name}`")
 
-    return sheets, warnings, user_info_messages, developer_debug_messages, debug_workbooks
+    return sheets, warnings, user_info_messages, developer_debug_messages, debug_workbooks, production_workbooks

@@ -104,7 +104,7 @@ def _process_marking_inputs() -> None:
         st.session_state["marking_run_id"] = None
         return
 
-    sheets, warnings, user_info_messages, debug_info, debug_workbooks = build_placeholder_results(inputs)
+    sheets, warnings, user_info_messages, debug_info, debug_workbooks, production_workbooks = build_placeholder_results(inputs)
     workbook_bytes = export_placeholder_workbook(sheets)
     output_filename = derive_output_filename(inputs.get("terminal", {}).get("name", ""))
 
@@ -113,6 +113,7 @@ def _process_marking_inputs() -> None:
         "filename": output_filename,
         "sheet_names": list(sheets.keys()),
         "debug_workbooks": debug_workbooks,
+        "production_workbooks": production_workbooks,
         "debug_status": {
             tool_name: {
                 "uploaded": bool(inputs.get(tool_name, {}).get("bytes")),
@@ -183,6 +184,16 @@ def render_marking_tool() -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+        component_production_workbook = (results.get("production_workbooks") or {}).get("component")
+        if component_production_workbook:
+            st.download_button(
+                "Download component production workbook",
+                data=component_production_workbook["bytes"],
+                file_name=str(component_production_workbook["filename"]),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="marking_component_production_download",
+            )
         st.caption("Generated sheets: " + ", ".join(results["sheet_names"]))
 
         with st.expander("Info", expanded=False):
