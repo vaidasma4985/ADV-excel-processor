@@ -1679,12 +1679,17 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
 
 def build_placeholder_results(
     inputs: dict[str, dict[str, Any]]
-) -> tuple[dict[str, pd.DataFrame], list[str], list[str], list[str]]:
+) -> tuple[dict[str, pd.DataFrame], list[str], list[str], list[str], dict[str, bytes | None]]:
     """Build placeholder output sheets only for uploaded file types."""
     sheets: dict[str, pd.DataFrame] = {}
     warnings: list[str] = []
     user_info_messages: list[str] = []
     developer_debug_messages: list[str] = []
+    debug_workbooks: dict[str, bytes | None] = {
+        "component": None,
+        "terminal": None,
+        "wire": None,
+    }
 
     for source_key in ("component", "terminal", "wire"):
         file_info = inputs.get(source_key, {})
@@ -1695,30 +1700,44 @@ def build_placeholder_results(
         if file_bytes:
             terminal_df = None
             if source_key == "terminal":
+                terminal_debug_messages: list[str] = []
                 terminal_df, terminal_user_info, terminal_debug = parse_terminal_input(file_bytes)
                 user_info_messages.extend(terminal_user_info)
                 developer_debug_messages.extend(terminal_debug)
+                terminal_debug_messages.extend(terminal_debug)
                 if terminal_df is not None and not terminal_df.empty:
                     sheets[sheet_name] = terminal_df
                     developer_debug_messages.append("terminal tmb: generation started")
+                    terminal_debug_messages.append("terminal tmb: generation started")
                     terminal_tmb_df, terminal_pe_tmb_debug = _build_terminal_tmb_sheet_with_debug(terminal_df)
                     sheets["Terminal TMB"] = terminal_tmb_df
                     developer_debug_messages.extend(terminal_pe_tmb_debug)
+                    terminal_debug_messages.extend(terminal_pe_tmb_debug)
                     developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+                    terminal_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
                     terminal_tmb_preview_rows = (
                         terminal_tmb_df.head(5).to_dict(orient="records")
                         if terminal_tmb_df is not None and not terminal_tmb_df.empty
                         else []
                     )
-                    developer_debug_messages.append(
+                    terminal_tmb_preview_message = (
                         "terminal tmb: first 5 generated rows preview -> "
                         + (" | ".join(str(row) for row in terminal_tmb_preview_rows) if terminal_tmb_preview_rows else "none")
                     )
+                    developer_debug_messages.append(terminal_tmb_preview_message)
+                    terminal_debug_messages.append(terminal_tmb_preview_message)
                     terminal_strip_df, terminal_strip_debug, terminal_strip_debug_df = _build_terminal_strip_sheet_with_debug(terminal_df)
                     sheets["Terminal Strip"] = terminal_strip_df
                     developer_debug_messages.extend(terminal_strip_debug)
+                    terminal_debug_messages.extend(terminal_strip_debug)
+                    terminal_debug_sheets: dict[str, pd.DataFrame] = {
+                        "Terminal Marking": terminal_df,
+                        "General": _build_debug_messages_sheet(terminal_debug_messages),
+                    }
                     if terminal_strip_debug_df is not None and not terminal_strip_debug_df.empty:
                         sheets["Terminal Strip Debug"] = terminal_strip_debug_df
+                        terminal_debug_sheets["Terminal Strip Debug"] = terminal_strip_debug_df
+                    debug_workbooks["terminal"] = export_placeholder_workbook(terminal_debug_sheets)
                 else:
                     sheets[sheet_name] = pd.DataFrame(
                         [
@@ -1750,7 +1769,15 @@ def build_placeholder_results(
             user_info_messages.append(f"{source_label} missing -> skipped")
             developer_debug_messages.append(f"{source_key}: missing upload -> sheet skipped")
 
-    return sheets, warnings, user_info_messages, developer_debug_messages
+    return sheets, warnings, user_info_messages, developer_debug_messages, debug_workbooks
+
+
+def _build_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
+    """Build a simple debug-message sheet for debug workbooks."""
+    return pd.DataFrame(
+        [{"Seq": index + 1, "Message": message} for index, message in enumerate(messages)],
+        columns=["Seq", "Message"],
+    )
 
 
 def export_placeholder_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:

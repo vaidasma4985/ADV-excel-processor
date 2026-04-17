@@ -86,6 +86,12 @@ def _current_inputs() -> dict[str, dict[str, Any]]:
     }
 
 
+def _build_debug_filename(base_filename: str, suffix: str) -> str:
+    if base_filename.lower().endswith(".xlsx"):
+        return f"{base_filename[:-5]}_{suffix}.xlsx"
+    return f"{base_filename}_{suffix}.xlsx"
+
+
 def _process_marking_inputs() -> None:
     inputs = _current_inputs()
     has_any_upload = any(file_info.get("bytes") for file_info in inputs.values())
@@ -98,13 +104,22 @@ def _process_marking_inputs() -> None:
         st.session_state["marking_run_id"] = None
         return
 
-    sheets, warnings, user_info_messages, debug_info = build_placeholder_results(inputs)
+    sheets, warnings, user_info_messages, debug_info, debug_workbooks = build_placeholder_results(inputs)
     workbook_bytes = export_placeholder_workbook(sheets)
+    output_filename = derive_output_filename(inputs.get("terminal", {}).get("name", ""))
 
     st.session_state["marking_results"] = {
         "workbook_bytes": workbook_bytes,
-        "filename": derive_output_filename(inputs.get("terminal", {}).get("name", "")),
+        "filename": output_filename,
         "sheet_names": list(sheets.keys()),
+        "debug_workbooks": debug_workbooks,
+        "debug_status": {
+            tool_name: {
+                "uploaded": bool(inputs.get(tool_name, {}).get("bytes")),
+                "has_debug_workbook": bool(debug_workbooks.get(tool_name)),
+            }
+            for tool_name in ("component", "terminal", "wire")
+        },
     }
     st.session_state["marking_user_info"] = user_info_messages
     st.session_state["marking_warnings"] = warnings
@@ -175,8 +190,39 @@ def render_marking_tool() -> None:
                 st.text(message)
 
         with st.expander("Developer debug", expanded=False):
-            run_id = st.session_state.get("marking_run_id")
-            st.write({"run_id": run_id, "results_ready": results is not None})
-            debug_info = st.session_state.get("marking_debug_info") or ["No debug info yet."]
-            for item in debug_info:
-                st.text(item)
+            debug_workbooks = results.get("debug_workbooks", {}) if results else {}
+            debug_status = results.get("debug_status", {}) if results else {}
+            debug_filename_base = results.get("filename", "Markings.xlsx") if results else "Markings.xlsx"
+            tool_labels = {
+                "component": "Component",
+                "terminal": "Terminal",
+                "wire": "Wire",
+            }
+            tool_suffixes = {
+                "component": "component_debug",
+                "terminal": "terminal_debug",
+                "wire": "wire_debug",
+            }
+            component_col, terminal_col, wire_col = st.columns(3)
+
+            for tool_name, column in zip(("component", "terminal", "wire"), (component_col, terminal_col, wire_col)):
+                with column:
+                    st.markdown(f"**{tool_labels[tool_name]}**")
+                    tool_uploaded = bool(debug_status.get(tool_name, {}).get("uploaded"))
+                    tool_has_debug_workbook = bool(debug_status.get(tool_name, {}).get("has_debug_workbook"))
+                    st.caption(
+                        f"Input uploaded: {'Yes' if tool_uploaded else 'No'} | "
+                        f"Debug workbook: {'Available' if tool_has_debug_workbook else 'Unavailable'}"
+                    )
+                    tool_debug_workbook = debug_workbooks.get(tool_name)
+                    if tool_debug_workbook:
+                        st.download_button(
+                            f"Download {tool_name} debug workbook",
+                            data=tool_debug_workbook,
+                            file_name=_build_debug_filename(debug_filename_base, tool_suffixes[tool_name]),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"marking_{tool_name}_debug_download",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.text("No debug workbook available")
