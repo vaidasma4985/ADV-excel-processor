@@ -590,64 +590,489 @@ def _build_terminal_tmb_sheet_with_debug(
     return terminal_tmb_df, developer_debug_messages
 
 
-def _build_terminal_strip_sheet_with_debug(
-    terminal_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Build terminal strip rows from prepared terminal blocks with strip-only cover placement."""
-    developer_debug_messages = ["terminal strip: generation started"]
-    strip_columns = ["Space", "Text"]
-    if terminal_df.empty:
-        developer_debug_messages.append("terminal strip: generated terminal rows -> 0")
-        developer_debug_messages.append("terminal strip: generated cover rows -> 0")
-        developer_debug_messages.append("terminal strip: first 10 rows preview -> none")
-        return pd.DataFrame(columns=strip_columns), developer_debug_messages
+def _build_terminal_strip_sequences(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Build ordered strip sequences from flat terminal rows without TMB chunking."""
+    if terminal_df.empty or "Group Sorting" not in terminal_df.columns:
+        return []
 
-    terminal_blocks = _build_terminal_blocks(terminal_df.reset_index(drop=True))
-    cover_insert_positions, cover_row_count, skipped_duplicate_covers = _compute_terminal_cover_insert_positions(
-        terminal_df
-    )
-    strip_rows: list[dict[str, Any]] = []
-    terminal_row_count = 0
+    strip_df = terminal_df.reset_index(drop=True).copy()
+    if "_strip_source_row_index" not in strip_df.columns:
+        strip_df["_strip_source_row_index"] = strip_df.index
 
-    for block_index, terminal_block in enumerate(terminal_blocks):
-        terminal_count_in_block = len(terminal_block["chunk"])
-        strip_rows.append(
+    sequence_records = strip_df.to_dict(orient="records")
+    strip_sequences: list[dict[str, Any]] = []
+    cursor = 0
+
+    while cursor < len(sequence_records):
+        current_record = sequence_records[cursor]
+        current_group_sorting = _stringify_cell(current_record.get("Group Sorting", ""))
+        current_sequence_kind = (
+            "PE" if _stringify_cell(current_record.get("Terminal Type", "")) == "PE" else "NON_PE"
+        )
+        current_rows: list[dict[str, Any]] = []
+
+        while cursor < len(sequence_records):
+            candidate_record = sequence_records[cursor]
+            candidate_group_sorting = _stringify_cell(candidate_record.get("Group Sorting", ""))
+            candidate_sequence_kind = (
+                "PE" if _stringify_cell(candidate_record.get("Terminal Type", "")) == "PE" else "NON_PE"
+            )
+            if candidate_group_sorting != current_group_sorting or candidate_sequence_kind != current_sequence_kind:
+                break
+            current_rows.append(candidate_record)
+            cursor += 1
+
+        strip_sequences.append(
             {
-                "Space": round(terminal_count_in_block * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
-                "Text": terminal_block["terminal_name"],
+                "group_sorting": current_group_sorting,
+                "sequence_kind": current_sequence_kind,
+                "sequence_index": len(strip_sequences),
+                "rows": current_rows,
+                "source_rows": [int(record["_strip_source_row_index"]) for record in current_rows],
+                "source_names": [_stringify_cell(record.get("Name", "")) for record in current_rows],
             }
         )
-        terminal_row_count += 1
-        next_terminal_block = terminal_blocks[block_index + 1] if block_index + 1 < len(terminal_blocks) else None
-        is_pe_block = _stringify_cell(terminal_block.get("terminal_type", "")) == "PE"
-        is_last_block_in_same_pe_group = is_pe_block and (
-            next_terminal_block is None
-            or _stringify_cell(next_terminal_block.get("terminal_type", "")) != "PE"
-            or _stringify_cell(next_terminal_block.get("group_sorting", "")) != _stringify_cell(terminal_block.get("group_sorting", ""))
-        )
-        should_add_cover = terminal_block["end_row_index"] in cover_insert_positions or (
-            is_last_block_in_same_pe_group and next_terminal_block is not None
-        )
-        if should_add_cover and (not strip_rows or strip_rows[-1] != {"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""}):
-            strip_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""})
-            if terminal_block["end_row_index"] not in cover_insert_positions:
-                cover_row_count += 1
 
-    if strip_rows and strip_rows[-1] == {"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""}:
-        strip_rows.pop()
-        cover_row_count = max(cover_row_count - 1, 0)
-        developer_debug_messages.append("terminal strip: removed trailing final cover row")
+    return strip_sequences
 
-    terminal_strip_df = pd.DataFrame(strip_rows, columns=strip_columns)
+
+def _build_terminal_strip_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Plan Terminal Strip blocks directly from the prepared flat terminal rows."""
+    if terminal_df.empty or "Group Sorting" not in terminal_df.columns or "Name" not in terminal_df.columns:
+        return []
+
+    strip_sequences = _build_terminal_strip_sequences(terminal_df)
+    strip_blocks: list[dict[str, Any]] = []
+
+    def _append_cover_block(group_sorting: str, boundary_reason: str, inserted_for: str) -> None:
+        previous_block_type = strip_blocks[-1]["block_type"] if strip_blocks else ""
+        strip_blocks.append(
+            {
+                "group_sorting": group_sorting,
+                "block_type": "COVER",
+                "text": "",
+                "space": _TERMINAL_STRIP_COVER_SPACE,
+                "source_rows": [],
+                "source_names": [],
+                "chunk_size": 0,
+                "sequence_kind": "COVER",
+                "sequence_index": None,
+                "chunk_index": None,
+                "chunk_count": 0,
+                "subgroup_key": "",
+                "boundary_reason": boundary_reason,
+                "inserted_for": inserted_for,
+                "previous_block_type": previous_block_type,
+                "next_block_type": "",
+            }
+        )
+
+    def _append_sequence_blocks(sequence: dict[str, Any]) -> None:
+        group_sorting_value = _stringify_cell(sequence.get("group_sorting", ""))
+        sequence_kind = _stringify_cell(sequence.get("sequence_kind", ""))
+        sequence_index = int(sequence.get("sequence_index", 0))
+        sequence_rows = list(sequence.get("rows", []))
+        if not sequence_rows:
+            return
+
+        if sequence_kind == "PE":
+            chunk_count = (len(sequence_rows) + 2) // 3
+            for chunk_index, start_index in enumerate(range(0, len(sequence_rows), 3)):
+                chunk_records = sequence_rows[start_index:start_index + 3]
+                strip_blocks.append(
+                    {
+                        "group_sorting": group_sorting_value,
+                        "block_type": "PE",
+                        "text": "PE",
+                        "space": round(len(chunk_records) * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
+                        "source_rows": [int(record["_strip_source_row_index"]) for record in chunk_records],
+                        "source_names": [_stringify_cell(record.get("Name", "")) for record in chunk_records],
+                        "chunk_size": len(chunk_records),
+                        "sequence_kind": "PE",
+                        "sequence_index": sequence_index,
+                        "chunk_index": chunk_index,
+                        "chunk_count": chunk_count,
+                        "subgroup_key": "",
+                        "boundary_reason": "",
+                        "inserted_for": "",
+                        "previous_block_type": "",
+                        "next_block_type": "",
+                    }
+                )
+            return
+
+        name_runs: list[dict[str, Any]] = []
+        run_cursor = 0
+        while run_cursor < len(sequence_rows):
+            current_name = _stringify_cell(sequence_rows[run_cursor].get("Name", ""))
+            current_run_rows: list[dict[str, Any]] = []
+            while run_cursor < len(sequence_rows):
+                candidate_row = sequence_rows[run_cursor]
+                candidate_name = _stringify_cell(candidate_row.get("Name", ""))
+                if candidate_name != current_name:
+                    break
+                current_run_rows.append(candidate_row)
+                run_cursor += 1
+            name_runs.append(
+                {
+                    "name": current_name,
+                    "subgroup": _extract_terminal_cover_subgroup(current_name),
+                    "rows": current_run_rows,
+                }
+            )
+
+        subgroup_runs: list[list[dict[str, Any]]] = []
+        if group_sorting_value in {"1010", "1110", "1030"} and name_runs and all(run["subgroup"] for run in name_runs):
+            current_subgroup_runs = [name_runs[0]]
+            current_subgroup_value = name_runs[0]["subgroup"]
+            for name_run in name_runs[1:]:
+                if name_run["subgroup"] != current_subgroup_value:
+                    subgroup_runs.append(current_subgroup_runs)
+                    current_subgroup_runs = [name_run]
+                    current_subgroup_value = name_run["subgroup"]
+                else:
+                    current_subgroup_runs.append(name_run)
+            subgroup_runs.append(current_subgroup_runs)
+        else:
+            subgroup_runs = [name_runs]
+
+        for subgroup_name_runs in subgroup_runs:
+            subgroup_key = _stringify_cell(subgroup_name_runs[0].get("subgroup", "")) if subgroup_name_runs else ""
+            cover_after_run_index = len(subgroup_name_runs) - 1
+            cover_reason = "gs_end" if group_sorting_value not in {"1010", "1110", "1030"} else "subgroup_end"
+            if group_sorting_value == "1030":
+                ending_14_indices = [
+                    index
+                    for index, name_run in enumerate(subgroup_name_runs)
+                    if _stringify_cell(name_run.get("name", "")).endswith("14")
+                ]
+                if ending_14_indices:
+                    cover_after_run_index = ending_14_indices[-1]
+                    cover_reason = "gs1030_after_14"
+
+            for name_run_index, name_run in enumerate(subgroup_name_runs):
+                name_run_rows = list(name_run.get("rows", []))
+                chunk_count = (len(name_run_rows) + 2) // 3
+                for chunk_index, start_index in enumerate(range(0, len(name_run_rows), 3)):
+                    chunk_records = name_run_rows[start_index:start_index + 3]
+                    strip_blocks.append(
+                        {
+                            "group_sorting": group_sorting_value,
+                            "block_type": "TERMINAL",
+                            "text": _stringify_cell(name_run.get("name", "")),
+                            "space": round(len(chunk_records) * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
+                            "source_rows": [int(record["_strip_source_row_index"]) for record in chunk_records],
+                            "source_names": [_stringify_cell(record.get("Name", "")) for record in chunk_records],
+                            "chunk_size": len(chunk_records),
+                            "sequence_kind": "NON_PE",
+                            "sequence_index": sequence_index,
+                            "chunk_index": chunk_index,
+                            "chunk_count": chunk_count,
+                            "subgroup_key": subgroup_key,
+                            "boundary_reason": "",
+                            "inserted_for": "",
+                            "previous_block_type": "",
+                            "next_block_type": "",
+                        }
+                    )
+
+                if name_run_index == cover_after_run_index:
+                    _append_cover_block(group_sorting_value, cover_reason, "non_pe_boundary")
+
+    for sequence_index, strip_sequence in enumerate(strip_sequences):
+        previous_sequence = strip_sequences[sequence_index - 1] if sequence_index > 0 else None
+        next_sequence = strip_sequences[sequence_index + 1] if sequence_index + 1 < len(strip_sequences) else None
+        sequence_kind = _stringify_cell(strip_sequence.get("sequence_kind", ""))
+        group_sorting_value = _stringify_cell(strip_sequence.get("group_sorting", ""))
+
+        if sequence_kind == "PE" and previous_sequence is not None:
+            _append_cover_block(group_sorting_value, "before_pe_group", "pe_boundary")
+
+        _append_sequence_blocks(strip_sequence)
+
+        if sequence_kind == "PE" and next_sequence is not None:
+            _append_cover_block(group_sorting_value, "after_pe_group", "pe_boundary")
+
+    cleaned_blocks: list[dict[str, Any]] = []
+    for block in strip_blocks:
+        if block["block_type"] == "COVER":
+            if not cleaned_blocks or cleaned_blocks[-1]["block_type"] == "COVER":
+                continue
+        cleaned_blocks.append(block)
+
+    if cleaned_blocks and cleaned_blocks[0]["block_type"] == "COVER":
+        cleaned_blocks.pop(0)
+    if cleaned_blocks and cleaned_blocks[-1]["block_type"] == "COVER":
+        cleaned_blocks.pop()
+
+    for block_index, block in enumerate(cleaned_blocks):
+        previous_block = cleaned_blocks[block_index - 1] if block_index > 0 else None
+        next_block = cleaned_blocks[block_index + 1] if block_index + 1 < len(cleaned_blocks) else None
+        block["previous_block_type"] = previous_block["block_type"] if previous_block is not None else ""
+        block["next_block_type"] = next_block["block_type"] if next_block is not None else ""
+
+    return cleaned_blocks
+
+
+def _summarize_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> list[str]:
+    """Return compact block-level debug lines for Terminal Strip planning."""
+    summaries: list[str] = []
+    for block_index, block in enumerate(strip_blocks):
+        summaries.append(
+            "idx={idx} gs={gs} type={block_type} text={text} space={space} seq={sequence_kind}:{sequence_index} "
+            "chunk={chunk_index}/{chunk_count} subgroup={subgroup_key} reason={boundary_reason}".format(
+                idx=block_index,
+                gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+                block_type=_stringify_cell(block.get("block_type", "")) or "-",
+                text=_stringify_cell(block.get("text", "")) or '""',
+                space=block.get("space", ""),
+                sequence_kind=_stringify_cell(block.get("sequence_kind", "")) or "-",
+                sequence_index=block.get("sequence_index", ""),
+                chunk_index="" if block.get("chunk_index") is None else int(block.get("chunk_index", 0)) + 1,
+                chunk_count=block.get("chunk_count", 0),
+                subgroup_key=_stringify_cell(block.get("subgroup_key", "")) or "-",
+                boundary_reason=_stringify_cell(block.get("boundary_reason", "")) or "-",
+            )
+        )
+    return summaries
+
+
+def _summarize_terminal_strip_boundaries(strip_blocks: list[dict[str, Any]]) -> list[str]:
+    """Return compact cover/boundary debug lines for Terminal Strip planning."""
+    boundary_summaries: list[str] = []
+    for block_index, block in enumerate(strip_blocks):
+        if _stringify_cell(block.get("block_type", "")) != "COVER":
+            continue
+        boundary_summaries.append(
+            "idx={idx} gs={gs} reason={reason} inserted_for={inserted_for} prev={prev} next={next}".format(
+                idx=block_index,
+                gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+                reason=_stringify_cell(block.get("boundary_reason", "")) or "-",
+                inserted_for=_stringify_cell(block.get("inserted_for", "")) or "-",
+                prev=_stringify_cell(block.get("previous_block_type", "")) or "-",
+                next=_stringify_cell(block.get("next_block_type", "")) or "-",
+            )
+        )
+    return boundary_summaries
+
+
+def _validate_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> list[str]:
+    """Return warning-only validation messages for Terminal Strip plans."""
+    warnings: list[str] = []
+    valid_block_types = {"TERMINAL", "PE", "COVER"}
+
+    if strip_blocks and _stringify_cell(strip_blocks[0].get("block_type", "")) == "COVER":
+        warnings.append("terminal strip validate: leading COVER block detected")
+    if strip_blocks and _stringify_cell(strip_blocks[-1].get("block_type", "")) == "COVER":
+        warnings.append("terminal strip validate: trailing COVER block detected")
+
+    for block_index, block in enumerate(strip_blocks):
+        block_type = _stringify_cell(block.get("block_type", ""))
+        if block_type not in valid_block_types:
+            warnings.append(f"terminal strip validate: invalid block_type at index {block_index} -> {block_type or 'blank'}")
+            continue
+
+        if block_type == "COVER":
+            if block_index > 0 and _stringify_cell(strip_blocks[block_index - 1].get("block_type", "")) == "COVER":
+                warnings.append(f"terminal strip validate: duplicate consecutive COVER at index {block_index}")
+            if block.get("space") != _TERMINAL_STRIP_COVER_SPACE or _stringify_cell(block.get("text", "")) != "":
+                warnings.append(f"terminal strip validate: COVER row mismatch at index {block_index}")
+            if not _stringify_cell(block.get("boundary_reason", "")):
+                warnings.append(f"terminal strip validate: COVER without boundary_reason at index {block_index}")
+            continue
+
+        chunk_size = int(block.get("chunk_size", 0))
+        expected_space = round(chunk_size * _TERMINAL_STRIP_TERMINAL_SPACE, 2)
+        actual_space = block.get("space")
+        if actual_space != expected_space:
+            warnings.append(
+                f"terminal strip validate: space mismatch at index {block_index} -> expected {expected_space}, got {actual_space}"
+            )
+        if not _stringify_cell(block.get("group_sorting", "")):
+            warnings.append(f"terminal strip validate: missing Group Sorting at index {block_index}")
+        if block_type == "PE":
+            next_block = strip_blocks[block_index + 1] if block_index + 1 < len(strip_blocks) else None
+            next_next_block = strip_blocks[block_index + 2] if block_index + 2 < len(strip_blocks) else None
+            if (
+                next_block is not None
+                and next_next_block is not None
+                and _stringify_cell(next_block.get("block_type", "")) == "COVER"
+                and _stringify_cell(next_next_block.get("block_type", "")) == "PE"
+                and _stringify_cell(next_next_block.get("group_sorting", "")) == _stringify_cell(block.get("group_sorting", ""))
+            ):
+                warnings.append(f"terminal strip validate: COVER inside PE group near index {block_index}")
+
+    return warnings
+
+
+def _build_terminal_strip_debug_sheet(strip_blocks: list[dict[str, Any]]) -> pd.DataFrame:
+    """Build a flat debug sheet for Terminal Strip planning diagnostics."""
+    debug_columns = [
+        "Seq",
+        "GS",
+        "Block Type",
+        "Text",
+        "Space",
+        "Sequence Kind",
+        "Subgroup Key",
+        "Boundary Reason",
+        "Chunk Size",
+        "Source Rows Preview",
+        "Source Names Preview",
+    ]
+    if not strip_blocks:
+        return pd.DataFrame(columns=debug_columns)
+
+    debug_rows = [
+        {
+            "Seq": index + 1,
+            "GS": _stringify_cell(block.get("group_sorting", "")),
+            "Block Type": _stringify_cell(block.get("block_type", "")),
+            "Text": _stringify_cell(block.get("text", "")),
+            "Space": block.get("space"),
+            "Sequence Kind": _stringify_cell(block.get("sequence_kind", "")),
+            "Subgroup Key": _stringify_cell(block.get("subgroup_key", "")),
+            "Boundary Reason": _stringify_cell(block.get("boundary_reason", "")),
+            "Chunk Size": block.get("chunk_size", 0),
+            "Source Rows Preview": ", ".join(str(value) for value in block.get("source_rows", [])[:6]),
+            "Source Names Preview": ", ".join(block.get("source_names", [])[:6]),
+        }
+        for index, block in enumerate(strip_blocks)
+    ]
+    return pd.DataFrame(debug_rows, columns=debug_columns)
+
+
+def _render_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> pd.DataFrame:
+    """Render planned Terminal Strip blocks into the export sheet rows."""
+    strip_columns = ["Space", "Text"]
+    if not strip_blocks:
+        return pd.DataFrame(columns=strip_columns)
+
+    rendered_blocks: list[dict[str, Any]] = []
+    for block in strip_blocks:
+        if rendered_blocks and rendered_blocks[-1]["block_type"] == "COVER" and block["block_type"] == "COVER":
+            continue
+        rendered_blocks.append(block)
+
+    if rendered_blocks and rendered_blocks[-1]["block_type"] == "COVER":
+        rendered_blocks.pop()
+
+    rendered_rows = [
+        {
+            "Space": block["space"],
+            "Text": block["text"],
+        }
+        for block in rendered_blocks
+    ]
+    return pd.DataFrame(rendered_rows, columns=strip_columns)
+
+
+def _build_terminal_strip_sheet_with_debug(
+    terminal_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
+    """Build Terminal Strip rows from strip-only planner blocks."""
+    developer_debug_messages = ["terminal strip: generation started"]
+    if terminal_df.empty:
+        developer_debug_messages.append("terminal strip: generated terminal rows -> 0")
+        developer_debug_messages.append("terminal strip: NON_PE sequences -> 0")
+        developer_debug_messages.append("terminal strip: PE sequences -> 0")
+        developer_debug_messages.append("terminal strip: planned TERMINAL blocks -> 0")
+        developer_debug_messages.append("terminal strip: planned PE blocks -> 0")
+        developer_debug_messages.append("terminal strip: planned COVER blocks -> 0")
+        developer_debug_messages.append("terminal strip: first 10 sequence previews -> none")
+        developer_debug_messages.append("terminal strip: first 10 strip blocks preview -> none")
+        developer_debug_messages.append("terminal strip: first 10 rendered rows preview -> none")
+        developer_debug_messages.append("terminal strip: boundary summary -> none")
+        developer_debug_messages.append("terminal strip: first 10 GS transitions -> none")
+        developer_debug_messages.append("terminal strip: first 10 cover placement reasons -> none")
+        developer_debug_messages.append("terminal strip: first 10 PE boundary events -> none")
+        developer_debug_messages.append("terminal strip: validation warnings -> none")
+        return pd.DataFrame(columns=["Space", "Text"]), developer_debug_messages, pd.DataFrame()
+
+    strip_input_df = terminal_df.reset_index(drop=True).copy()
+    strip_input_df["_strip_source_row_index"] = strip_input_df.index
+    strip_sequences = _build_terminal_strip_sequences(strip_input_df)
+    strip_blocks = _build_terminal_strip_blocks(strip_input_df)
+    terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
+    terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
+
+    non_pe_sequence_count = sum(1 for sequence in strip_sequences if sequence["sequence_kind"] == "NON_PE")
+    pe_sequence_count = sum(1 for sequence in strip_sequences if sequence["sequence_kind"] == "PE")
+    terminal_block_count = sum(1 for block in strip_blocks if block["block_type"] == "TERMINAL")
+    pe_block_count = sum(1 for block in strip_blocks if block["block_type"] == "PE")
+    cover_block_count = sum(1 for block in strip_blocks if block["block_type"] == "COVER")
+    block_summaries = _summarize_terminal_strip_blocks(strip_blocks)
+    boundary_summaries = _summarize_terminal_strip_boundaries(strip_blocks)
+    validation_warnings = _validate_terminal_strip_blocks(strip_blocks)
+    strip_sequence_previews = [
+        {
+            "group_sorting": sequence["group_sorting"],
+            "sequence_kind": sequence["sequence_kind"],
+            "row_count": len(sequence.get("rows", [])),
+            "source_names": sequence.get("source_names", [])[:6],
+        }
+        for sequence in strip_sequences[:10]
+    ]
+    strip_blocks_preview = block_summaries[:15]
+    gs_transitions: list[str] = []
+    for block_index, block in enumerate(strip_blocks[1:], start=1):
+        previous_gs = _stringify_cell(strip_blocks[block_index - 1].get("group_sorting", ""))
+        current_gs = _stringify_cell(block.get("group_sorting", ""))
+        if current_gs != previous_gs:
+            gs_transitions.append(f"idx={block_index} {previous_gs or '-'} -> {current_gs or '-'}")
+    cover_placement_reasons = [
+        "{reason} gs={gs} prev={prev} next={next}".format(
+            reason=_stringify_cell(block.get("boundary_reason", "")) or "-",
+            gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+            prev=_stringify_cell(block.get("previous_block_type", "")) or "-",
+            next=_stringify_cell(block.get("next_block_type", "")) or "-",
+        )
+        for block in strip_blocks
+        if _stringify_cell(block.get("block_type", "")) == "COVER"
+    ]
+    pe_boundary_events = [
+        summary
+        for summary in boundary_summaries
+        if "before_pe_group" in summary or "after_pe_group" in summary
+    ]
     strip_preview_rows = terminal_strip_df.head(10).to_dict(orient="records")
-    developer_debug_messages.append(f"terminal strip: generated terminal rows -> {terminal_row_count}")
-    developer_debug_messages.append(f"terminal strip: generated cover rows -> {cover_row_count}")
-    developer_debug_messages.append(f"terminal strip: skipped duplicate covers -> {skipped_duplicate_covers}")
+    developer_debug_messages.append(f"terminal strip: NON_PE sequences -> {non_pe_sequence_count}")
+    developer_debug_messages.append(f"terminal strip: PE sequences -> {pe_sequence_count}")
+    developer_debug_messages.append(f"terminal strip: planned TERMINAL blocks -> {terminal_block_count}")
+    developer_debug_messages.append(f"terminal strip: planned PE blocks -> {pe_block_count}")
+    developer_debug_messages.append(f"terminal strip: planned COVER blocks -> {cover_block_count}")
     developer_debug_messages.append(
-        "terminal strip: first 10 rows preview -> "
+        "terminal strip: first 10 sequence previews -> "
+        + (" | ".join(str(sequence) for sequence in strip_sequence_previews) if strip_sequence_previews else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 15 planned strip blocks preview -> "
+        + (" | ".join(str(block) for block in strip_blocks_preview) if strip_blocks_preview else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: boundary summary -> "
+        + (" | ".join(boundary_summaries[:10]) if boundary_summaries else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 GS transitions -> "
+        + (" | ".join(gs_transitions[:10]) if gs_transitions else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 cover placement reasons -> "
+        + (" | ".join(cover_placement_reasons[:10]) if cover_placement_reasons else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 PE boundary events -> "
+        + (" | ".join(pe_boundary_events[:10]) if pe_boundary_events else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 rendered rows preview -> "
         + (" | ".join(str(row) for row in strip_preview_rows) if strip_preview_rows else "none")
     )
-    return terminal_strip_df, developer_debug_messages
+    developer_debug_messages.extend(
+        validation_warnings if validation_warnings else ["terminal strip: validation warnings -> none"]
+    )
+    return terminal_strip_df, developer_debug_messages, terminal_strip_debug_df
 
 
 def _extract_terminal_cover_subgroup(name: Any) -> str:
@@ -1140,9 +1565,11 @@ def build_placeholder_results(
                         "terminal tmb: first 5 generated rows preview -> "
                         + (" | ".join(str(row) for row in terminal_tmb_preview_rows) if terminal_tmb_preview_rows else "none")
                     )
-                    terminal_strip_df, terminal_strip_debug = _build_terminal_strip_sheet_with_debug(terminal_df)
+                    terminal_strip_df, terminal_strip_debug, terminal_strip_debug_df = _build_terminal_strip_sheet_with_debug(terminal_df)
                     sheets["Terminal Strip"] = terminal_strip_df
                     developer_debug_messages.extend(terminal_strip_debug)
+                    if terminal_strip_debug_df is not None and not terminal_strip_debug_df.empty:
+                        sheets["Terminal Strip Debug"] = terminal_strip_debug_df
                 else:
                     sheets[sheet_name] = pd.DataFrame(
                         [
