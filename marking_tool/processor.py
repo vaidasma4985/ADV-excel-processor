@@ -477,6 +477,16 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     for _, name_group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
         group_rows = name_group_df.reset_index(drop=True)
         terminal_name = _stringify_cell(group_rows["Name"].iloc[0]) if not group_rows.empty else ""
+        group_sorting_value = (
+            _stringify_cell(group_rows["Group Sorting"].iloc[0])
+            if "Group Sorting" in group_rows.columns and not group_rows.empty
+            else ""
+        )
+        terminal_type = (
+            _stringify_cell(group_rows["Terminal Type"].iloc[0])
+            if "Terminal Type" in group_rows.columns and not group_rows.empty
+            else ""
+        )
         conns_values = (
             group_rows["Conns."].apply(_stringify_cell).tolist()
             if "Conns." in group_rows.columns
@@ -489,6 +499,8 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
             tmb_rows.append(
                 {
                     "terminal_name": terminal_name,
+                    "group_sorting": group_sorting_value,
+                    "terminal_type": terminal_type,
                     "chunk": chunk,
                     "end_row_index": source_indices[min(start_index + len(chunk) - 1, len(source_indices) - 1)],
                 }
@@ -597,7 +609,7 @@ def _build_terminal_strip_sheet_with_debug(
     strip_rows: list[dict[str, Any]] = []
     terminal_row_count = 0
 
-    for terminal_block in terminal_blocks:
+    for block_index, terminal_block in enumerate(terminal_blocks):
         terminal_count_in_block = len(terminal_block["chunk"])
         strip_rows.append(
             {
@@ -606,8 +618,25 @@ def _build_terminal_strip_sheet_with_debug(
             }
         )
         terminal_row_count += 1
-        if terminal_block["end_row_index"] in cover_insert_positions:
+        next_terminal_block = terminal_blocks[block_index + 1] if block_index + 1 < len(terminal_blocks) else None
+        is_pe_block = _stringify_cell(terminal_block.get("terminal_type", "")) == "PE"
+        is_last_block_in_same_pe_group = is_pe_block and (
+            next_terminal_block is None
+            or _stringify_cell(next_terminal_block.get("terminal_type", "")) != "PE"
+            or _stringify_cell(next_terminal_block.get("group_sorting", "")) != _stringify_cell(terminal_block.get("group_sorting", ""))
+        )
+        should_add_cover = terminal_block["end_row_index"] in cover_insert_positions or (
+            is_last_block_in_same_pe_group and next_terminal_block is not None
+        )
+        if should_add_cover and (not strip_rows or strip_rows[-1] != {"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""}):
             strip_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""})
+            if terminal_block["end_row_index"] not in cover_insert_positions:
+                cover_row_count += 1
+
+    if strip_rows and strip_rows[-1] == {"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""}:
+        strip_rows.pop()
+        cover_row_count = max(cover_row_count - 1, 0)
+        developer_debug_messages.append("terminal strip: removed trailing final cover row")
 
     terminal_strip_df = pd.DataFrame(strip_rows, columns=strip_columns)
     strip_preview_rows = terminal_strip_df.head(10).to_dict(orient="records")
@@ -654,8 +683,14 @@ def _select_terminal_cover_targets(gs_df: pd.DataFrame) -> set[int]:
     if gs_df.empty or "Group Sorting" not in gs_df.columns:
         return set()
 
+    cover_source_df = gs_df
+    if "Terminal Type" in gs_df.columns:
+        non_pe_df = gs_df.loc[~gs_df["Terminal Type"].apply(_stringify_cell).eq("PE")]
+        if not non_pe_df.empty:
+            cover_source_df = non_pe_df
+
     group_sorting_value = _stringify_cell(gs_df["Group Sorting"].iloc[0])
-    subgroup_dfs = _build_terminal_cover_subgroups(gs_df)
+    subgroup_dfs = _build_terminal_cover_subgroups(cover_source_df)
     target_positions: set[int] = set()
 
     for subgroup_df in subgroup_dfs:
@@ -676,7 +711,7 @@ def _select_terminal_cover_targets(gs_df: pd.DataFrame) -> set[int]:
         target_positions.add(target_position)
 
     if group_sorting_value not in {"1010", "1110", "1030"} and not target_positions:
-        target_positions.add(gs_df.index[-1])
+        target_positions.add(cover_source_df.index[-1])
 
     return target_positions
 
@@ -684,7 +719,7 @@ def _select_terminal_cover_targets(gs_df: pd.DataFrame) -> set[int]:
 def _compute_terminal_cover_insert_positions(
     terminal_df: pd.DataFrame,
 ) -> tuple[set[int], int, int]:
-    """Compute flat row positions that should receive one inserted cover row after them."""
+    """Compute terminal-block end positions that should receive one inserted cover row after them."""
     if terminal_df.empty or "Group Sorting" not in terminal_df.columns or "Conns." not in terminal_df.columns:
         return set(), 0, 0
 
@@ -699,23 +734,21 @@ def _compute_terminal_cover_insert_positions(
             continue
 
         target_positions = _select_terminal_cover_targets(gs_df)
-        gs_rows = list(gs_df.iterrows())
+        if not target_positions:
+            continue
 
-        for local_index, (row_index, row) in enumerate(gs_rows):
-            if row_index not in target_positions:
+        gs_blocks = _build_terminal_blocks(gs_df)
+
+        for terminal_block in gs_blocks:
+            block_end_row_index = int(terminal_block["end_row_index"])
+            if block_end_row_index not in target_positions:
                 continue
 
-            current_conns_value = _stringify_cell(row.get("Conns.", ""))
-            next_conns_value = (
-                _stringify_cell(gs_rows[local_index + 1][1].get("Conns.", ""))
-                if local_index + 1 < len(gs_rows)
-                else None
-            )
-            if current_conns_value == "" or next_conns_value == "":
+            if block_end_row_index in insert_positions:
                 skipped_duplicate_covers += 1
                 continue
 
-            insert_positions.add(row_index)
+            insert_positions.add(block_end_row_index)
             inserted_cover_rows += 1
 
     return insert_positions, inserted_cover_rows, skipped_duplicate_covers
