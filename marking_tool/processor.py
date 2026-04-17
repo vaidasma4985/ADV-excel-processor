@@ -590,6 +590,21 @@ def _build_terminal_tmb_sheet_with_debug(
     return terminal_tmb_df, developer_debug_messages
 
 
+def _build_terminal_tmb_count_map(terminal_df: pd.DataFrame) -> dict[tuple[str, str], int]:
+    """Build a TMB terminal-unit count map keyed by (Group Sorting, Terminal Name)."""
+    if terminal_df.empty:
+        return {}
+
+    tmb_count_map: dict[tuple[str, str], int] = {}
+    for terminal_block in _build_terminal_blocks(terminal_df):
+        group_sorting_value = _stringify_cell(terminal_block.get("group_sorting", ""))
+        terminal_name = _stringify_cell(terminal_block.get("terminal_name", ""))
+        key = (group_sorting_value, terminal_name)
+        tmb_count_map[key] = tmb_count_map.get(key, 0) + 1
+
+    return tmb_count_map
+
+
 def _build_terminal_strip_sequences(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build ordered strip sequences from flat terminal rows without TMB chunking."""
     if terminal_df.empty or "Group Sorting" not in terminal_df.columns:
@@ -636,7 +651,10 @@ def _build_terminal_strip_sequences(terminal_df: pd.DataFrame) -> list[dict[str,
     return strip_sequences
 
 
-def _build_terminal_strip_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
+def _build_terminal_strip_blocks(
+    terminal_df: pd.DataFrame,
+    tmb_count_map: dict[tuple[str, str], int],
+) -> list[dict[str, Any]]:
     """Plan Terminal Strip blocks directly from the prepared flat terminal rows."""
     if terminal_df.empty or "Group Sorting" not in terminal_df.columns or "Name" not in terminal_df.columns:
         return []
@@ -664,6 +682,9 @@ def _build_terminal_strip_blocks(terminal_df: pd.DataFrame) -> list[dict[str, An
                 "inserted_for": inserted_for,
                 "previous_block_type": previous_block_type,
                 "next_block_type": "",
+                "size_source": "STATIC_COVER",
+                "tmb_terminal_count": 0,
+                "planner_chunk_size": 0,
             }
         )
 
@@ -676,29 +697,33 @@ def _build_terminal_strip_blocks(terminal_df: pd.DataFrame) -> list[dict[str, An
             return
 
         if sequence_kind == "PE":
-            chunk_count = (len(sequence_rows) + 2) // 3
-            for chunk_index, start_index in enumerate(range(0, len(sequence_rows), 3)):
-                chunk_records = sequence_rows[start_index:start_index + 3]
-                strip_blocks.append(
-                    {
-                        "group_sorting": group_sorting_value,
-                        "block_type": "PE",
-                        "text": "PE",
-                        "space": round(len(chunk_records) * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
-                        "source_rows": [int(record["_strip_source_row_index"]) for record in chunk_records],
-                        "source_names": [_stringify_cell(record.get("Name", "")) for record in chunk_records],
-                        "chunk_size": len(chunk_records),
-                        "sequence_kind": "PE",
-                        "sequence_index": sequence_index,
-                        "chunk_index": chunk_index,
-                        "chunk_count": chunk_count,
-                        "subgroup_key": "",
-                        "boundary_reason": "",
-                        "inserted_for": "",
-                        "previous_block_type": "",
-                        "next_block_type": "",
-                    }
-                )
+            planner_chunk_count = (len(sequence_rows) + 2) // 3
+            tmb_terminal_count = int(tmb_count_map.get((group_sorting_value, "PE"), 0))
+            resolved_terminal_count = tmb_terminal_count if tmb_terminal_count > 0 else planner_chunk_count
+            strip_blocks.append(
+                {
+                    "group_sorting": group_sorting_value,
+                    "block_type": "PE",
+                    "text": "PE",
+                    "space": round(resolved_terminal_count * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
+                    "source_rows": [int(record["_strip_source_row_index"]) for record in sequence_rows],
+                    "source_names": [_stringify_cell(record.get("Name", "")) for record in sequence_rows],
+                    "chunk_size": resolved_terminal_count,
+                    "sequence_kind": "PE",
+                    "sequence_index": sequence_index,
+                    "chunk_index": 0,
+                    "chunk_count": 1,
+                    "subgroup_key": "",
+                    "boundary_reason": "",
+                    "inserted_for": "",
+                    "previous_block_type": "",
+                    "next_block_type": "",
+                    "size_source": "TMB" if tmb_terminal_count > 0 else "FALLBACK",
+                    "tmb_terminal_count": tmb_terminal_count if tmb_terminal_count > 0 else 0,
+                    "planner_chunk_size": planner_chunk_count,
+                    "terminal_count": resolved_terminal_count,
+                }
+            )
             return
 
         name_runs: list[dict[str, Any]] = []
@@ -752,29 +777,34 @@ def _build_terminal_strip_blocks(terminal_df: pd.DataFrame) -> list[dict[str, An
 
             for name_run_index, name_run in enumerate(subgroup_name_runs):
                 name_run_rows = list(name_run.get("rows", []))
-                chunk_count = (len(name_run_rows) + 2) // 3
-                for chunk_index, start_index in enumerate(range(0, len(name_run_rows), 3)):
-                    chunk_records = name_run_rows[start_index:start_index + 3]
-                    strip_blocks.append(
-                        {
-                            "group_sorting": group_sorting_value,
-                            "block_type": "TERMINAL",
-                            "text": _stringify_cell(name_run.get("name", "")),
-                            "space": round(len(chunk_records) * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
-                            "source_rows": [int(record["_strip_source_row_index"]) for record in chunk_records],
-                            "source_names": [_stringify_cell(record.get("Name", "")) for record in chunk_records],
-                            "chunk_size": len(chunk_records),
-                            "sequence_kind": "NON_PE",
-                            "sequence_index": sequence_index,
-                            "chunk_index": chunk_index,
-                            "chunk_count": chunk_count,
-                            "subgroup_key": subgroup_key,
-                            "boundary_reason": "",
-                            "inserted_for": "",
-                            "previous_block_type": "",
-                            "next_block_type": "",
-                        }
-                    )
+                terminal_name = _stringify_cell(name_run.get("name", ""))
+                planner_chunk_size = (len(name_run_rows) + 2) // 3
+                tmb_terminal_count = int(tmb_count_map.get((group_sorting_value, terminal_name), 0))
+                resolved_terminal_count = tmb_terminal_count if tmb_terminal_count > 0 else planner_chunk_size
+                strip_blocks.append(
+                    {
+                        "group_sorting": group_sorting_value,
+                        "block_type": "TERMINAL",
+                        "text": terminal_name,
+                        "space": round(resolved_terminal_count * _TERMINAL_STRIP_TERMINAL_SPACE, 2),
+                        "source_rows": [int(record["_strip_source_row_index"]) for record in name_run_rows],
+                        "source_names": [_stringify_cell(record.get("Name", "")) for record in name_run_rows],
+                        "chunk_size": resolved_terminal_count,
+                        "sequence_kind": "NON_PE",
+                        "sequence_index": sequence_index,
+                        "chunk_index": 0,
+                        "chunk_count": 1,
+                        "subgroup_key": subgroup_key,
+                        "boundary_reason": "",
+                        "inserted_for": "",
+                        "previous_block_type": "",
+                        "next_block_type": "",
+                        "size_source": "TMB" if tmb_terminal_count > 0 else "FALLBACK_CHUNK",
+                        "tmb_terminal_count": tmb_terminal_count,
+                        "planner_chunk_size": planner_chunk_size,
+                        "terminal_count": resolved_terminal_count,
+                    }
+                )
 
                 if name_run_index == cover_after_run_index:
                     _append_cover_block(group_sorting_value, cover_reason, "non_pe_boundary")
@@ -881,8 +911,12 @@ def _validate_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> list[
                 warnings.append(f"terminal strip validate: COVER without boundary_reason at index {block_index}")
             continue
 
-        chunk_size = int(block.get("chunk_size", 0))
-        expected_space = round(chunk_size * _TERMINAL_STRIP_TERMINAL_SPACE, 2)
+        expected_terminal_count = (
+            int(block.get("tmb_terminal_count", 0))
+            if _stringify_cell(block.get("size_source", "")) == "TMB" and int(block.get("tmb_terminal_count", 0)) > 0
+            else int(block.get("planner_chunk_size", block.get("chunk_size", 0)))
+        )
+        expected_space = round(expected_terminal_count * _TERMINAL_STRIP_TERMINAL_SPACE, 2)
         actual_space = block.get("space")
         if actual_space != expected_space:
             warnings.append(
@@ -917,6 +951,9 @@ def _build_terminal_strip_debug_sheet(strip_blocks: list[dict[str, Any]]) -> pd.
         "Subgroup Key",
         "Boundary Reason",
         "Chunk Size",
+        "Size Source",
+        "TMB Terminal Count",
+        "Planner Chunk Size",
         "Source Rows Preview",
         "Source Names Preview",
     ]
@@ -934,6 +971,9 @@ def _build_terminal_strip_debug_sheet(strip_blocks: list[dict[str, Any]]) -> pd.
             "Subgroup Key": _stringify_cell(block.get("subgroup_key", "")),
             "Boundary Reason": _stringify_cell(block.get("boundary_reason", "")),
             "Chunk Size": block.get("chunk_size", 0),
+            "Size Source": _stringify_cell(block.get("size_source", "")),
+            "TMB Terminal Count": block.get("tmb_terminal_count", 0),
+            "Planner Chunk Size": block.get("planner_chunk_size", 0),
             "Source Rows Preview": ", ".join(str(value) for value in block.get("source_rows", [])[:6]),
             "Source Names Preview": ", ".join(block.get("source_names", [])[:6]),
         }
@@ -986,13 +1026,21 @@ def _build_terminal_strip_sheet_with_debug(
         developer_debug_messages.append("terminal strip: first 10 GS transitions -> none")
         developer_debug_messages.append("terminal strip: first 10 cover placement reasons -> none")
         developer_debug_messages.append("terminal strip: first 10 PE boundary events -> none")
+        developer_debug_messages.append("terminal strip: blocks sized from TMB -> 0")
+        developer_debug_messages.append("terminal strip: blocks sized from fallback -> 0")
+        developer_debug_messages.append("terminal strip: first 15 size resolution previews -> none")
+        developer_debug_messages.append("terminal strip: first 10 missing TMB size keys -> none")
+        developer_debug_messages.append("terminal strip: PE groups planned as single blocks -> 0")
+        developer_debug_messages.append("terminal strip: first 10 PE block previews -> none")
+        developer_debug_messages.append("terminal strip: first 10 missing PE TMB size keys -> none")
         developer_debug_messages.append("terminal strip: validation warnings -> none")
         return pd.DataFrame(columns=["Space", "Text"]), developer_debug_messages, pd.DataFrame()
 
     strip_input_df = terminal_df.reset_index(drop=True).copy()
     strip_input_df["_strip_source_row_index"] = strip_input_df.index
     strip_sequences = _build_terminal_strip_sequences(strip_input_df)
-    strip_blocks = _build_terminal_strip_blocks(strip_input_df)
+    tmb_count_map = _build_terminal_tmb_count_map(terminal_df)
+    strip_blocks = _build_terminal_strip_blocks(strip_input_df, tmb_count_map)
     terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
     terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
 
@@ -1001,9 +1049,50 @@ def _build_terminal_strip_sheet_with_debug(
     terminal_block_count = sum(1 for block in strip_blocks if block["block_type"] == "TERMINAL")
     pe_block_count = sum(1 for block in strip_blocks if block["block_type"] == "PE")
     cover_block_count = sum(1 for block in strip_blocks if block["block_type"] == "COVER")
+    tmb_sized_block_count = sum(1 for block in strip_blocks if _stringify_cell(block.get("size_source", "")) == "TMB")
+    fallback_sized_block_count = sum(
+        1 for block in strip_blocks if _stringify_cell(block.get("size_source", "")) in {"FALLBACK_CHUNK", "FALLBACK"}
+    )
     block_summaries = _summarize_terminal_strip_blocks(strip_blocks)
     boundary_summaries = _summarize_terminal_strip_boundaries(strip_blocks)
     validation_warnings = _validate_terminal_strip_blocks(strip_blocks)
+    size_resolution_previews = [
+        "{type} gs={gs} text={text} source={size_source} tmb={tmb_count} planner={planner} space={space}".format(
+            type=_stringify_cell(block.get("block_type", "")) or "-",
+            gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+            text=_stringify_cell(block.get("text", "")) or '""',
+            size_source=_stringify_cell(block.get("size_source", "")) or "-",
+            tmb_count=block.get("tmb_terminal_count", 0),
+            planner=block.get("planner_chunk_size", 0),
+            space=block.get("space", ""),
+        )
+        for block in strip_blocks
+        if _stringify_cell(block.get("block_type", "")) in {"TERMINAL", "PE"}
+    ]
+    missing_tmb_size_keys = [
+        "{gs}:{text}".format(
+            gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+            text=_stringify_cell(block.get("text", "")) or "-",
+        )
+        for block in strip_blocks
+        if _stringify_cell(block.get("size_source", "")) in {"FALLBACK_CHUNK", "FALLBACK"}
+    ]
+    pe_block_previews = [
+        "gs={gs} source={source} terminals={terminal_count} planner={planner} space={space}".format(
+            gs=_stringify_cell(block.get("group_sorting", "")) or "-",
+            source=_stringify_cell(block.get("size_source", "")) or "-",
+            terminal_count=block.get("terminal_count", block.get("chunk_size", 0)),
+            planner=block.get("planner_chunk_size", 0),
+            space=block.get("space", ""),
+        )
+        for block in strip_blocks
+        if _stringify_cell(block.get("block_type", "")) == "PE"
+    ]
+    missing_pe_tmb_size_keys = [
+        "{gs}:PE".format(gs=_stringify_cell(block.get("group_sorting", "")) or "-")
+        for block in strip_blocks
+        if _stringify_cell(block.get("block_type", "")) == "PE" and _stringify_cell(block.get("size_source", "")) != "TMB"
+    ]
     strip_sequence_previews = [
         {
             "group_sorting": sequence["group_sorting"],
@@ -1064,6 +1153,25 @@ def _build_terminal_strip_sheet_with_debug(
     developer_debug_messages.append(
         "terminal strip: first 10 PE boundary events -> "
         + (" | ".join(pe_boundary_events[:10]) if pe_boundary_events else "none")
+    )
+    developer_debug_messages.append(f"terminal strip: blocks sized from TMB -> {tmb_sized_block_count}")
+    developer_debug_messages.append(f"terminal strip: blocks sized from fallback -> {fallback_sized_block_count}")
+    developer_debug_messages.append(
+        "terminal strip: first 15 size resolution previews -> "
+        + (" | ".join(size_resolution_previews[:15]) if size_resolution_previews else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 missing TMB size keys -> "
+        + (" | ".join(missing_tmb_size_keys[:10]) if missing_tmb_size_keys else "none")
+    )
+    developer_debug_messages.append(f"terminal strip: PE groups planned as single blocks -> {pe_block_count}")
+    developer_debug_messages.append(
+        "terminal strip: first 10 PE block previews -> "
+        + (" | ".join(pe_block_previews[:10]) if pe_block_previews else "none")
+    )
+    developer_debug_messages.append(
+        "terminal strip: first 10 missing PE TMB size keys -> "
+        + (" | ".join(missing_pe_tmb_size_keys[:10]) if missing_pe_tmb_size_keys else "none")
     )
     developer_debug_messages.append(
         "terminal strip: first 10 rendered rows preview -> "
