@@ -20,6 +20,7 @@ _TERMINAL_EXPECTED_COLUMNS = {
     "conns": "Conns.",
     "group sorting": "Group Sorting",
     "type": "TYPE",
+    "visible": "Visible",
 }
 _TERMINAL_OUTPUT_COLUMNS = [*_TERMINAL_EXPECTED_COLUMNS.values(), "Terminal Type"]
 
@@ -1423,7 +1424,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + (", ".join(missing_columns) if missing_columns else "none")
     )
 
-    for column_name in ("Name", "Conns.", "Group Sorting", "TYPE"):
+    for column_name in ("Name", "Conns.", "Group Sorting", "TYPE", "Visible"):
         if column_name in terminal_df.columns:
             terminal_df[column_name] = terminal_df[column_name].apply(_stringify_cell)
 
@@ -1452,6 +1453,13 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         return terminal_df.reset_index(drop=True), user_info_messages, developer_debug_messages
 
     raw_xtb_matches = int(terminal_df["Name"].str.startswith("-XTB", na=False).sum())
+    visible_no_mask = (
+        terminal_df["Visible"].str.casefold().eq("no")
+        if "Visible" in terminal_df.columns
+        else pd.Series(False, index=terminal_df.index)
+    )
+    removed_visible_no = int(visible_no_mask.sum())
+    terminal_df = terminal_df.loc[~visible_no_mask].copy()
     non_empty_name_mask = terminal_df["Name"] != ""
     rows_with_non_empty_name = int(non_empty_name_mask.sum())
     terminal_df = terminal_df[non_empty_name_mask].copy()
@@ -1518,9 +1526,10 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     user_info_messages.append(f"terminal groups reordered by terminal type: {terminal_df['Name'].nunique()}")
     user_info_messages.append(
         "removed rows summary: "
-        f"{removed_non_numeric_group_sorting + removed_group_sorting_7210 + removed_xtb + removed_xpe}"
+        f"{removed_visible_no + removed_non_numeric_group_sorting + removed_group_sorting_7210 + removed_xtb + removed_xpe}"
     )
 
+    developer_debug_messages.append(f"terminal parser: removed {removed_visible_no} rows due to Visible == No")
     developer_debug_messages.append(f"terminal parser: rows with non-empty Name -> {rows_with_non_empty_name}")
     developer_debug_messages.append(
         "terminal parser: rows with numeric Group Sorting after non-empty Name filter -> "
