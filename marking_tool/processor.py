@@ -27,11 +27,25 @@ _TERMINAL_OUTPUT_COLUMNS = [*_TERMINAL_EXPECTED_COLUMNS.values(), "Terminal Type
 _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
-_TERMINAL_MIDDLE_CONN_VALUES = {"230VL", "24VDC", "24VDC1", "24VDC2"}
-_TERMINAL_BOTTOM_CONN_VALUES = {"230VN", "0VDC", "0V"}
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
 _TERMINAL_STRIP_TERMINAL_SPACE = 5.27
 _TERMINAL_STRIP_COVER_SPACE = 0.8
+_TERMINAL_CONN_POSITION_MAP = {
+    "RX-O": ("TOP", 1),
+    "RX-I": ("TOP", 1),
+    "D1/+": ("TOP", 1),
+    "230VL": ("MIDDLE", 2),
+    "24VDC": ("MIDDLE", 2),
+    "24VDC1": ("MIDDLE", 2),
+    "24VDC2": ("MIDDLE", 2),
+    "TX-I": ("MIDDLE", 2),
+    "TX-O": ("MIDDLE", 2),
+    "D0/-": ("MIDDLE", 2),
+    "0VDC": ("BOTTOM", 3),
+    "230VN": ("BOTTOM", 3),
+    "GND": ("BOTTOM", 3),
+    "0V": ("BOTTOM", 3),
+}
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -98,16 +112,31 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
     return (10**9, 10**9, 10**9, text)
 
 
+def _get_terminal_conn_position(value: Any) -> tuple[str, int, str]:
+    """Return deterministic connection placement derived from Supporting Data mapping."""
+    text = _stringify_cell(value)
+    if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
+        return ("TOP", 1, text)
+    floor, index = _TERMINAL_CONN_POSITION_MAP.get(text, ("TOP_OTHER", 1))
+    return floor, index, text
+
+
 def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
     """Build a stable base sort for later Name-local connection reordering."""
     text = _stringify_cell(value)
-    if re.fullmatch(r"\d+", text):
+    if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
         return (0, int(text), text)
-    if text in _TERMINAL_MIDDLE_CONN_VALUES:
-        return (1, 10**9, text)
-    if text in _TERMINAL_BOTTOM_CONN_VALUES:
+    if text == "":
+        return (2, 10**9, text)
+
+    floor, _, normalized_value = _get_terminal_conn_position(text)
+    if floor in {"TOP", "TOP_OTHER"}:
+        return (1, 10**9, normalized_value)
+    if floor == "MIDDLE":
+        return (3, 10**9, normalized_value)
+    if floor == "BOTTOM":
         return (4, 10**9, text)
-    return (2, 10**9, text)
+    return (1, 10**9, normalized_value)
 
 
 def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
@@ -131,14 +160,16 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         conns_value = _stringify_cell(row.get("Conns.", ""))
         if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value):
             numeric_rows.append(row)
-        elif conns_value in _TERMINAL_MIDDLE_CONN_VALUES:
-            middle_rows.append(row)
         elif conns_value == "":
             blank_rows.append(row)
-        elif conns_value in _TERMINAL_BOTTOM_CONN_VALUES:
-            bottom_rows.append(row)
         else:
-            top_like_rows.append(row)
+            floor, _, _ = _get_terminal_conn_position(conns_value)
+            if floor == "MIDDLE":
+                middle_rows.append(row)
+            elif floor == "BOTTOM":
+                bottom_rows.append(row)
+            else:
+                top_like_rows.append(row)
 
     numeric_rows = sorted(
         numeric_rows,
@@ -1565,6 +1596,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + str(detection_stats.get("gs_4010_fallback_groups", 0))
     )
     developer_debug_messages.append("terminal parser: applied GS/Name/Conns sorting")
+    developer_debug_messages.append("terminal reorder: applied Supporting Data conn placement mapping")
     developer_debug_messages.append("terminal reorder: applied Terminal Type based Conns ordering")
     developer_debug_messages.append("terminal reorder: applied SPECIAL_GS_7030 flat sorting mode")
     developer_debug_messages.append("terminal reorder: applied NORMAL middle-after-first-signal rule")
