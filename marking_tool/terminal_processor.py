@@ -1872,6 +1872,34 @@ def _write_terminal_markings_sheet(
                 cell.value = str(cell.value)
 
 
+def _write_component_strip_sheet(
+    writer: Any,
+    sheet_name: str,
+    fuse_strip_df: pd.DataFrame,
+    relay_strip_df: pd.DataFrame,
+) -> None:
+    """Write the Component Strip sheet with fuse and relay strips side-by-side."""
+    fuse_strip_export_df = fuse_strip_df.copy()
+    relay_strip_export_df = relay_strip_df.copy()
+    for export_df in (fuse_strip_export_df, relay_strip_export_df):
+        for column_name in export_df.columns:
+            export_df[column_name] = export_df[column_name].apply(_make_excel_text_safe)
+
+    relay_start_col = len(fuse_strip_export_df.columns) + 2
+    worksheet = writer.book.create_sheet(title=sheet_name)
+    writer.sheets[sheet_name] = worksheet
+    fuse_strip_export_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0, startcol=0)
+    relay_strip_export_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0, startcol=relay_start_col)
+
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.number_format = "@"
+            if cell.value is None:
+                cell.value = ""
+            else:
+                cell.value = str(cell.value)
+
+
 def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
     """Write available placeholder sheets to one Excel workbook in memory."""
     output = BytesIO()
@@ -1887,6 +1915,19 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                     sheet_name,
                     sheet_content.get("terminal_tmb_df", pd.DataFrame()),
                     sheet_content.get("terminal_strip_df", pd.DataFrame()),
+                )
+                continue
+
+            if (
+                sheet_name == "Component Strip"
+                and isinstance(sheet_content, dict)
+                and sheet_content.get("layout") == "component_strip"
+            ):
+                _write_component_strip_sheet(
+                    writer,
+                    sheet_name,
+                    sheet_content.get("fuse_strip_df", pd.DataFrame(columns=["Space", "Text"])),
+                    sheet_content.get("relay_strip_df", pd.DataFrame(columns=["Space", "Text"])),
                 )
                 continue
 

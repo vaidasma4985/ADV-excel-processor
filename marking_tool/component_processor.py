@@ -42,7 +42,7 @@ _BUTTON_P_TYPES = {
     "XB4BVB3",
 }
 
-_COMPONENT_STRIP_COLUMNS = ["Space", "Text"]
+_COMPONENT_STRIP_SIDE_COLUMNS = ["Space", "Text"]
 _COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
 _FUSE_TYPE_TO_VOLTAGE_GROUP = {
     "2002-1611/1000-541": "24VDC",
@@ -54,6 +54,22 @@ _FUSE_A_SUFFIX_SORT_PATTERN = re.compile(
 )
 _FUSE_NAME_SORT_PATTERN = re.compile(r"^-F(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
 _F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
+_RELAY_STRIP_WIDTH = 6.2
+_RELAY_STRIP_CLIPFIX_SPACE = 5.15
+_RELAY_STRIP_GROUP_BY_TYPE = {
+    "RGZE1S48M": "2_pole",
+    "RXZE2S114M": "4_pole",
+    "RE17LCBM": "timed",
+    "RE22R1AMR": "timed",
+    "39.00.8.230.8240": "1_pole",
+}
+_RELAY_NAME_A_SUFFIX_SORT_PATTERN = re.compile(
+    r"^-K(?P<family>\d+)A(?P<suffix_number>\d*)(?P<suffix_text>.*)$",
+    re.IGNORECASE,
+)
+_RELAY_NAME_SORT_PATTERN = re.compile(r"^-K(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
+_TIMED_RELAY_PATTERN = re.compile(r"^-K192(?!A)(?P<suffix_number>\d+)\b", re.IGNORECASE)
+_TIMED_RELAY_A_PATTERN = re.compile(r"^-K192A(?P<suffix_number>\d+)\b", re.IGNORECASE)
 
 _PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description"]
 _RELAY_SECTION_LABEL = "Relays"
@@ -92,10 +108,13 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
     raw_df = raw_df.dropna(axis=0, how="all").reset_index(drop=True)
     developer_debug_messages.append(f"component parser: loaded {len(raw_df)} non-empty rows from first sheet")
 
-    normalized_columns = {
-        _normalize_column_name(column_name): column_name
-        for column_name in raw_df.columns
-    }
+    normalized_columns: dict[str, list[Any]] = {}
+    for column_name in raw_df.columns:
+        normalized_name = _normalize_column_name(column_name)
+        if not normalized_name:
+            continue
+        normalized_columns.setdefault(normalized_name, []).append(column_name)
+
     found_columns = [
         canonical_name
         for normalized_name, canonical_name in _COMPONENT_EXPECTED_COLUMNS.items()
@@ -125,13 +144,22 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
         + (", ".join(found_optional_columns) if found_optional_columns else "none")
     )
 
+    for normalized_name, canonical_name in {**_COMPONENT_EXPECTED_COLUMNS, **_COMPONENT_OPTIONAL_COLUMNS}.items():
+        matching_columns = normalized_columns.get(normalized_name, [])
+        if len(matching_columns) > 1:
+            ignored_columns = ", ".join(f"`{column_name}`" for column_name in matching_columns[1:])
+            developer_debug_messages.append(
+                f"component parser: multiple columns matched {canonical_name} -> "
+                f"using `{matching_columns[0]}`, ignoring {ignored_columns}"
+            )
+
     selected_columns = [
-        normalized_columns[normalized_name]
+        normalized_columns[normalized_name][0]
         for normalized_name in _COMPONENT_EXPECTED_COLUMNS
         if normalized_name in normalized_columns
     ]
     selected_columns.extend(
-        normalized_columns[normalized_name]
+        normalized_columns[normalized_name][0]
         for normalized_name in _COMPONENT_OPTIONAL_COLUMNS
         if normalized_name in normalized_columns
     )
@@ -139,7 +167,7 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
     component_df = raw_df.loc[:, selected_columns].copy()
     component_df = component_df.rename(
         columns={
-            normalized_columns[normalized_name]: canonical_name
+            normalized_columns[normalized_name][0]: canonical_name
             for normalized_name, canonical_name in column_aliases.items()
             if normalized_name in normalized_columns
         }
@@ -235,6 +263,109 @@ def _component_fuse_name_sort_key(name: Any) -> tuple[int, int, int, int, str, s
         suffix_text,
         normalized_name,
     )
+
+
+def _classify_component_strip_relay_group(type_value: Any) -> str:
+    """Classify relay strip rows by the original/base TYPE only."""
+    normalized_type = _normalize_component_type(type_value)
+    return _RELAY_STRIP_GROUP_BY_TYPE.get(normalized_type, "")
+
+
+def _component_relay_name_sort_key(name: Any) -> tuple[int, int, int, int, str, str]:
+    """Build a natural relay Name sort key where K*A* names follow normal K names."""
+    relay_name = _stringify_cell(name)
+    normalized_name = relay_name.casefold()
+
+    a_suffix_match = _RELAY_NAME_A_SUFFIX_SORT_PATTERN.match(relay_name)
+    if a_suffix_match:
+        suffix_number_text = _stringify_cell(a_suffix_match.group("suffix_number"))
+        return (
+            0,
+            int(a_suffix_match.group("family")),
+            1,
+            int(suffix_number_text) if suffix_number_text else 0,
+            _stringify_cell(a_suffix_match.group("suffix_text")).casefold(),
+            normalized_name,
+        )
+
+    match = _RELAY_NAME_SORT_PATTERN.match(relay_name)
+    if not match:
+        return (1, 10**9, 10**9, 10**9, "", normalized_name)
+
+    numeric_value = int(match.group("number"))
+    suffix_text = _stringify_cell(match.group("suffix")).casefold()
+    return (
+        0,
+        numeric_value // 10,
+        0 if not suffix_text else 2,
+        numeric_value % 10 if not suffix_text else 0,
+        suffix_text,
+        normalized_name,
+    )
+
+
+def _component_timed_relay_name_sort_key(name: Any) -> tuple[int, int, str]:
+    """Match the Component Correction Tool timed relay order: K192* first, then K192A*."""
+    relay_name = _stringify_cell(name)
+    normalized_name = relay_name.casefold()
+
+    timed_match = _TIMED_RELAY_PATTERN.match(relay_name)
+    if timed_match:
+        return (0, int(timed_match.group("suffix_number")), normalized_name)
+
+    timed_a_match = _TIMED_RELAY_A_PATTERN.match(relay_name)
+    if timed_a_match:
+        return (1, int(timed_a_match.group("suffix_number")), normalized_name)
+
+    return (2, 10**9, normalized_name)
+
+
+def _component_strip_relay_preview_names(relay_group_df: pd.DataFrame, limit: int = 3) -> list[str]:
+    """Return the first few relay Names detected for developer debugging."""
+    if relay_group_df.empty or "Name" not in relay_group_df.columns:
+        return []
+    preview_names = [
+        _stringify_cell(name_value)
+        for name_value in relay_group_df["Name"].tolist()
+        if _stringify_cell(name_value)
+    ]
+    return preview_names[:limit]
+
+
+def _validate_component_export_df(sheet_name: str, sheet_df: pd.DataFrame) -> None:
+    """Validate one flat Component export DataFrame for shared workbook compatibility."""
+    duplicate_columns = sheet_df.columns[sheet_df.columns.duplicated()].tolist()
+    if duplicate_columns:
+        duplicate_list = ", ".join(repr(column_name) for column_name in duplicate_columns)
+        raise ValueError(f"{sheet_name} contains duplicate export columns: {duplicate_list}")
+
+    invalid_cell_types = (pd.Series, pd.DataFrame, list, dict)
+    for row_number, row_values in enumerate(sheet_df.itertuples(index=False, name=None), start=2):
+        for column_name, cell_value in zip(sheet_df.columns, row_values):
+            if isinstance(cell_value, invalid_cell_types):
+                raise ValueError(
+                    f"{sheet_name} contains non-scalar value in column {column_name!r}, row {row_number}"
+                )
+
+
+def _validate_component_export_sheet(sheet_name: str, sheet_content: Any) -> None:
+    """Keep Component sheets compatible with the shared workbook exporter contract."""
+    if isinstance(sheet_content, pd.DataFrame):
+        _validate_component_export_df(sheet_name, sheet_content)
+        return
+
+    if isinstance(sheet_content, dict) and sheet_content.get("layout") == "component_strip":
+        _validate_component_export_df(
+            f"{sheet_name} (Fuse strip)",
+            sheet_content.get("fuse_strip_df", pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS)),
+        )
+        _validate_component_export_df(
+            f"{sheet_name} (Relay strip)",
+            sheet_content.get("relay_strip_df", pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS)),
+        )
+        return
+
+    raise TypeError(f"{sheet_name} must be a pandas DataFrame or approved layout object for export")
 
 
 def _coerce_excel_number(value: Any) -> int | float | None:
@@ -390,26 +521,16 @@ def _detect_fuse_voltage_group(type_value: Any) -> str | None:
     return _FUSE_TYPE_TO_VOLTAGE_GROUP.get(normalized_type)
 
 
-def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Build the Component Strip sheet for fuse marking/printing."""
-    empty_strip_df = pd.DataFrame(columns=_COMPONENT_STRIP_COLUMNS)
+def _build_component_fuse_strip_rows(working_df: pd.DataFrame) -> tuple[list[tuple[Any, Any]], dict[str, Any]]:
+    """Build left-side fuse strip rows while keeping the existing fuse logic intact."""
     strip_stats: dict[str, Any] = {
         "24vdc_rows": 0,
         "230vac_rows": 0,
         "f92_wide_name": "",
     }
-    if component_marking_sheet_df.empty:
-        return empty_strip_df, strip_stats
-
-    working_df = component_marking_sheet_df.copy().reset_index(drop=True)
-    for column_name in ("Name", "TYPE", "Group"):
-        if column_name not in working_df.columns:
-            working_df[column_name] = ""
-    working_df["_original_order"] = range(len(working_df))
-
     fuse_df = working_df.loc[working_df["Group"].map(_stringify_cell).eq("FUSES")].copy()
     if fuse_df.empty:
-        return empty_strip_df, strip_stats
+        return [], strip_stats
 
     sorted_group_dfs: dict[str, pd.DataFrame] = {}
     last_f92_marker: tuple[str, int] | None = None
@@ -453,7 +574,7 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
         sorted_group_dfs[voltage_group] = voltage_df
         strip_stats["24vdc_rows" if voltage_group == "24VDC" else "230vac_rows"] = len(voltage_df)
 
-    strip_rows: list[dict[str, Any]] = []
+    strip_rows: list[tuple[Any, Any]] = []
     for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
         voltage_df = sorted_group_dfs[voltage_group]
         if voltage_df.empty:
@@ -467,15 +588,203 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
         if voltage_df.empty:
             continue
 
-        strip_rows.append({"Space": 6.2, "Text": voltage_group})
+        strip_rows.append((6.2, voltage_group))
         for row_index, row in enumerate(voltage_df.to_dict("records")):
             row_name = _stringify_cell(row.get("Name"))
             row_space = 8.3 if last_f92_marker == (voltage_group, row_index) else 6.2
             if row_space == 8.3:
                 strip_stats["f92_wide_name"] = row_name
-            strip_rows.append({"Space": row_space, "Text": row_name})
+            strip_rows.append((row_space, row_name))
 
-    return pd.DataFrame(strip_rows, columns=_COMPONENT_STRIP_COLUMNS), strip_stats
+    return strip_rows, strip_stats
+
+
+def _build_component_relay_strip_rows(working_df: pd.DataFrame) -> tuple[list[tuple[Any, Any]], dict[str, Any]]:
+    """Build right-side relay strip rows in 2-pole, 4-pole, timed-relay order."""
+    strip_stats = {
+        "2pole_rows": 0,
+        "4pole_rows": 0,
+        "timed_rows": 0,
+        "1pole_rows": 0,
+        "clipfix_rows": 0,
+        "2pole_preview_names": [],
+        "4pole_preview_names": [],
+        "timed_preview_names": [],
+        "1pole_preview_names": [],
+    }
+
+    relay_df = working_df.copy()
+    relay_df["_relay_group"] = relay_df["TYPE"].map(_classify_component_strip_relay_group)
+
+    two_pole_df = relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy()
+    four_pole_df = relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy()
+    timed_df = relay_df.loc[relay_df["_relay_group"].eq("timed")].copy()
+    one_pole_df = relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy()
+
+    if not two_pole_df.empty:
+        relay_sort_keys = two_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
+        two_pole_df[[
+            "_relay_sort_group",
+            "_relay_sort_family",
+            "_relay_sort_variant_kind",
+            "_relay_sort_variant_number",
+            "_relay_sort_suffix",
+            "_relay_sort_text",
+        ]] = pd.DataFrame(relay_sort_keys, index=two_pole_df.index)
+        two_pole_df = two_pole_df.sort_values(
+            by=[
+                "_relay_sort_group",
+                "_relay_sort_family",
+                "_relay_sort_variant_kind",
+                "_relay_sort_variant_number",
+                "_relay_sort_suffix",
+                "_relay_sort_text",
+                "_original_order",
+            ],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    if not four_pole_df.empty:
+        relay_sort_keys = four_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
+        four_pole_df[[
+            "_relay_sort_group",
+            "_relay_sort_family",
+            "_relay_sort_variant_kind",
+            "_relay_sort_variant_number",
+            "_relay_sort_suffix",
+            "_relay_sort_text",
+        ]] = pd.DataFrame(relay_sort_keys, index=four_pole_df.index)
+        four_pole_df = four_pole_df.sort_values(
+            by=[
+                "_relay_sort_group",
+                "_relay_sort_family",
+                "_relay_sort_variant_kind",
+                "_relay_sort_variant_number",
+                "_relay_sort_suffix",
+                "_relay_sort_text",
+                "_original_order",
+            ],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    if not timed_df.empty:
+        timed_sort_keys = timed_df["Name"].map(_component_timed_relay_name_sort_key).tolist()
+        timed_df[["_timed_sort_group", "_timed_sort_number", "_timed_sort_text"]] = pd.DataFrame(
+            timed_sort_keys,
+            index=timed_df.index,
+        )
+        timed_df = timed_df.sort_values(
+            by=["_timed_sort_group", "_timed_sort_number", "_timed_sort_text", "_original_order"],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    if not one_pole_df.empty:
+        relay_sort_keys = one_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
+        one_pole_df[[
+            "_relay_sort_group",
+            "_relay_sort_family",
+            "_relay_sort_variant_kind",
+            "_relay_sort_variant_number",
+            "_relay_sort_suffix",
+            "_relay_sort_text",
+        ]] = pd.DataFrame(relay_sort_keys, index=one_pole_df.index)
+        one_pole_df = one_pole_df.sort_values(
+            by=[
+                "_relay_sort_group",
+                "_relay_sort_family",
+                "_relay_sort_variant_kind",
+                "_relay_sort_variant_number",
+                "_relay_sort_suffix",
+                "_relay_sort_text",
+                "_original_order",
+            ],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    strip_stats["2pole_rows"] = len(two_pole_df)
+    strip_stats["4pole_rows"] = len(four_pole_df)
+    strip_stats["timed_rows"] = len(timed_df)
+    strip_stats["1pole_rows"] = len(one_pole_df)
+    strip_stats["2pole_preview_names"] = _component_strip_relay_preview_names(two_pole_df)
+    strip_stats["4pole_preview_names"] = _component_strip_relay_preview_names(four_pole_df)
+    strip_stats["timed_preview_names"] = _component_strip_relay_preview_names(timed_df)
+    strip_stats["1pole_preview_names"] = _component_strip_relay_preview_names(one_pole_df)
+
+    relay_groups = [two_pole_df, four_pole_df, timed_df]
+    relay_strip_rows: list[tuple[Any, Any]] = []
+    for group_index, group_df in enumerate(relay_groups):
+        if group_df.empty:
+            continue
+        relay_strip_rows.extend(
+            (_RELAY_STRIP_WIDTH, _stringify_cell(row.get("Name")))
+            for row in group_df.to_dict("records")
+        )
+        if any(not next_group.empty for next_group in relay_groups[group_index + 1 :]):
+            relay_strip_rows.append((_RELAY_STRIP_CLIPFIX_SPACE, ""))
+            strip_stats["clipfix_rows"] += 1
+
+    return relay_strip_rows, strip_stats
+
+
+def _build_component_strip_side_df(strip_rows: list[tuple[Any, Any]]) -> pd.DataFrame:
+    """Convert strip rows into one side of the exported Component Strip layout."""
+    return pd.DataFrame(strip_rows, columns=_COMPONENT_STRIP_SIDE_COLUMNS)
+
+
+def _build_component_strip_layout(
+    fuse_strip_rows: list[tuple[Any, Any]],
+    relay_strip_rows: list[tuple[Any, Any]],
+) -> dict[str, Any]:
+    """Build a structured side-by-side Component Strip layout for the shared exporter."""
+    return {
+        "layout": "component_strip",
+        "fuse_strip_df": _build_component_strip_side_df(fuse_strip_rows),
+        "relay_strip_df": _build_component_strip_side_df(relay_strip_rows),
+    }
+
+
+def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the Component Strip layout with fuse strip on the left and relay strip on the right."""
+    empty_strip_layout = _build_component_strip_layout([], [])
+    strip_stats: dict[str, Any] = {
+        "24vdc_rows": 0,
+        "230vac_rows": 0,
+        "f92_wide_name": "",
+        "relay_2pole_rows": 0,
+        "relay_4pole_rows": 0,
+        "relay_timed_rows": 0,
+        "relay_1pole_rows": 0,
+        "relay_clipfix_rows": 0,
+        "relay_2pole_preview_names": [],
+        "relay_4pole_preview_names": [],
+        "relay_timed_preview_names": [],
+        "relay_1pole_preview_names": [],
+        "layout_rows": 0,
+    }
+    if component_marking_sheet_df.empty:
+        return empty_strip_layout, strip_stats
+
+    working_df = component_marking_sheet_df.copy().reset_index(drop=True)
+    for column_name in ("Name", "TYPE", "Group", "Category"):
+        if column_name not in working_df.columns:
+            working_df[column_name] = ""
+    working_df["_original_order"] = range(len(working_df))
+
+    fuse_strip_rows, fuse_stats = _build_component_fuse_strip_rows(working_df)
+    relay_strip_rows, relay_stats = _build_component_relay_strip_rows(working_df)
+    strip_stats.update(fuse_stats)
+    strip_stats["relay_2pole_rows"] = relay_stats["2pole_rows"]
+    strip_stats["relay_4pole_rows"] = relay_stats["4pole_rows"]
+    strip_stats["relay_timed_rows"] = relay_stats["timed_rows"]
+    strip_stats["relay_1pole_rows"] = relay_stats["1pole_rows"]
+    strip_stats["relay_clipfix_rows"] = relay_stats["clipfix_rows"]
+    strip_stats["relay_2pole_preview_names"] = relay_stats["2pole_preview_names"]
+    strip_stats["relay_4pole_preview_names"] = relay_stats["4pole_preview_names"]
+    strip_stats["relay_timed_preview_names"] = relay_stats["timed_preview_names"]
+    strip_stats["relay_1pole_preview_names"] = relay_stats["1pole_preview_names"]
+    strip_stats["layout_rows"] = max(len(fuse_strip_rows), len(relay_strip_rows))
+
+    return _build_component_strip_layout(fuse_strip_rows, relay_strip_rows), strip_stats
 
 
 def _build_component_production_df(
@@ -753,7 +1062,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
     component_marking_sheet_df = _build_component_marking_sheet_df(component_marking_df)
-    component_strip_df, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
+    component_strip_sheet, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
     production_workbook_bytes = _export_component_production_workbook(production_df)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
 
@@ -788,7 +1097,52 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     )
     developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
     developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
-    developer_debug_messages.append(f"component strip rows exported -> {len(component_strip_df)}")
+    developer_debug_messages.append(
+        "component strip relay groups -> "
+        f"2 Pole={component_strip_stats['relay_2pole_rows']}, "
+        f"4 Pole={component_strip_stats['relay_4pole_rows']}, "
+        f"Timed relays={component_strip_stats['relay_timed_rows']}, "
+        f"1 Pole={component_strip_stats['relay_1pole_rows']}"
+    )
+    developer_debug_messages.append(
+        f"component strip relay clipfix separators -> {component_strip_stats['relay_clipfix_rows']}"
+    )
+    developer_debug_messages.append("component strip timed relays ordered as K192* then K192A*")
+    developer_debug_messages.append(
+        "component strip relay preview 2_pole -> "
+        + (
+            ", ".join(component_strip_stats["relay_2pole_preview_names"])
+            if component_strip_stats["relay_2pole_preview_names"]
+            else "none"
+        )
+    )
+    developer_debug_messages.append(
+        "component strip relay preview 4_pole -> "
+        + (
+            ", ".join(component_strip_stats["relay_4pole_preview_names"])
+            if component_strip_stats["relay_4pole_preview_names"]
+            else "none"
+        )
+    )
+    developer_debug_messages.append(
+        "component strip relay preview timed -> "
+        + (
+            ", ".join(component_strip_stats["relay_timed_preview_names"])
+            if component_strip_stats["relay_timed_preview_names"]
+            else "none"
+        )
+    )
+    developer_debug_messages.append(
+        "component strip relay preview 1_pole -> "
+        + (
+            ", ".join(component_strip_stats["relay_1pole_preview_names"])
+            if component_strip_stats["relay_1pole_preview_names"]
+            else "none"
+        )
+    )
+    developer_debug_messages.append(
+        f"component strip rows exported -> {component_strip_stats['layout_rows']}"
+    )
     developer_debug_messages.append("component production workbook created")
     developer_debug_messages.append(f"production rows exported: {len(production_df)}")
     developer_debug_messages.append("production workbook uses filtered Component Marking rows only")
@@ -803,12 +1157,16 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         "production workbook uses filtered Component Marking rows only",
     ]
 
+    component_sheets = {
+        "Component Marking": component_marking_sheet_df,
+        "Component Strip": component_strip_sheet,
+        "Unused": unused_df,
+    }
+    for sheet_name, sheet_df in component_sheets.items():
+        _validate_component_export_sheet(sheet_name, sheet_df)
+
     return {
-        "sheets": {
-            "Component Marking": component_marking_sheet_df,
-            "Component Strip": component_strip_df,
-            "Unused": unused_df,
-        },
+        "sheets": component_sheets,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": developer_debug_messages,
         "debug_workbook": None,
