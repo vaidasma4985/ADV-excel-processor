@@ -35,10 +35,22 @@ _RELAY_2P_TYPES = {
     "RGZE1S48M",
 }
 
+_BUTTON_P_TYPES = {
+    "XB4BVM3",
+    "XB4BVM4",
+    "XB4BVB3",
+}
+
 _PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description"]
 _RELAY_SECTION_LABEL = "Relays"
 _FUSE_SECTION_LABEL = "Fuses"
+_BUTTON_SECTION_LABEL = "Buttons"
 _PRODUCTION_TECHNICAL_FLAG_COLUMN = "_IncludeInCalculation"
+_GROUPED_COMPONENT_SECTIONS = (
+    (_RELAY_SECTION_LABEL, {"RELAY_4P", "RELAY_2P"}, "relay_rows"),
+    (_FUSE_SECTION_LABEL, {"FUSE"}, "fuse_rows"),
+    (_BUTTON_SECTION_LABEL, {"BUTTON"}, "button_rows"),
+)
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -151,9 +163,20 @@ def _normalize_component_type(value: Any) -> str:
     return _stringify_cell(value).upper()
 
 
-def _classify_component_type(value: Any) -> str:
-    """Classify component rows by normalized TYPE."""
-    normalized_type = _normalize_component_type(value)
+def _normalize_component_name(value: Any) -> str:
+    """Normalize Name values conservatively for category checks."""
+    return _stringify_cell(value).upper()
+
+
+def _classify_component_category(name_value: Any, type_value: Any) -> str:
+    """Classify component rows into grouped production/output categories."""
+    normalized_name = _normalize_component_name(name_value)
+    normalized_type = _normalize_component_type(type_value)
+
+    if normalized_name.startswith("-S"):
+        return "BUTTON"
+    if normalized_name.startswith("-P") and normalized_type in _BUTTON_P_TYPES:
+        return "BUTTON"
     if normalized_type in _FUSE_TYPES:
         return "FUSE"
     if normalized_type in _RELAY_4P_TYPES:
@@ -206,8 +229,37 @@ def _sort_grouped_component_rows(component_df: pd.DataFrame) -> pd.DataFrame:
     return sorted_df.reset_index(drop=True)
 
 
+def _split_component_groups(
+    component_marking_df: pd.DataFrame,
+) -> tuple[list[tuple[str, pd.DataFrame, str]], pd.DataFrame, dict[str, int]]:
+    """Split component rows into ordered grouped sections plus remaining rows."""
+    group_counts = {"relay_rows": 0, "fuse_rows": 0, "button_rows": 0}
+    if component_marking_df.empty:
+        return [], component_marking_df.copy().reset_index(drop=True), group_counts
+
+    working_df = component_marking_df.copy().reset_index(drop=True)
+    for column_name in ("Name", "TYPE", "Quantity", "Description", "Category"):
+        if column_name not in working_df.columns:
+            working_df[column_name] = ""
+    working_df["_original_order"] = range(len(working_df))
+
+    grouped_sections: list[tuple[str, pd.DataFrame, str]] = []
+    grouped_categories: set[str] = set()
+    for section_label, section_categories, count_key in _GROUPED_COMPONENT_SECTIONS:
+        section_df = working_df.loc[working_df["Category"].isin(section_categories)].copy()
+        sorted_section_df = _sort_grouped_component_rows(section_df)
+        grouped_sections.append((section_label, sorted_section_df, count_key))
+        grouped_categories.update(section_categories)
+        group_counts[count_key] = len(sorted_section_df)
+
+    other_df = working_df.loc[
+        ~working_df["Category"].isin(grouped_categories)
+    ].copy().sort_values("_original_order", kind="mergesort").reset_index(drop=True)
+    return grouped_sections, other_df, group_counts
+
+
 def _build_production_section_row(label: str) -> dict[str, Any]:
-    """Create a visual section row for grouped relay or fuse entries."""
+    """Create a visual section row for grouped component entries."""
     return {
         "Name": label,
         "TYPE": "",
@@ -215,6 +267,21 @@ def _build_production_section_row(label: str) -> dict[str, Any]:
         "Marked": "",
         "Description": "",
         "_is_section": True,
+        "_is_separator": False,
+        _PRODUCTION_TECHNICAL_FLAG_COLUMN: 0,
+    }
+
+
+def _build_production_separator_row() -> dict[str, Any]:
+    """Create an empty visual separator row after a grouped section."""
+    return {
+        "Name": "",
+        "TYPE": "",
+        "Quantity": "",
+        "Marked": "",
+        "Description": "",
+        "_is_section": False,
+        "_is_separator": True,
         _PRODUCTION_TECHNICAL_FLAG_COLUMN: 0,
     }
 
@@ -232,8 +299,47 @@ def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[di
             production_rows[column_name] = ""
     production_rows["Marked"] = ""
     production_rows["_is_section"] = False
+    production_rows["_is_separator"] = False
     production_rows[_PRODUCTION_TECHNICAL_FLAG_COLUMN] = 1
-    return production_rows.loc[:, [*_PRODUCTION_COLUMNS, "_is_section", _PRODUCTION_TECHNICAL_FLAG_COLUMN]].to_dict("records")
+    return production_rows.loc[:, [*_PRODUCTION_COLUMNS, "_is_section", "_is_separator", _PRODUCTION_TECHNICAL_FLAG_COLUMN]].to_dict("records")
+
+
+def _build_component_marking_special_row(base_columns: list[str], label: str = "") -> pd.DataFrame:
+    """Create a section or separator row for the main Component Marking output."""
+    special_row = {column_name: "" for column_name in base_columns}
+    if "Name" in special_row:
+        special_row["Name"] = label
+    return pd.DataFrame([special_row], columns=base_columns)
+
+
+def _build_component_marking_output_df(
+    component_marking_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Build the grouped main Component Marking output with section rows."""
+    if component_marking_df.empty:
+        return component_marking_df.copy().reset_index(drop=True), {
+            "relay_rows": 0,
+            "fuse_rows": 0,
+            "button_rows": 0,
+        }
+
+    base_columns = list(component_marking_df.columns)
+    grouped_sections, other_df, group_counts = _split_component_groups(component_marking_df)
+    ordered_frames: list[pd.DataFrame] = []
+
+    for section_label, section_df, _ in grouped_sections:
+        if section_df.empty:
+            continue
+        ordered_frames.append(_build_component_marking_special_row(base_columns, section_label))
+        ordered_frames.append(section_df.loc[:, base_columns].reset_index(drop=True))
+        ordered_frames.append(_build_component_marking_special_row(base_columns))
+
+    if not other_df.empty:
+        ordered_frames.append(other_df.loc[:, base_columns].reset_index(drop=True))
+
+    if not ordered_frames:
+        return component_marking_df.loc[:, base_columns].copy().reset_index(drop=True), group_counts
+    return pd.concat(ordered_frames, ignore_index=True), group_counts
 
 
 def _build_component_production_df(
@@ -241,44 +347,28 @@ def _build_component_production_df(
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Build the production-check sheet rows without merging relay TYPE values."""
     if component_marking_df.empty:
-        empty_df = pd.DataFrame(columns=[*_PRODUCTION_COLUMNS, "_is_section", _PRODUCTION_TECHNICAL_FLAG_COLUMN])
-        return empty_df, {"relay_rows": 0, "fuse_rows": 0}
+        empty_df = pd.DataFrame(
+            columns=[*_PRODUCTION_COLUMNS, "_is_section", "_is_separator", _PRODUCTION_TECHNICAL_FLAG_COLUMN]
+        )
+        return empty_df, {"relay_rows": 0, "fuse_rows": 0, "button_rows": 0}
 
-    working_df = component_marking_df.copy().reset_index(drop=True)
-    for column_name in ("Name", "TYPE", "Quantity", "Description", "Category"):
-        if column_name not in working_df.columns:
-            working_df[column_name] = ""
-    working_df["_original_order"] = range(len(working_df))
-
-    relay_categories = {"RELAY_4P", "RELAY_2P"}
-    relay_df = working_df.loc[working_df["Category"].isin(relay_categories)].copy()
-    fuse_df = working_df.loc[working_df["Category"] == "FUSE"].copy()
-    other_df = working_df.loc[
-        ~working_df["Category"].isin(relay_categories | {"FUSE"})
-    ].copy().sort_values("_original_order", kind="mergesort")
-
+    grouped_sections, other_df, group_counts = _split_component_groups(component_marking_df)
     ordered_records: list[dict[str, Any]] = []
+    for section_label, section_df, _ in grouped_sections:
+        if section_df.empty:
+            continue
+        ordered_records.append(_build_production_section_row(section_label))
+        ordered_records.extend(_component_rows_to_production_records(section_df))
+        ordered_records.append(_build_production_separator_row())
 
-    sorted_relay_df = _sort_grouped_component_rows(relay_df)
-    if not sorted_relay_df.empty:
-        ordered_records.append(_build_production_section_row(_RELAY_SECTION_LABEL))
-        ordered_records.extend(_component_rows_to_production_records(sorted_relay_df))
-
-    sorted_fuse_df = _sort_grouped_component_rows(fuse_df)
-    if not sorted_fuse_df.empty:
-        ordered_records.append(_build_production_section_row(_FUSE_SECTION_LABEL))
-        ordered_records.extend(_component_rows_to_production_records(sorted_fuse_df))
-
-    ordered_records.extend(_component_rows_to_production_records(other_df))
+    if not other_df.empty:
+        ordered_records.extend(_component_rows_to_production_records(other_df))
 
     production_df = pd.DataFrame(
         ordered_records,
-        columns=[*_PRODUCTION_COLUMNS, "_is_section", _PRODUCTION_TECHNICAL_FLAG_COLUMN],
+        columns=[*_PRODUCTION_COLUMNS, "_is_section", "_is_separator", _PRODUCTION_TECHNICAL_FLAG_COLUMN],
     )
-    return production_df.reset_index(drop=True), {
-        "relay_rows": len(sorted_relay_df),
-        "fuse_rows": len(sorted_fuse_df),
-    }
+    return production_df.reset_index(drop=True), group_counts
 
 
 def _build_component_production_filename(file_name: str) -> str:
@@ -359,7 +449,8 @@ def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
 
     for row_offset, row_data in enumerate(production_df.to_dict("records"), start=1):
         is_section_row = bool(row_data.get("_is_section"))
-        production_sheet.set_row(row_offset, 24 if is_section_row else 20)
+        is_separator_row = bool(row_data.get("_is_separator"))
+        production_sheet.set_row(row_offset, 12 if is_separator_row else (24 if is_section_row else 20))
 
         include_flag = int(row_data.get(_PRODUCTION_TECHNICAL_FLAG_COLUMN, 0) or 0)
         production_sheet.write_number(row_offset, technical_flag_col_index, include_flag, technical_flag_format)
@@ -373,6 +464,8 @@ def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
                 _stringify_cell(row_data.get("Name")),
                 section_format,
             )
+            continue
+        if is_separator_row:
             continue
 
         for text_column in ("Name", "TYPE", "Description"):
@@ -454,7 +547,14 @@ def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
         calculation_sheet.set_column(col_index, col_index, calculation_widths[column_name])
     calculation_sheet.freeze_panes(1, 0)
 
-    actual_rows_df = production_df.loc[~production_df.get("_is_section", pd.Series(dtype=bool)).fillna(False)].copy()
+    include_mask = pd.to_numeric(
+        production_df.get(
+            _PRODUCTION_TECHNICAL_FLAG_COLUMN,
+            pd.Series(0, index=production_df.index),
+        ),
+        errors="coerce",
+    ).fillna(0).astype(int) == 1
+    actual_rows_df = production_df.loc[include_mask].copy()
     calculation_types = list(
         dict.fromkeys(actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist())
     )
@@ -510,12 +610,13 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     unused_df = component_df.loc[unused_mask].reset_index(drop=True)
     component_marking_df = component_df.loc[~unused_mask].reset_index(drop=True)
 
-    if "TYPE" in component_marking_df.columns:
-        component_marking_df["Category"] = component_marking_df["TYPE"].map(_classify_component_type)
-    else:
-        component_marking_df["Category"] = "OTHER"
+    component_marking_df["Category"] = component_marking_df.apply(
+        lambda row: _classify_component_category(row.get("Name"), row.get("TYPE")),
+        axis=1,
+    )
 
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
+    grouped_component_marking_df, marking_grouped_row_counts = _build_component_marking_output_df(component_marking_df)
     production_workbook_bytes = _export_component_production_workbook(production_df)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
 
@@ -523,12 +624,19 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(f"component parser: FUSE rows -> {int(category_counts.get('FUSE', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_4P rows -> {int(category_counts.get('RELAY_4P', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_2P rows -> {int(category_counts.get('RELAY_2P', 0))}")
+    developer_debug_messages.append(f"component parser: BUTTON rows -> {int(category_counts.get('BUTTON', 0))}")
     developer_debug_messages.append(f"component parser: OTHER rows -> {int(category_counts.get('OTHER', 0))}")
     developer_debug_messages.append(f"component parser: final component rows -> {len(component_marking_df)}")
     developer_debug_messages.append(f"component parser: final unused rows -> {len(unused_df)}")
     developer_debug_messages.append("relay TYPE merge removed from component production workbook")
     developer_debug_messages.append(f"grouped relay rows count: {grouped_row_counts['relay_rows']}")
     developer_debug_messages.append(f"grouped fuse rows count: {grouped_row_counts['fuse_rows']}")
+    developer_debug_messages.append(f"grouped button rows count: {grouped_row_counts['button_rows']}")
+    developer_debug_messages.append(f"main Component Marking grouped relay rows count: {marking_grouped_row_counts['relay_rows']}")
+    developer_debug_messages.append(f"main Component Marking grouped fuse rows count: {marking_grouped_row_counts['fuse_rows']}")
+    developer_debug_messages.append(f"main Component Marking grouped button rows count: {marking_grouped_row_counts['button_rows']}")
+    developer_debug_messages.append("Buttons grouping applied to Component Marking output")
+    developer_debug_messages.append("Buttons grouping applied to component production workbook")
     developer_debug_messages.append("production workbook header note added to Marked")
     developer_debug_messages.append("calculation sheet created")
     developer_debug_messages.append("component production workbook created")
@@ -546,7 +654,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     return {
         "sheets": {
-            "Component Marking": component_marking_df,
+            "Component Marking": grouped_component_marking_df,
             "Unused": unused_df,
         },
         "user_info_messages": user_info_messages,
