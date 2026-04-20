@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -40,6 +41,19 @@ _BUTTON_P_TYPES = {
     "XB4BVM4",
     "XB4BVB3",
 }
+
+_COMPONENT_STRIP_COLUMNS = ["Space", "Text"]
+_COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
+_FUSE_TYPE_TO_VOLTAGE_GROUP = {
+    "2002-1611/1000-541": "24VDC",
+    "2002-1611/1000-836": "230VAC",
+}
+_FUSE_A_SUFFIX_SORT_PATTERN = re.compile(
+    r"^-F(?P<family>\d+)A(?P<suffix_number>\d*)(?P<suffix_text>.*)$",
+    re.IGNORECASE,
+)
+_FUSE_NAME_SORT_PATTERN = re.compile(r"^-F(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
+_F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
 
 _PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description"]
 _RELAY_SECTION_LABEL = "Relays"
@@ -191,6 +205,38 @@ def _component_name_sort_key(value: Any) -> str:
     return _stringify_cell(value).casefold()
 
 
+def _component_fuse_name_sort_key(name: Any) -> tuple[int, int, int, int, str, str]:
+    """Build a natural sort key where A-suffix fuses follow normal rows of the same base."""
+    fuse_name = _stringify_cell(name)
+    normalized_name = fuse_name.casefold()
+    a_suffix_match = _FUSE_A_SUFFIX_SORT_PATTERN.match(fuse_name)
+    if a_suffix_match:
+        suffix_number_text = _stringify_cell(a_suffix_match.group("suffix_number"))
+        return (
+            0,
+            int(a_suffix_match.group("family")),
+            1,
+            int(suffix_number_text) if suffix_number_text else 0,
+            _stringify_cell(a_suffix_match.group("suffix_text")).casefold(),
+            normalized_name,
+        )
+
+    match = _FUSE_NAME_SORT_PATTERN.match(fuse_name)
+    if not match:
+        return (1, 0, 0, 0, "", normalized_name)
+
+    numeric_value = int(match.group("number"))
+    suffix_text = _stringify_cell(match.group("suffix")).casefold()
+    return (
+        0,
+        numeric_value // 10,
+        0 if not suffix_text else 2,
+        numeric_value % 10 if not suffix_text else 0,
+        suffix_text,
+        normalized_name,
+    )
+
+
 def _coerce_excel_number(value: Any) -> int | float | None:
     """Return a numeric value when Excel should store the cell as a number."""
     if value is None or pd.isna(value):
@@ -336,6 +382,100 @@ def _build_component_marking_sheet_df(
         output_df["Category"] = category_column
         output_df = output_df.drop(columns=["Category"])
     return output_df
+
+
+def _detect_fuse_voltage_group(type_value: Any) -> str | None:
+    """Map fuse TYPE values to the required strip voltage groups."""
+    normalized_type = _normalize_component_type(type_value)
+    return _FUSE_TYPE_TO_VOLTAGE_GROUP.get(normalized_type)
+
+
+def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Build the Component Strip sheet for fuse marking/printing."""
+    empty_strip_df = pd.DataFrame(columns=_COMPONENT_STRIP_COLUMNS)
+    strip_stats: dict[str, Any] = {
+        "24vdc_rows": 0,
+        "230vac_rows": 0,
+        "f92_wide_name": "",
+    }
+    if component_marking_sheet_df.empty:
+        return empty_strip_df, strip_stats
+
+    working_df = component_marking_sheet_df.copy().reset_index(drop=True)
+    for column_name in ("Name", "TYPE", "Group"):
+        if column_name not in working_df.columns:
+            working_df[column_name] = ""
+    working_df["_original_order"] = range(len(working_df))
+
+    fuse_df = working_df.loc[working_df["Group"].map(_stringify_cell).eq("FUSES")].copy()
+    if fuse_df.empty:
+        return empty_strip_df, strip_stats
+
+    sorted_group_dfs: dict[str, pd.DataFrame] = {}
+    last_f92_marker: tuple[str, int] | None = None
+    for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
+        voltage_df = fuse_df.loc[
+            fuse_df["TYPE"].map(_detect_fuse_voltage_group).eq(voltage_group)
+        ].copy()
+        if not voltage_df.empty:
+            fuse_sort_keys = voltage_df["Name"].map(_component_fuse_name_sort_key).tolist()
+            voltage_df[[
+                "_fuse_sort_group",
+                "_fuse_sort_family",
+                "_fuse_sort_variant_kind",
+                "_fuse_sort_variant_number",
+                "_fuse_sort_suffix",
+                "_fuse_sort_text",
+            ]] = pd.DataFrame(fuse_sort_keys, index=voltage_df.index)
+            voltage_df = voltage_df.sort_values(
+                by=[
+                    "_fuse_sort_group",
+                    "_fuse_sort_family",
+                    "_fuse_sort_variant_kind",
+                    "_fuse_sort_variant_number",
+                    "_fuse_sort_suffix",
+                    "_fuse_sort_text",
+                    "_original_order",
+                ],
+                kind="mergesort",
+            ).drop(
+                columns=[
+                    "_fuse_sort_group",
+                    "_fuse_sort_family",
+                    "_fuse_sort_variant_kind",
+                    "_fuse_sort_variant_number",
+                    "_fuse_sort_suffix",
+                    "_fuse_sort_text",
+                ]
+            ).reset_index(drop=True)
+        else:
+            voltage_df = voltage_df.reset_index(drop=True)
+        sorted_group_dfs[voltage_group] = voltage_df
+        strip_stats["24vdc_rows" if voltage_group == "24VDC" else "230vac_rows"] = len(voltage_df)
+
+    strip_rows: list[dict[str, Any]] = []
+    for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
+        voltage_df = sorted_group_dfs[voltage_group]
+        if voltage_df.empty:
+            continue
+        for row_index, row in enumerate(voltage_df.to_dict("records")):
+            if _F92_FUSE_PATTERN.match(_stringify_cell(row.get("Name"))):
+                last_f92_marker = (voltage_group, row_index)
+
+    for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
+        voltage_df = sorted_group_dfs[voltage_group]
+        if voltage_df.empty:
+            continue
+
+        strip_rows.append({"Space": 6.2, "Text": voltage_group})
+        for row_index, row in enumerate(voltage_df.to_dict("records")):
+            row_name = _stringify_cell(row.get("Name"))
+            row_space = 8.3 if last_f92_marker == (voltage_group, row_index) else 6.2
+            if row_space == 8.3:
+                strip_stats["f92_wide_name"] = row_name
+            strip_rows.append({"Space": row_space, "Text": row_name})
+
+    return pd.DataFrame(strip_rows, columns=_COMPONENT_STRIP_COLUMNS), strip_stats
 
 
 def _build_component_production_df(
@@ -613,6 +753,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
     component_marking_sheet_df = _build_component_marking_sheet_df(component_marking_df)
+    component_strip_df, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
     production_workbook_bytes = _export_component_production_workbook(production_df)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
 
@@ -633,6 +774,21 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append("Buttons grouping applied to component production workbook")
     developer_debug_messages.append("production workbook header note added to Marked")
     developer_debug_messages.append("calculation sheet created")
+    developer_debug_messages.append(
+        "component strip voltage split -> "
+        f"24VDC={component_strip_stats['24vdc_rows']}, 230VAC={component_strip_stats['230vac_rows']}"
+    )
+    developer_debug_messages.append(
+        "component strip last -F92* width 8.3 -> "
+        + (
+            f"applied to `{component_strip_stats['f92_wide_name']}`"
+            if component_strip_stats["f92_wide_name"]
+            else "not applied"
+        )
+    )
+    developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
+    developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
+    developer_debug_messages.append(f"component strip rows exported -> {len(component_strip_df)}")
     developer_debug_messages.append("component production workbook created")
     developer_debug_messages.append(f"production rows exported: {len(production_df)}")
     developer_debug_messages.append("production workbook uses filtered Component Marking rows only")
@@ -641,6 +797,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         "component input processed successfully",
         f"component rows exported: {len(component_marking_df)}",
         f"unused component rows exported: {len(unused_df)}",
+        "component strip sheet created",
         "component production workbook created",
         f"production rows exported: {len(production_df)}",
         "production workbook uses filtered Component Marking rows only",
@@ -649,6 +806,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     return {
         "sheets": {
             "Component Marking": component_marking_sheet_df,
+            "Component Strip": component_strip_df,
             "Unused": unused_df,
         },
         "user_info_messages": user_info_messages,
