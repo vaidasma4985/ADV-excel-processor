@@ -6,9 +6,10 @@ from typing import Any
 import streamlit as st
 
 from marking_tool.processor import (
+    build_marking_output_filename,
     build_placeholder_results,
-    derive_output_filename,
     export_placeholder_workbook,
+    resolve_project_number,
 )
 
 
@@ -104,13 +105,18 @@ def _process_marking_inputs() -> None:
         st.session_state["marking_run_id"] = None
         return
 
-    sheets, warnings, user_info_messages, debug_info, debug_workbooks, production_workbooks = build_placeholder_results(inputs)
+    resolved_project_number = resolve_project_number(inputs)
+    sheets, warnings, user_info_messages, debug_info, debug_workbooks, production_workbooks = build_placeholder_results(
+        inputs,
+        resolved_project_number=resolved_project_number,
+    )
     workbook_bytes = export_placeholder_workbook(sheets)
-    output_filename = derive_output_filename(inputs.get("terminal", {}).get("name", ""))
+    output_filename = build_marking_output_filename(resolved_project_number)
 
     st.session_state["marking_results"] = {
         "workbook_bytes": workbook_bytes,
         "filename": output_filename,
+        "project_number": resolved_project_number or "",
         "sheet_names": list(sheets.keys()),
         "debug_workbooks": debug_workbooks,
         "production_workbooks": production_workbooks,
@@ -176,6 +182,9 @@ def render_marking_tool() -> None:
             st.rerun()
     else:
         st.success("Placeholder workbook created.")
+        resolved_project_number = (results.get("project_number") or "").strip()
+        if resolved_project_number:
+            st.caption(f"Project number: {resolved_project_number}")
         user_info_messages = st.session_state.get("marking_user_info") or []
         st.download_button(
             f"Download {results['filename']}",
@@ -186,10 +195,11 @@ def render_marking_tool() -> None:
         )
         component_production_workbook = (results.get("production_workbooks") or {}).get("component")
         if component_production_workbook:
+            component_production_filename = str(component_production_workbook["filename"])
             st.download_button(
-                "Download component production workbook",
+                f"Download {component_production_filename}",
                 data=component_production_workbook["bytes"],
-                file_name=str(component_production_workbook["filename"]),
+                file_name=component_production_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="marking_component_production_download",
@@ -227,10 +237,11 @@ def render_marking_tool() -> None:
                     )
                     tool_debug_workbook = debug_workbooks.get(tool_name)
                     if tool_debug_workbook:
+                        tool_debug_filename = _build_debug_filename(debug_filename_base, tool_suffixes[tool_name])
                         st.download_button(
-                            f"Download {tool_name} debug workbook",
+                            f"Download {tool_debug_filename}",
                             data=tool_debug_workbook,
-                            file_name=_build_debug_filename(debug_filename_base, tool_suffixes[tool_name]),
+                            file_name=tool_debug_filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"marking_{tool_name}_debug_download",
                             use_container_width=True,

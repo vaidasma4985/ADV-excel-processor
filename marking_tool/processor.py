@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .component_processor import process_component_result
 from .terminal_processor import (
-    derive_output_filename,
     export_placeholder_workbook,
     process_terminal_result,
 )
@@ -17,9 +17,53 @@ _SOURCE_LABELS = {
     "wire": ("Cable Marking", "wire input"),
 }
 
+_PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
+
+
+def extract_project_number(file_name: str) -> str | None:
+    """Extract the leading project number used by the marking tool when present."""
+    match = _PROJECT_CODE_PATTERN.match((file_name or "").strip())
+    if not match:
+        return None
+    return match.group(1)
+
+
+def resolve_project_number(inputs: dict[str, dict[str, Any]]) -> str | None:
+    """Resolve one shared project number from uploaded component/terminal/wire filenames."""
+    detected_project_numbers = {
+        project_number
+        for source_key in ("component", "terminal", "wire")
+        if inputs.get(source_key, {}).get("bytes")
+        for project_number in [extract_project_number(inputs.get(source_key, {}).get("name", ""))]
+        if project_number
+    }
+    if len(detected_project_numbers) == 1:
+        return next(iter(detected_project_numbers))
+    return None
+
+
+def build_marking_output_filename(project_number: str | None) -> str:
+    """Build the main Markings workbook filename from the resolved project number."""
+    if not project_number:
+        return "Markings.xlsx"
+    return f"{project_number}_Markings.xlsx"
+
+
+def build_component_production_filename(project_number: str | None) -> str:
+    """Build the component production workbook filename from the resolved project number."""
+    if not project_number:
+        return "component_production_check.xlsx"
+    return f"{project_number}_component_production_check.xlsx"
+
+
+def derive_output_filename(terminal_file_name: str) -> str:
+    """Backward-compatible single-file filename helper using the shared project pattern."""
+    return build_marking_output_filename(extract_project_number(terminal_file_name))
+
 
 def build_placeholder_results(
-    inputs: dict[str, dict[str, Any]]
+    inputs: dict[str, dict[str, Any]],
+    resolved_project_number: str | None = None,
 ) -> tuple[
     dict[str, Any],
     list[str],
@@ -33,6 +77,29 @@ def build_placeholder_results(
     warnings: list[str] = []
     user_info_messages: list[str] = []
     developer_debug_messages: list[str] = []
+    detected_project_numbers = sorted(
+        {
+            project_number
+            for source_key in ("component", "terminal", "wire")
+            if inputs.get(source_key, {}).get("bytes")
+            for project_number in [extract_project_number(inputs.get(source_key, {}).get("name", ""))]
+            if project_number
+        }
+    )
+    if resolved_project_number is None:
+        resolved_project_number = resolve_project_number(inputs)
+
+    if not detected_project_numbers:
+        developer_debug_messages.append("marking project number: none detected across uploaded filenames")
+    elif resolved_project_number:
+        developer_debug_messages.append(f"marking project number resolved -> {resolved_project_number}")
+    else:
+        developer_debug_messages.append(
+            "marking project number conflict -> "
+            + ", ".join(detected_project_numbers)
+            + " | using no project number"
+        )
+
     debug_workbooks: dict[str, bytes | None] = {
         "component": None,
         "terminal": None,
@@ -71,7 +138,7 @@ def build_placeholder_results(
             if component_result.get("production_workbook"):
                 production_workbooks["component"] = {
                     "bytes": component_result["production_workbook"],
-                    "filename": component_result["production_filename"],
+                    "filename": build_component_production_filename(resolved_project_number),
                 }
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
