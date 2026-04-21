@@ -50,6 +50,11 @@ _BUTTON_P_TYPES = {
 
 _COMPONENT_STRIP_SIDE_COLUMNS = ["Space", "Text"]
 _COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
+_COMPONENT_CABINET_NAME_PATTERN = re.compile(
+    r"^\+(?P<cabinet_id>A\d+)\b(?:[^A-Za-z0-9-]*)?(?P<normalized_name>-.*)$",
+    re.IGNORECASE,
+)
+_COMPONENT_INVALID_EXCEL_SHEET_CHAR_PATTERN = re.compile(r"[\\/\?\*\[\]:]")
 _FUSE_TYPE_TO_VOLTAGE_GROUP = {
     "2002-1611/1000-541": "24VDC",
     "2002-1611/1000-836": "230VAC",
@@ -247,6 +252,102 @@ def _normalize_component_type(value: Any) -> str:
 def _normalize_component_name(value: Any) -> str:
     """Normalize Name values conservatively for category checks."""
     return _stringify_cell(value).upper()
+
+
+def _sanitize_component_cabinet_sheet_name(cabinet_id: Any) -> str:
+    """Keep cabinet ids safe for Excel worksheet names."""
+    sanitized_name = _stringify_cell(cabinet_id).upper()
+    if not sanitized_name:
+        return ""
+    sanitized_name = _COMPONENT_INVALID_EXCEL_SHEET_CHAR_PATTERN.sub("", sanitized_name)
+    sanitized_name = sanitized_name.strip().strip("'")
+    return sanitized_name[:31]
+
+
+def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:
+    """Extract one raw cabinet ID, sanitized sheet-safe cabinet ID, and normalized cabinet-local Name."""
+    text = _stringify_cell(name_value)
+    if not text:
+        return None
+    match = _COMPONENT_CABINET_NAME_PATTERN.match(text)
+    if not match:
+        return None
+
+    raw_cabinet_id = _stringify_cell(match.group("cabinet_id")).upper()
+    cabinet_id = _sanitize_component_cabinet_sheet_name(raw_cabinet_id)
+    normalized_name = _stringify_cell(match.group("normalized_name"))
+    if not cabinet_id or not normalized_name:
+        return None
+    return raw_cabinet_id, cabinet_id, normalized_name
+
+
+def _build_component_cabinet_map(
+    component_marking_df: pd.DataFrame,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
+    """Build per-cabinet component datasets from kept +A*-prefixed rows without altering the main dataset."""
+    cabinet_stats: dict[str, Any] = {
+        "cabinet_ids": [],
+        "raw_cabinet_ids": [],
+        "sanitized_cabinet_ids": [],
+        "sheet_name_sanitizations": [],
+        "row_counts": {},
+        "example_transforms": [],
+    }
+    if component_marking_df.empty or "Name" not in component_marking_df.columns:
+        return {}, cabinet_stats
+
+    cabinet_source_df = component_marking_df.copy().reset_index(drop=True)
+    cabinet_parts = cabinet_source_df["Name"].map(_extract_component_cabinet_parts)
+    cabinet_source_df["_cabinet_raw_id"] = cabinet_parts.map(lambda parts: parts[0] if parts else "")
+    cabinet_source_df["_cabinet_id"] = cabinet_parts.map(lambda parts: parts[1] if parts else "")
+    cabinet_source_df["_cabinet_normalized_name"] = cabinet_parts.map(lambda parts: parts[2] if parts else "")
+    cabinet_source_df = cabinet_source_df.loc[cabinet_source_df["_cabinet_id"].ne("")].copy()
+    if cabinet_source_df.empty:
+        return {}, cabinet_stats
+
+    cabinet_stats["raw_cabinet_ids"] = list(
+        dict.fromkeys(
+            cabinet_source_df["_cabinet_raw_id"].map(_stringify_cell).tolist()
+        )
+    )
+    cabinet_stats["sanitized_cabinet_ids"] = list(
+        dict.fromkeys(
+            cabinet_source_df["_cabinet_id"].map(_stringify_cell).tolist()
+        )
+    )
+    cabinet_stats["cabinet_ids"] = list(cabinet_stats["sanitized_cabinet_ids"])
+    for raw_cabinet_id, sanitized_cabinet_id in (
+        cabinet_source_df.loc[:, ["_cabinet_raw_id", "_cabinet_id"]]
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    ):
+        if _stringify_cell(raw_cabinet_id) != _stringify_cell(sanitized_cabinet_id):
+            cabinet_stats["sheet_name_sanitizations"].append(
+                f"{_stringify_cell(raw_cabinet_id)} -> {_stringify_cell(sanitized_cabinet_id)}"
+            )
+
+    cabinet_map: dict[str, pd.DataFrame] = {}
+    for cabinet_id, cabinet_df in cabinet_source_df.groupby("_cabinet_id", sort=False, dropna=False):
+        normalized_df = cabinet_df.copy()
+        normalized_df["Name"] = normalized_df["_cabinet_normalized_name"]
+        if len(cabinet_stats["example_transforms"]) < 6:
+            example_rows = normalized_df.head(3)
+            cabinet_stats["example_transforms"].extend(
+                [
+                    f"{cabinet_id}: {original_name} -> {normalized_name}"
+                    for original_name, normalized_name in zip(
+                        cabinet_df["Name"].head(3).tolist(),
+                        example_rows["Name"].tolist(),
+                    )
+                ]
+            )
+        normalized_df = normalized_df.drop(
+            columns=["_cabinet_raw_id", "_cabinet_id", "_cabinet_normalized_name"]
+        )
+        cabinet_map[cabinet_id] = normalized_df.reset_index(drop=True)
+        cabinet_stats["row_counts"][cabinet_id] = len(normalized_df)
+
+    return cabinet_map, cabinet_stats
 
 
 def _classify_component_category(name_value: Any, type_value: Any) -> str:
@@ -987,17 +1088,278 @@ def _build_component_production_filename(file_name: str) -> str:
     return f"{base_name}_production_check.xlsx"
 
 
-def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
+def _component_cabinet_sort_key(cabinet_id: Any) -> tuple[str, int, str]:
+    """Sort cabinet ids naturally so A2 comes before A10."""
+    text = _stringify_cell(cabinet_id).upper()
+    match = re.match(r"^(?P<prefix>[A-Z]+)(?P<number>\d+)(?P<suffix>.*)$", text)
+    if not match:
+        return (text, -1, "")
+    return (
+        _stringify_cell(match.group("prefix")),
+        int(match.group("number")),
+        _stringify_cell(match.group("suffix")),
+    )
+
+
+def _write_component_production_sheet(
+    worksheet: Any,
+    production_df: pd.DataFrame,
+    *,
+    columns: list[str],
+    column_widths: dict[str, int],
+    column_indexes: dict[str, int],
+    marked_col_index: int,
+    technical_flag_col_index: int,
+    xl_col_to_name: Any,
+    header_format: Any,
+    text_format: Any,
+    quantity_format: Any,
+    marked_format: Any,
+    green_row_format: Any,
+    red_row_format: Any,
+    section_format: Any,
+    technical_flag_format: Any,
+) -> int:
+    """Write one production-style sheet and return its last data row index."""
+    for col_index, column_name in enumerate(columns):
+        worksheet.write(0, col_index, column_name, header_format)
+        worksheet.set_column(col_index, col_index, column_widths[column_name])
+    worksheet.write_comment(0, marked_col_index, "1 = Marked\n0 = Missing")
+    worksheet.write(0, technical_flag_col_index, _PRODUCTION_TECHNICAL_FLAG_COLUMN, header_format)
+    worksheet.set_column(technical_flag_col_index, technical_flag_col_index, None, None, {"hidden": True})
+    worksheet.freeze_panes(1, 0)
+
+    for row_offset, row_data in enumerate(production_df.to_dict("records"), start=1):
+        is_section_row = bool(row_data.get("_is_section"))
+        is_separator_row = bool(row_data.get("_is_separator"))
+        worksheet.set_row(row_offset, 12 if is_separator_row else (24 if is_section_row else 20))
+
+        include_flag = int(row_data.get(_PRODUCTION_TECHNICAL_FLAG_COLUMN, 0) or 0)
+        worksheet.write_number(row_offset, technical_flag_col_index, include_flag, technical_flag_format)
+
+        if is_section_row:
+            worksheet.merge_range(
+                row_offset,
+                0,
+                row_offset,
+                len(columns) - 1,
+                _stringify_cell(row_data.get("Name")),
+                section_format,
+            )
+            continue
+        if is_separator_row:
+            continue
+
+        for text_column in ("Name", "TYPE", "Description"):
+            value = _stringify_cell(row_data.get(text_column))
+            column_index = column_indexes[text_column]
+            if value:
+                worksheet.write(row_offset, column_index, value, text_format)
+            else:
+                worksheet.write_blank(row_offset, column_index, None, text_format)
+
+        quantity_value = row_data.get("Quantity")
+        quantity_column_index = column_indexes["Quantity"]
+        numeric_quantity = _coerce_excel_number(quantity_value)
+        if numeric_quantity is not None:
+            worksheet.write_number(row_offset, quantity_column_index, numeric_quantity, quantity_format)
+        elif _stringify_cell(quantity_value):
+            worksheet.write(row_offset, quantity_column_index, _stringify_cell(quantity_value), quantity_format)
+        else:
+            worksheet.write_blank(row_offset, quantity_column_index, None, quantity_format)
+
+        marked_value = _stringify_cell(row_data.get("Marked"))
+        if marked_value:
+            numeric_marked = _coerce_excel_number(marked_value)
+            if numeric_marked is not None:
+                worksheet.write_number(row_offset, marked_col_index, numeric_marked, marked_format)
+            else:
+                worksheet.write(row_offset, marked_col_index, marked_value, marked_format)
+        else:
+            worksheet.write_blank(row_offset, marked_col_index, None, marked_format)
+
+    last_data_row = len(production_df)
+    if last_data_row >= 1:
+        marked_col_letter = xl_col_to_name(marked_col_index)
+        technical_flag_col_letter = xl_col_to_name(technical_flag_col_index)
+        worksheet.conditional_format(
+            1,
+            0,
+            last_data_row,
+            len(columns) - 1,
+            {
+                "type": "formula",
+                "criteria": f'=AND(${technical_flag_col_letter}2=1,${marked_col_letter}2<>"",${marked_col_letter}2=1)',
+                "format": green_row_format,
+            },
+        )
+        worksheet.conditional_format(
+            1,
+            0,
+            last_data_row,
+            len(columns) - 1,
+            {
+                "type": "formula",
+                "criteria": f'=AND(${technical_flag_col_letter}2=1,${marked_col_letter}2<>"",${marked_col_letter}2=0)',
+                "format": red_row_format,
+            },
+        )
+    return last_data_row
+
+
+def _list_component_calculation_types(production_df: pd.DataFrame) -> list[str]:
+    """Return the stable ordered TYPE list used by the Calculation sheet."""
+    include_mask = pd.to_numeric(
+        production_df.get(
+            _PRODUCTION_TECHNICAL_FLAG_COLUMN,
+            pd.Series(0, index=production_df.index),
+        ),
+        errors="coerce",
+    ).fillna(0).astype(int) == 1
+    actual_rows_df = production_df.loc[include_mask].copy()
+    return list(
+        dict.fromkeys(actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist())
+    )
+
+
+def _count_component_production_actual_rows(production_df: pd.DataFrame) -> int:
+    """Count actual exported component rows, excluding section/separator helper rows."""
+    include_values = pd.to_numeric(
+        production_df.get(
+            _PRODUCTION_TECHNICAL_FLAG_COLUMN,
+            pd.Series(0, index=production_df.index),
+        ),
+        errors="coerce",
+    ).fillna(0)
+    return int((include_values.astype(int) == 1).sum())
+
+
+def _write_component_calculation_block(
+    calculation_sheet: Any,
+    *,
+    start_row: int,
+    start_col: int,
+    title: str | None,
+    source_sheet_name: str,
+    source_production_df: pd.DataFrame,
+    calculation_columns: list[str],
+    calculation_widths: dict[str, int],
+    technical_flag_col_index: int,
+    xl_col_to_name: Any,
+    xl_rowcol_to_cell: Any,
+    header_format: Any,
+    section_format: Any,
+    calculation_text_format: Any,
+    calculation_number_format: Any,
+    marked_header_format: Any,
+    missing_header_format: Any,
+    marked_calculation_number_format: Any,
+    missing_calculation_number_format: Any,
+) -> None:
+    """Write one calculation summary block that references a single production sheet."""
+    header_row = start_row
+    if title:
+        calculation_sheet.merge_range(
+            start_row,
+            start_col,
+            start_row,
+            start_col + len(calculation_columns) - 1,
+            title,
+            section_format,
+        )
+        header_row = start_row + 1
+
+    for col_offset, column_name in enumerate(calculation_columns):
+        header_cell_format = header_format
+        if column_name == "Marked Quantity":
+            header_cell_format = marked_header_format
+        elif column_name == "Missing Quantity":
+            header_cell_format = missing_header_format
+        calculation_sheet.write(header_row, start_col + col_offset, column_name, header_cell_format)
+        calculation_sheet.set_column(
+            start_col + col_offset,
+            start_col + col_offset,
+            calculation_widths[column_name],
+        )
+
+    calculation_types = _list_component_calculation_types(source_production_df)
+    if not calculation_types:
+        return
+
+    last_excel_row = len(source_production_df) + 1
+    sheet_reference = "'" + source_sheet_name.replace("'", "''") + "'"
+    type_range = f"{sheet_reference}!$B$2:$B${last_excel_row}"
+    quantity_range = f"{sheet_reference}!$C$2:$C${last_excel_row}"
+    marked_range = f"{sheet_reference}!$D$2:$D${last_excel_row}"
+    include_range = (
+        f"{sheet_reference}!${xl_col_to_name(technical_flag_col_index)}$2:"
+        f"${xl_col_to_name(technical_flag_col_index)}${last_excel_row}"
+    )
+
+    for row_offset, type_value in enumerate(calculation_types, start=1):
+        row_index = header_row + row_offset
+        calculation_sheet.write(row_index, start_col, type_value, calculation_text_format)
+
+        type_cell = xl_rowcol_to_cell(row_index, start_col, col_abs=True)
+        total_cell = xl_rowcol_to_cell(row_index, start_col + 1)
+        marked_cell = xl_rowcol_to_cell(row_index, start_col + 3)
+        missing_cell = xl_rowcol_to_cell(row_index, start_col + 4)
+
+        calculation_sheet.write_formula(
+            row_index,
+            start_col + 1,
+            f"=SUMIFS({quantity_range},{type_range},{type_cell},{include_range},1)",
+            calculation_number_format,
+        )
+        calculation_sheet.write_formula(
+            row_index,
+            start_col + 2,
+            f"={total_cell}-{marked_cell}-{missing_cell}",
+            calculation_number_format,
+        )
+        calculation_sheet.write_formula(
+            row_index,
+            start_col + 3,
+            f"=SUMIFS({quantity_range},{type_range},{type_cell},{include_range},1,{marked_range},1)",
+            marked_calculation_number_format,
+        )
+        calculation_sheet.write_formula(
+            row_index,
+            start_col + 4,
+            f"=SUMIFS({quantity_range},{type_range},{type_cell},{include_range},1,{marked_range},0)",
+            missing_calculation_number_format,
+        )
+
+
+def _export_component_production_workbook(
+    production_df: pd.DataFrame,
+    cabinet_production_dfs: dict[str, pd.DataFrame] | None = None,
+) -> bytes:
     """Export a separate production workbook with manual 1/0 marking cells."""
     try:
         import xlsxwriter
-        from xlsxwriter.utility import xl_col_to_name
+        from xlsxwriter.utility import xl_col_to_name, xl_rowcol_to_cell
     except ModuleNotFoundError as exc:
         raise RuntimeError("xlsxwriter is required for component production workbook export") from exc
 
     output = BytesIO()
     workbook = xlsxwriter.Workbook(output, {"in_memory": True})
-    production_sheet = workbook.add_worksheet("Production check")
+    cabinet_production_dfs = cabinet_production_dfs or {}
+    sorted_cabinet_ids = sorted(cabinet_production_dfs, key=_component_cabinet_sort_key)
+    cabinet_mode = bool(sorted_cabinet_ids)
+    cabinet_sheet_names = {
+        cabinet_id: _sanitize_component_cabinet_sheet_name(cabinet_id) or "CABINET"
+        for cabinet_id in sorted_cabinet_ids
+    }
+    production_sheet = None
+    cabinet_sheets: dict[str, Any] = {}
+    if cabinet_mode:
+        cabinet_sheets = {
+            cabinet_id: workbook.add_worksheet(cabinet_sheet_names[cabinet_id])
+            for cabinet_id in sorted_cabinet_ids
+        }
+    else:
+        production_sheet = workbook.add_worksheet("Production check")
     calculation_sheet = workbook.add_worksheet("Calculation")
 
     header_format = workbook.add_format(
@@ -1047,90 +1409,44 @@ def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
     column_indexes = {column_name: column_index for column_index, column_name in enumerate(columns)}
     marked_col_index = column_indexes["Marked"]
     technical_flag_col_index = len(columns)
-
-    for col_index, column_name in enumerate(columns):
-        production_sheet.write(0, col_index, column_name, header_format)
-        production_sheet.set_column(col_index, col_index, column_widths[column_name])
-    production_sheet.write_comment(0, marked_col_index, "1 = Marked\n0 = Missing")
-    production_sheet.write(0, technical_flag_col_index, _PRODUCTION_TECHNICAL_FLAG_COLUMN, header_format)
-    production_sheet.set_column(technical_flag_col_index, technical_flag_col_index, None, None, {"hidden": True})
-
-    production_sheet.freeze_panes(1, 0)
-
-    for row_offset, row_data in enumerate(production_df.to_dict("records"), start=1):
-        is_section_row = bool(row_data.get("_is_section"))
-        is_separator_row = bool(row_data.get("_is_separator"))
-        production_sheet.set_row(row_offset, 12 if is_separator_row else (24 if is_section_row else 20))
-
-        include_flag = int(row_data.get(_PRODUCTION_TECHNICAL_FLAG_COLUMN, 0) or 0)
-        production_sheet.write_number(row_offset, technical_flag_col_index, include_flag, technical_flag_format)
-
-        if is_section_row:
-            production_sheet.merge_range(
-                row_offset,
-                0,
-                row_offset,
-                len(columns) - 1,
-                _stringify_cell(row_data.get("Name")),
-                section_format,
+    if cabinet_mode:
+        for cabinet_id in sorted_cabinet_ids:
+            _write_component_production_sheet(
+                cabinet_sheets[cabinet_id],
+                cabinet_production_dfs[cabinet_id],
+                columns=columns,
+                column_widths=column_widths,
+                column_indexes=column_indexes,
+                marked_col_index=marked_col_index,
+                technical_flag_col_index=technical_flag_col_index,
+                xl_col_to_name=xl_col_to_name,
+                header_format=header_format,
+                text_format=text_format,
+                quantity_format=quantity_format,
+                marked_format=marked_format,
+                green_row_format=green_row_format,
+                red_row_format=red_row_format,
+                section_format=section_format,
+                technical_flag_format=technical_flag_format,
             )
-            continue
-        if is_separator_row:
-            continue
-
-        for text_column in ("Name", "TYPE", "Description"):
-            value = _stringify_cell(row_data.get(text_column))
-            column_index = column_indexes[text_column]
-            if value:
-                production_sheet.write(row_offset, column_index, value, text_format)
-            else:
-                production_sheet.write_blank(row_offset, column_index, None, text_format)
-
-        quantity_value = row_data.get("Quantity")
-        quantity_column_index = column_indexes["Quantity"]
-        numeric_quantity = _coerce_excel_number(quantity_value)
-        if numeric_quantity is not None:
-            production_sheet.write_number(row_offset, quantity_column_index, numeric_quantity, quantity_format)
-        elif _stringify_cell(quantity_value):
-            production_sheet.write(row_offset, quantity_column_index, _stringify_cell(quantity_value), quantity_format)
-        else:
-            production_sheet.write_blank(row_offset, quantity_column_index, None, quantity_format)
-
-        marked_value = _stringify_cell(row_data.get("Marked"))
-        if marked_value:
-            numeric_marked = _coerce_excel_number(marked_value)
-            if numeric_marked is not None:
-                production_sheet.write_number(row_offset, marked_col_index, numeric_marked, marked_format)
-            else:
-                production_sheet.write(row_offset, marked_col_index, marked_value, marked_format)
-        else:
-            production_sheet.write_blank(row_offset, marked_col_index, None, marked_format)
-
-    last_data_row = len(production_df)
-    if last_data_row >= 1:
-        marked_col_letter = xl_col_to_name(marked_col_index)
-        technical_flag_col_letter = xl_col_to_name(technical_flag_col_index)
-        production_sheet.conditional_format(
-            1,
-            0,
-            last_data_row,
-            len(columns) - 1,
-            {
-                "type": "formula",
-                "criteria": f'=AND(${technical_flag_col_letter}2=1,${marked_col_letter}2<>"",${marked_col_letter}2=1)',
-                "format": green_row_format,
-            },
-        )
-        production_sheet.conditional_format(
-            1,
-            0,
-            last_data_row,
-            len(columns) - 1,
-            {
-                "type": "formula",
-                "criteria": f'=AND(${technical_flag_col_letter}2=1,${marked_col_letter}2<>"",${marked_col_letter}2=0)',
-                "format": red_row_format,
-            },
+    else:
+        _write_component_production_sheet(
+            production_sheet,
+            production_df,
+            columns=columns,
+            column_widths=column_widths,
+            column_indexes=column_indexes,
+            marked_col_index=marked_col_index,
+            technical_flag_col_index=technical_flag_col_index,
+            xl_col_to_name=xl_col_to_name,
+            header_format=header_format,
+            text_format=text_format,
+            quantity_format=quantity_format,
+            marked_format=marked_format,
+            green_row_format=green_row_format,
+            red_row_format=red_row_format,
+            section_format=section_format,
+            technical_flag_format=technical_flag_format,
         )
 
     calculation_columns = [
@@ -1147,61 +1463,53 @@ def _export_component_production_workbook(production_df: pd.DataFrame) -> bytes:
         "Marked Quantity": 18,
         "Missing Quantity": 18,
     }
-    for col_index, column_name in enumerate(calculation_columns):
-        header_cell_format = header_format
-        if column_name == "Marked Quantity":
-            header_cell_format = marked_header_format
-        elif column_name == "Missing Quantity":
-            header_cell_format = missing_header_format
-        calculation_sheet.write(0, col_index, column_name, header_cell_format)
-        calculation_sheet.set_column(col_index, col_index, calculation_widths[column_name])
-    calculation_sheet.freeze_panes(1, 0)
-
-    include_mask = pd.to_numeric(
-        production_df.get(
-            _PRODUCTION_TECHNICAL_FLAG_COLUMN,
-            pd.Series(0, index=production_df.index),
-        ),
-        errors="coerce",
-    ).fillna(0).astype(int) == 1
-    actual_rows_df = production_df.loc[include_mask].copy()
-    calculation_types = list(
-        dict.fromkeys(actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist())
-    )
-
-    if calculation_types:
-        last_excel_row = last_data_row + 1
-        type_range = f"'Production check'!$B$2:$B${last_excel_row}"
-        quantity_range = f"'Production check'!$C$2:$C${last_excel_row}"
-        marked_range = f"'Production check'!$D$2:$D${last_excel_row}"
-        include_range = f"'Production check'!${xl_col_to_name(technical_flag_col_index)}$2:${xl_col_to_name(technical_flag_col_index)}${last_excel_row}"
-
-        for row_index, type_value in enumerate(calculation_types, start=1):
-            calculation_sheet.write(row_index, 0, type_value, calculation_text_format)
-            calculation_sheet.write_formula(
-                row_index,
-                1,
-                f'=SUMIFS({quantity_range},{type_range},$A{row_index + 1},{include_range},1)',
-                calculation_number_format,
+    calculation_sheet.freeze_panes(2 if cabinet_mode else 1, 0)
+    if cabinet_mode:
+        cabinet_block_width = len(calculation_columns) + 2
+        for cabinet_index, cabinet_id in enumerate(sorted_cabinet_ids):
+            _write_component_calculation_block(
+                calculation_sheet,
+                start_row=0,
+                start_col=cabinet_index * cabinet_block_width,
+                title=cabinet_id,
+                source_sheet_name=cabinet_sheet_names[cabinet_id],
+                source_production_df=cabinet_production_dfs[cabinet_id],
+                calculation_columns=calculation_columns,
+                calculation_widths=calculation_widths,
+                technical_flag_col_index=technical_flag_col_index,
+                xl_col_to_name=xl_col_to_name,
+                xl_rowcol_to_cell=xl_rowcol_to_cell,
+                header_format=header_format,
+                section_format=section_format,
+                calculation_text_format=calculation_text_format,
+                calculation_number_format=calculation_number_format,
+                marked_header_format=marked_header_format,
+                missing_header_format=missing_header_format,
+                marked_calculation_number_format=marked_calculation_number_format,
+                missing_calculation_number_format=missing_calculation_number_format,
             )
-            calculation_sheet.write_formula(
-                row_index,
-                2,
-                f"=B{row_index + 1}-D{row_index + 1}-E{row_index + 1}",
-                calculation_number_format,
-            )
-            calculation_sheet.write_formula(
-                row_index,
-                3,
-                f'=SUMIFS({quantity_range},{type_range},$A{row_index + 1},{include_range},1,{marked_range},1)',
-                marked_calculation_number_format,
-            )
-            calculation_sheet.write_formula(
-                row_index,
-                4,
-                f'=SUMIFS({quantity_range},{type_range},$A{row_index + 1},{include_range},1,{marked_range},0)',
-                missing_calculation_number_format,
-            )
+    else:
+        _write_component_calculation_block(
+            calculation_sheet,
+            start_row=0,
+            start_col=0,
+            title=None,
+            source_sheet_name="Production check",
+            source_production_df=production_df,
+            calculation_columns=calculation_columns,
+            calculation_widths=calculation_widths,
+            technical_flag_col_index=technical_flag_col_index,
+            xl_col_to_name=xl_col_to_name,
+            xl_rowcol_to_cell=xl_rowcol_to_cell,
+            header_format=header_format,
+            section_format=section_format,
+            calculation_text_format=calculation_text_format,
+            calculation_number_format=calculation_number_format,
+            marked_header_format=marked_header_format,
+            missing_header_format=missing_header_format,
+            marked_calculation_number_format=marked_calculation_number_format,
+            missing_calculation_number_format=missing_calculation_number_format,
+        )
 
     workbook.close()
     output.seek(0)
@@ -1228,11 +1536,32 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         lambda row: _classify_component_category(row.get("Name"), row.get("TYPE")),
         axis=1,
     )
+    cabinet_map, cabinet_stats = _build_component_cabinet_map(component_marking_df)
+    sorted_cabinet_ids = sorted(cabinet_map, key=_component_cabinet_sort_key)
+    cabinet_production_dfs: dict[str, pd.DataFrame] = {}
+    cabinet_source_row_counts: dict[str, int] = {}
+    cabinet_production_row_counts: dict[str, int] = {}
+    for cabinet_id in sorted_cabinet_ids:
+        cabinet_production_source_df = cabinet_map[cabinet_id].copy().reset_index(drop=True)
+        cabinet_source_row_counts[cabinet_id] = len(cabinet_production_source_df)
+        cabinet_production_source_df["Category"] = cabinet_production_source_df.apply(
+            lambda row: _classify_component_category(row.get("Name"), row.get("TYPE")),
+            axis=1,
+        )
+        cabinet_production_df, _ = _build_component_production_df(cabinet_production_source_df)
+        cabinet_production_df = cabinet_production_df.reset_index(drop=True).copy()
+        cabinet_production_row_counts[cabinet_id] = _count_component_production_actual_rows(cabinet_production_df)
+        if cabinet_source_row_counts[cabinet_id] > 0 and cabinet_production_row_counts[cabinet_id] == 0:
+            raise ValueError(
+                "component production workbook: cabinet "
+                f"{cabinet_id} produced no export rows from {cabinet_source_row_counts[cabinet_id]} source rows"
+            )
+        cabinet_production_dfs[cabinet_id] = cabinet_production_df
 
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
     component_marking_sheet_df = _build_component_marking_sheet_df(component_marking_df)
     component_strip_sheet, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
-    production_workbook_bytes = _export_component_production_workbook(production_df)
+    production_workbook_bytes = _export_component_production_workbook(production_df, cabinet_production_dfs)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
     group_counts = component_marking_sheet_df.get("Group", pd.Series(dtype=object)).value_counts(dropna=False)
 
@@ -1242,6 +1571,40 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(
         f"component parser: +A* cabinet-prefixed rows still moved to Unused by normal rules -> {int((cabinet_prefixed_mask & unused_mask).sum())}"
     )
+    developer_debug_messages.append(
+        "component parser: raw cabinet ids detected -> "
+        + (", ".join(cabinet_stats["raw_cabinet_ids"]) if cabinet_stats["raw_cabinet_ids"] else "none")
+    )
+    developer_debug_messages.append(
+        "component parser: sanitized cabinet ids used for sheets -> "
+        + (
+            ", ".join(cabinet_stats["sanitized_cabinet_ids"])
+            if cabinet_stats["sanitized_cabinet_ids"]
+            else "none"
+        )
+    )
+    for sheet_name_change in cabinet_stats["sheet_name_sanitizations"]:
+        developer_debug_messages.append(
+            f"component parser: cabinet sheet id sanitized -> {sheet_name_change}"
+        )
+    developer_debug_messages.append(
+        "component parser: detected cabinets -> "
+        + (", ".join(cabinet_stats["cabinet_ids"]) if cabinet_stats["cabinet_ids"] else "none")
+    )
+    for cabinet_id in cabinet_stats["cabinet_ids"]:
+        developer_debug_messages.append(
+            f"component parser: cabinet {cabinet_id} rows -> {cabinet_stats['row_counts'][cabinet_id]}"
+        )
+        cabinet_sample_names = ", ".join(
+            [
+                _stringify_cell(name_value)
+                for name_value in cabinet_map[cabinet_id].get("Name", pd.Series(dtype=object)).head(3).tolist()
+                if _stringify_cell(name_value)
+            ]
+        )
+        developer_debug_messages.append(
+            f"component parser: cabinet {cabinet_id} sample names -> {cabinet_sample_names or 'none'}"
+        )
     developer_debug_messages.append(f"component parser: moved {len(unused_df)} rows to Unused")
     developer_debug_messages.append(f"component parser: FUSE rows -> {int(category_counts.get('FUSE', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_1P rows -> {int(category_counts.get('RELAY_1P', 0))}")
@@ -1269,6 +1632,29 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append("Buttons grouping applied to component production workbook")
     developer_debug_messages.append("production workbook header note added to Marked")
     developer_debug_messages.append("calculation sheet created")
+    if sorted_cabinet_ids:
+        developer_debug_messages.append(
+            "component production workbook: cabinet mode active -> "
+            + ", ".join(sorted_cabinet_ids)
+        )
+        developer_debug_messages.append(
+            "component production workbook: global Production check skipped because cabinet sheets exist"
+        )
+        developer_debug_messages.append(
+            "component calculation sheet: cabinet summaries added -> "
+            + ", ".join(sorted_cabinet_ids)
+        )
+        for cabinet_id in sorted_cabinet_ids:
+            developer_debug_messages.append(
+                f"component production workbook: cabinet {cabinet_id} source rows -> {cabinet_source_row_counts[cabinet_id]}"
+            )
+            developer_debug_messages.append(
+                f"component production workbook: cabinet {cabinet_id} production rows -> {cabinet_production_row_counts[cabinet_id]}"
+            )
+    else:
+        developer_debug_messages.append(
+            "component production workbook: no cabinets detected, using Production check fallback"
+        )
     developer_debug_messages.append(
         "component strip voltage split -> "
         f"24VDC={component_strip_stats['24vdc_rows']}, 230VAC={component_strip_stats['230vac_rows']}"
@@ -1384,6 +1770,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     return {
         "sheets": component_sheets,
+        "cabinet_map": cabinet_map,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": developer_debug_messages,
         "debug_workbook": None,

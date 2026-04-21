@@ -118,6 +118,7 @@ def _process_marking_inputs() -> None:
         "filename": output_filename,
         "project_number": resolved_project_number or "",
         "sheet_names": list(sheets.keys()),
+        "developer_debug_messages": debug_info,
         "debug_workbooks": debug_workbooks,
         "production_workbooks": production_workbooks,
         "debug_status": {
@@ -186,6 +187,7 @@ def render_marking_tool() -> None:
         if resolved_project_number:
             st.caption(f"Project number: {resolved_project_number}")
         user_info_messages = st.session_state.get("marking_user_info") or []
+        developer_debug_messages = results.get("developer_debug_messages", [])
         st.download_button(
             f"Download {results['filename']}",
             data=results["workbook_bytes"],
@@ -248,3 +250,8 @@ def render_marking_tool() -> None:
                         )
                     else:
                         st.text("No debug workbook available")
+
+            if developer_debug_messages:
+                st.markdown("**Developer debug**")
+                for message in developer_debug_messages:
+                    st.text(message)
