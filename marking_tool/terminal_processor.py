@@ -28,6 +28,9 @@ _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
+_TERMINAL_STRIP_START_STOP_SPACE = 6.2
+_TERMINAL_STRIP_START_TEXT = "START"
+_TERMINAL_STRIP_STOP_TEXT = "STOP"
 _TERMINAL_STRIP_TERMINAL_SPACE = 5.27
 _TERMINAL_STRIP_COVER_SPACE = 0.8
 _TERMINAL_CONN_POSITION_MAP = {
@@ -1039,6 +1042,29 @@ def _render_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> pd.Data
     return pd.DataFrame(rendered_rows, columns=strip_columns)
 
 
+def _wrap_terminal_strip_with_start_stop(terminal_strip_df: pd.DataFrame) -> pd.DataFrame:
+    """Add START/STOP rows to the exported Terminal Strip without changing planner spacing logic."""
+    strip_columns = ["Space", "Text"]
+    if terminal_strip_df.empty:
+        return terminal_strip_df.copy().reset_index(drop=True)
+
+    start_stop_df = pd.DataFrame(
+        [
+            {"Space": _TERMINAL_STRIP_START_STOP_SPACE, "Text": _TERMINAL_STRIP_START_TEXT},
+            {"Space": _TERMINAL_STRIP_START_STOP_SPACE, "Text": _TERMINAL_STRIP_STOP_TEXT},
+        ],
+        columns=strip_columns,
+    )
+    return pd.concat(
+        [
+            start_stop_df.iloc[[0]].copy(),
+            terminal_strip_df.loc[:, strip_columns].copy(),
+            start_stop_df.iloc[[1]].copy(),
+        ],
+        ignore_index=True,
+    )
+
+
 def _build_terminal_strip_sheet_with_debug(
     terminal_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
@@ -1074,6 +1100,7 @@ def _build_terminal_strip_sheet_with_debug(
     tmb_count_map = _build_terminal_tmb_count_map(terminal_df)
     strip_blocks = _build_terminal_strip_blocks(strip_input_df, tmb_count_map)
     terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
+    terminal_strip_df = _wrap_terminal_strip_with_start_stop(terminal_strip_df)
     terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
 
     non_pe_sequence_count = sum(1 for sequence in strip_sequences if sequence["sequence_kind"] == "NON_PE")
@@ -1212,6 +1239,7 @@ def _build_terminal_strip_sheet_with_debug(
     developer_debug_messages.extend(
         validation_warnings if validation_warnings else ["terminal strip: validation warnings -> none"]
     )
+    developer_debug_messages.append("terminal strip: START/STOP rows added")
     return terminal_strip_df, developer_debug_messages, terminal_strip_debug_df
 
 

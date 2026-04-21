@@ -856,14 +856,25 @@ def _build_component_strip_side_df(strip_rows: list[tuple[Any, Any]]) -> pd.Data
     return pd.DataFrame(strip_rows, columns=_COMPONENT_STRIP_SIDE_COLUMNS)
 
 
+def _append_component_strip_stop_row(strip_rows: list[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    """Append STOP immediately after the last real row for one strip side."""
+    if not strip_rows:
+        return []
+    return [
+        *list(strip_rows),
+        (_RELAY_STRIP_START_STOP_SPACE, _RELAY_STRIP_STOP_TEXT),
+    ]
+
+
 def _build_component_strip_layout(
     fuse_strip_rows: list[tuple[Any, Any]],
     relay_strip_rows: list[tuple[Any, Any]],
 ) -> dict[str, Any]:
     """Build a structured side-by-side Component Strip layout for the shared exporter."""
+    wrapped_fuse_strip_rows = _append_component_strip_stop_row(fuse_strip_rows)
     return {
         "layout": "component_strip",
-        "fuse_strip_df": _build_component_strip_side_df(fuse_strip_rows),
+        "fuse_strip_df": _build_component_strip_side_df(wrapped_fuse_strip_rows),
         "relay_strip_df": _build_component_strip_side_df(relay_strip_rows),
     }
 
@@ -921,9 +932,13 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
     strip_stats["relay_width_22_5_rows"] = relay_stats["width_22_5_rows"]
     strip_stats["relay_width_27_rows"] = relay_stats["width_27_rows"]
     strip_stats["relay_width_6_2_rows"] = relay_stats["width_6_2_rows"]
-    strip_stats["layout_rows"] = max(len(fuse_strip_rows), len(relay_strip_rows))
+    strip_layout = _build_component_strip_layout(fuse_strip_rows, relay_strip_rows)
+    strip_stats["layout_rows"] = max(
+        len(strip_layout["fuse_strip_df"]),
+        len(strip_layout["relay_strip_df"]),
+    )
 
-    return _build_component_strip_layout(fuse_strip_rows, relay_strip_rows), strip_stats
+    return strip_layout, strip_stats
 
 
 def _build_component_production_df(
@@ -1277,9 +1292,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(
         f"component strip relay clipfix separators -> {component_strip_stats['relay_clipfix_rows']}"
     )
-    developer_debug_messages.append(
-        f"component strip relay START/STOP rows -> START={component_strip_stats['relay_start_rows']}, STOP={component_strip_stats['relay_stop_rows']}"
-    )
+    developer_debug_messages.append("component strip: START/STOP rows added")
     developer_debug_messages.append(
         "component strip timed ordering sourced from Component Correction processor K192*/K192A* logic"
     )
