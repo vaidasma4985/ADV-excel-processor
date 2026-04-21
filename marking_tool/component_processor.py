@@ -63,6 +63,7 @@ _F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
 _FUSE_STRIP_WIDTH = 6.2
 _FUSE_STRIP_COVERED_WIDTH = 8.3
 _FUSE_STRIP_SEPARATE_COVER_WIDTH = 2.1
+_FUSE_STRIP_230VAC_SEPARATOR_SPACE = 13.45
 _RELAY_STRIP_START_STOP_SPACE = 6.2
 _RELAY_STRIP_1POLE_WIDTH = 6.2
 _RELAY_STRIP_2POLE_WIDTH = 15.8
@@ -742,7 +743,10 @@ def _build_component_fuse_strip_rows(working_df: pd.DataFrame) -> tuple[list[tup
         if voltage_df.empty:
             continue
 
-        strip_rows.append((_FUSE_STRIP_WIDTH, voltage_group))
+        if voltage_group == "24VDC":
+            strip_rows.append((_FUSE_STRIP_WIDTH, voltage_group))
+        else:
+            strip_rows.append((_FUSE_STRIP_230VAC_SEPARATOR_SPACE, ""))
         for row_index, row in enumerate(voltage_df.to_dict("records")):
             row_name = _stringify_cell(row.get("Name"))
             row_space = (
@@ -1262,6 +1266,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     )
     developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
     developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
+    developer_debug_messages.append("fuse strip: replaced 230VAC label with 13.45 spacing")
     developer_debug_messages.append(
         "component strip supported widths -> "
         f"fuse={_FUSE_STRIP_WIDTH}, "
