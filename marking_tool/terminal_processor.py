@@ -1934,8 +1934,7 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, sheet_content in sheets.items():
             if (
-                sheet_name == "Terminal markings"
-                and isinstance(sheet_content, dict)
+                isinstance(sheet_content, dict)
                 and sheet_content.get("layout") == "terminal_markings"
             ):
                 _write_terminal_markings_sheet(
@@ -1947,8 +1946,7 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                 continue
 
             if (
-                sheet_name == "Component Strip"
-                and isinstance(sheet_content, dict)
+                isinstance(sheet_content, dict)
                 and sheet_content.get("layout") == "component_strip"
             ):
                 _write_component_strip_sheet(

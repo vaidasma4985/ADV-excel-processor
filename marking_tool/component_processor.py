@@ -264,6 +264,35 @@ def _sanitize_component_cabinet_sheet_name(cabinet_id: Any) -> str:
     return sanitized_name[:31]
 
 
+def _build_component_markings_workbook_sheet_name(cabinet_id: Any, suffix: str) -> str:
+    """Build a valid main Markings workbook sheet name for one cabinet component sheet."""
+    safe_cabinet_id = _sanitize_component_cabinet_sheet_name(cabinet_id) or "CABINET"
+    safe_suffix = _stringify_cell(suffix)
+    max_cabinet_length = max(1, 31 - len(f" {safe_suffix}"))
+    if len(safe_cabinet_id) > max_cabinet_length:
+        safe_cabinet_id = safe_cabinet_id[:max_cabinet_length]
+    return f"{safe_cabinet_id} {safe_suffix}"
+
+
+def _build_component_debug_workbook(
+    debug_sheets: dict[str, Any],
+) -> bytes | None:
+    """Reuse the shared workbook exporter for component debug support sheets."""
+    if not debug_sheets:
+        return None
+    from .terminal_processor import export_placeholder_workbook
+
+    return export_placeholder_workbook(debug_sheets)
+
+
+def _build_component_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
+    """Build a readable component debug sheet with one message per row."""
+    return pd.DataFrame(
+        [{"Index": index + 1, "Message": message} for index, message in enumerate(messages)],
+        columns=["Index", "Message"],
+    )
+
+
 def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:
     """Extract one raw cabinet ID, sanitized sheet-safe cabinet ID, and normalized cabinet-local Name."""
     text = _stringify_cell(name_value)
@@ -1746,6 +1775,38 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(
         f"component strip rows exported -> {component_strip_stats['layout_rows']}"
     )
+    cabinet_component_sheets: dict[str, Any] = {}
+    if sorted_cabinet_ids:
+        developer_debug_messages.append(
+            "component markings workbook: cabinet sheets added -> "
+            + ", ".join(sorted_cabinet_ids)
+        )
+        for cabinet_id in sorted_cabinet_ids:
+            cabinet_component_df = cabinet_map[cabinet_id].copy().reset_index(drop=True)
+            cabinet_marking_sheet_name = _build_component_markings_workbook_sheet_name(
+                cabinet_id, "Component Marking"
+            )
+            cabinet_strip_sheet_name = _build_component_markings_workbook_sheet_name(
+                cabinet_id, "Component Strip"
+            )
+            cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_component_df)
+            cabinet_strip_sheet, cabinet_strip_sheet_stats = _build_component_strip_df(cabinet_marking_sheet_df)
+
+            cabinet_component_sheets[cabinet_marking_sheet_name] = cabinet_marking_sheet_df
+            cabinet_component_sheets[cabinet_strip_sheet_name] = cabinet_strip_sheet
+
+            developer_debug_messages.append(
+                f"component markings workbook: added {cabinet_marking_sheet_name}"
+            )
+            developer_debug_messages.append(
+                f"component markings workbook: added {cabinet_strip_sheet_name}"
+            )
+            developer_debug_messages.append(
+                f"component markings workbook: {cabinet_marking_sheet_name} rows -> {len(cabinet_marking_sheet_df)}"
+            )
+            developer_debug_messages.append(
+                f"component markings workbook: {cabinet_strip_sheet_name} rows -> {cabinet_strip_sheet_stats['layout_rows']}"
+            )
     developer_debug_messages.append("component production workbook created")
     developer_debug_messages.append(f"production rows exported: {len(production_df)}")
     developer_debug_messages.append("production workbook uses filtered Component Marking rows only")
@@ -1760,20 +1821,106 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         "production workbook uses filtered Component Marking rows only",
     ]
 
-    component_sheets = {
-        "Component Marking": component_marking_sheet_df,
-        "Component Strip": component_strip_sheet,
-        "Unused": unused_df,
-    }
+    cabinet_count = len(sorted_cabinet_ids)
+    cabinet_mode_label = (
+        "no_cabinet"
+        if cabinet_count == 0
+        else ("single_cabinet" if cabinet_count == 1 else "multi_cabinet")
+    )
+    main_component_sheets: dict[str, Any]
+    debug_component_sheets: dict[str, Any] = {}
+    developer_debug_messages.append(f"component debug workbook: mode -> {cabinet_mode_label}")
+    if cabinet_count == 0:
+        main_component_sheets = {
+            "Component Marking": component_marking_sheet_df,
+            "Component Strip": component_strip_sheet,
+            "Unused": unused_df,
+        }
+        debug_component_sheets = {}
+        developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
+    else:
+        main_component_sheets = {
+            **cabinet_component_sheets,
+        }
+        debug_component_sheets = {
+            "Component Marking": component_marking_sheet_df,
+            "Component Strip": component_strip_sheet,
+            "Unused": unused_df,
+        }
+        developer_debug_messages.append(
+            f"component workbook routing: cabinet mode active -> {cabinet_mode_label}"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: moved Unused to debug workbook"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: main workbook excludes global support sheets in cabinet mode"
+        )
+        developer_debug_messages.append(
+            "component markings workbook: global Component sheets moved to debug workbook in cabinet mode"
+        )
+        developer_debug_messages.append(
+            "component markings workbook: global Unused moved to debug workbook in cabinet mode"
+        )
+
+    if "Unused" in debug_component_sheets:
+        developer_debug_messages.append("component debug workbook: added Unused sheet")
+
+    developer_debug_messages.append("component debug workbook: added Developer Debug sheet")
+    developer_debug_messages.append("component debug workbook: general debug workbook generated")
+    developer_debug_messages.append("component debug UI: verbose debug moved from UI to workbook")
+    debug_component_sheets["Developer Debug"] = _build_component_debug_messages_sheet(
+        developer_debug_messages
+    )
+    developer_debug_messages.append(
+        "component debug workbook sheets -> " + ", ".join(debug_component_sheets.keys())
+    )
+    ui_component_debug_messages = ["Detailed component debug is available in the downloaded debug workbook."]
+
+    component_sheets = main_component_sheets
+    final_main_sheet_names = list(component_sheets.keys())
+    final_debug_sheet_names = list(debug_component_sheets.keys())
+    developer_debug_messages.append(
+        "component workbook routing: final main sheets -> "
+        + (", ".join(final_main_sheet_names) if final_main_sheet_names else "none")
+    )
+    developer_debug_messages.append(
+        "component workbook routing: final debug sheets -> "
+        + (", ".join(final_debug_sheet_names) if final_debug_sheet_names else "none")
+    )
+    if cabinet_count > 0:
+        unexpected_main_sheets = {"Component Marking", "Component Strip", "Unused"} & set(final_main_sheet_names)
+        if unexpected_main_sheets:
+            raise ValueError(
+                "component workbook routing: cabinet mode main workbook unexpectedly includes "
+                + ", ".join(sorted(unexpected_main_sheets))
+            )
+        missing_debug_sheets = {"Component Marking", "Component Strip", "Unused", "Developer Debug"} - set(
+            final_debug_sheet_names
+        )
+        if missing_debug_sheets:
+            raise ValueError(
+                "component workbook routing: cabinet mode debug workbook missing "
+                + ", ".join(sorted(missing_debug_sheets))
+            )
+        developer_debug_messages.append(
+            "component workbook routing: cabinet mode final routing applied successfully"
+        )
+    debug_component_sheets["Developer Debug"] = _build_component_debug_messages_sheet(
+        developer_debug_messages
+    )
     for sheet_name, sheet_df in component_sheets.items():
         _validate_component_export_sheet(sheet_name, sheet_df)
+    for sheet_name, sheet_df in debug_component_sheets.items():
+        _validate_component_export_sheet(sheet_name, sheet_df)
+    component_debug_workbook = _build_component_debug_workbook(debug_component_sheets)
 
     return {
         "sheets": component_sheets,
         "cabinet_map": cabinet_map,
         "user_info_messages": user_info_messages,
-        "developer_debug_messages": developer_debug_messages,
-        "debug_workbook": None,
+        "developer_debug_messages": ui_component_debug_messages,
+        "debug_workbook": component_debug_workbook,
         "production_workbook": production_workbook_bytes,
         "production_filename": _build_component_production_filename(file_name),
         "source_file": file_name or "uploaded_file",

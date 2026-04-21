@@ -248,6 +248,10 @@ def render_marking_tool() -> None:
                             key=f"marking_{tool_name}_debug_download",
                             use_container_width=True,
                         )
+                        if tool_name == "component":
+                            st.caption(
+                                "Detailed component debug is available in the downloaded debug workbook. In cabinet mode it also includes the moved global Component support sheets."
+                            )
                     else:
                         st.text("No debug workbook available")
 
