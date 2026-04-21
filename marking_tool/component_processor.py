@@ -34,6 +34,12 @@ _RELAY_2P_TYPES = {
     "RXG22BD",
     "RXG22P7",
     "RGZE1S48M",
+    "RE17LCBM",
+    "RE22R1AMR",
+}
+
+_RELAY_1P_TYPES = {
+    "39.00.8.230.8240",
 }
 
 _BUTTON_P_TYPES = {
@@ -54,22 +60,29 @@ _FUSE_A_SUFFIX_SORT_PATTERN = re.compile(
 )
 _FUSE_NAME_SORT_PATTERN = re.compile(r"^-F(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
 _F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
-_RELAY_STRIP_WIDTH = 6.2
+_FUSE_STRIP_WIDTH = 6.2
+_FUSE_STRIP_COVERED_WIDTH = 8.3
+_FUSE_STRIP_SEPARATE_COVER_WIDTH = 2.1
+_RELAY_STRIP_1POLE_WIDTH = 6.2
+_RELAY_STRIP_STANDARD_WIDTH = 15.8
+_RELAY_STRIP_RE22_WIDTH = 22.5
 _RELAY_STRIP_CLIPFIX_SPACE = 5.15
 _RELAY_STRIP_GROUP_BY_TYPE = {
-    "RGZE1S48M": "2_pole",
-    "RXZE2S114M": "4_pole",
-    "RE17LCBM": "timed",
-    "RE22R1AMR": "timed",
-    "39.00.8.230.8240": "1_pole",
+    "RXG22BD": "RELAY_2P",
+    "RXG22P7": "RELAY_2P",
+    "RGZE1S48M": "RELAY_2P",
+    "RE17LCBM": "RELAY_2P",
+    "RE22R1AMR": "RELAY_2P",
+    "RXM4GB2P7": "RELAY_4P",
+    "RXM4GB2BD": "RELAY_4P",
+    "RXZE2S114M": "RELAY_4P",
+    "39.00.8.230.8240": "RELAY_1P",
 }
 _RELAY_NAME_A_SUFFIX_SORT_PATTERN = re.compile(
     r"^-K(?P<family>\d+)A(?P<suffix_number>\d*)(?P<suffix_text>.*)$",
     re.IGNORECASE,
 )
 _RELAY_NAME_SORT_PATTERN = re.compile(r"^-K(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
-_TIMED_RELAY_PATTERN = re.compile(r"^-K192(?!A)(?P<suffix_number>\d+)\b", re.IGNORECASE)
-_TIMED_RELAY_A_PATTERN = re.compile(r"^-K192A(?P<suffix_number>\d+)\b", re.IGNORECASE)
 
 _PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description"]
 _RELAY_SECTION_LABEL = "Relays"
@@ -77,7 +90,7 @@ _FUSE_SECTION_LABEL = "Fuses"
 _BUTTON_SECTION_LABEL = "Buttons"
 _PRODUCTION_TECHNICAL_FLAG_COLUMN = "_IncludeInCalculation"
 _GROUPED_COMPONENT_SECTIONS = (
-    (_RELAY_SECTION_LABEL, {"RELAY_4P", "RELAY_2P"}, "relay_rows"),
+    (_RELAY_SECTION_LABEL, {"RELAY_1P", "RELAY_4P", "RELAY_2P"}, "relay_rows"),
     (_FUSE_SECTION_LABEL, {"FUSE"}, "fuse_rows"),
     (_BUTTON_SECTION_LABEL, {"BUTTON"}, "button_rows"),
 )
@@ -221,6 +234,8 @@ def _classify_component_category(name_value: Any, type_value: Any) -> str:
         return "BUTTON"
     if normalized_type in _FUSE_TYPES:
         return "FUSE"
+    if normalized_type in _RELAY_1P_TYPES:
+        return "RELAY_1P"
     if normalized_type in _RELAY_4P_TYPES:
         return "RELAY_4P"
     if normalized_type in _RELAY_2P_TYPES:
@@ -271,6 +286,57 @@ def _classify_component_strip_relay_group(type_value: Any) -> str:
     return _RELAY_STRIP_GROUP_BY_TYPE.get(normalized_type, "")
 
 
+def _sort_component_relay_group_df(relay_group_df: pd.DataFrame) -> pd.DataFrame:
+    """Sort one relay strip group by natural K-name order while preserving input order as a tiebreaker."""
+    if relay_group_df.empty:
+        return relay_group_df.reset_index(drop=True)
+
+    sorted_df = relay_group_df.copy()
+    relay_sort_keys = sorted_df["Name"].map(_component_relay_name_sort_key).tolist()
+    sorted_df[[
+        "_relay_sort_group",
+        "_relay_sort_family",
+        "_relay_sort_variant_kind",
+        "_relay_sort_variant_number",
+        "_relay_sort_suffix",
+        "_relay_sort_text",
+    ]] = pd.DataFrame(relay_sort_keys, index=sorted_df.index)
+    sorted_df = sorted_df.sort_values(
+        by=[
+            "_relay_sort_group",
+            "_relay_sort_family",
+            "_relay_sort_variant_kind",
+            "_relay_sort_variant_number",
+            "_relay_sort_suffix",
+            "_relay_sort_text",
+            "_original_order",
+        ],
+        kind="mergesort",
+    ).drop(
+        columns=[
+            "_relay_sort_group",
+            "_relay_sort_family",
+            "_relay_sort_variant_kind",
+            "_relay_sort_variant_number",
+            "_relay_sort_suffix",
+            "_relay_sort_text",
+        ]
+    )
+    return sorted_df.reset_index(drop=True)
+
+
+def _detect_component_relay_strip_space(type_value: Any, relay_group: str) -> float:
+    """Return the printed strip width for one relay strip row based on original/base TYPE."""
+    normalized_type = _normalize_component_type(type_value)
+    if normalized_type == "RE22R1AMR":
+        return _RELAY_STRIP_RE22_WIDTH
+    if relay_group == "RELAY_1P":
+        return _RELAY_STRIP_1POLE_WIDTH
+    if relay_group in {"RELAY_2P", "RELAY_4P"}:
+        return _RELAY_STRIP_STANDARD_WIDTH
+    return _RELAY_STRIP_1POLE_WIDTH
+
+
 def _component_relay_name_sort_key(name: Any) -> tuple[int, int, int, int, str, str]:
     """Build a natural relay Name sort key where K*A* names follow normal K names."""
     relay_name = _stringify_cell(name)
@@ -302,22 +368,6 @@ def _component_relay_name_sort_key(name: Any) -> tuple[int, int, int, int, str, 
         suffix_text,
         normalized_name,
     )
-
-
-def _component_timed_relay_name_sort_key(name: Any) -> tuple[int, int, str]:
-    """Match the Component Correction Tool timed relay order: K192* first, then K192A*."""
-    relay_name = _stringify_cell(name)
-    normalized_name = relay_name.casefold()
-
-    timed_match = _TIMED_RELAY_PATTERN.match(relay_name)
-    if timed_match:
-        return (0, int(timed_match.group("suffix_number")), normalized_name)
-
-    timed_a_match = _TIMED_RELAY_A_PATTERN.match(relay_name)
-    if timed_a_match:
-        return (1, int(timed_a_match.group("suffix_number")), normalized_name)
-
-    return (2, 10**9, normalized_name)
 
 
 def _component_strip_relay_preview_names(relay_group_df: pd.DataFrame, limit: int = 3) -> list[str]:
@@ -409,10 +459,10 @@ def _sort_grouped_component_rows(component_df: pd.DataFrame) -> pd.DataFrame:
 def _component_group_label_from_category(category_value: Any) -> str:
     """Map internal production categories to flat Component Marking group labels."""
     normalized_category = _stringify_cell(category_value).upper()
-    if normalized_category in {"RELAY_4P", "RELAY_2P"}:
-        return "RELAYS"
     if normalized_category == "FUSE":
         return "FUSES"
+    if normalized_category in {"RELAY_1P", "RELAY_2P", "RELAY_4P"}:
+        return normalized_category
     if normalized_category == "BUTTON":
         return "BUTTONS"
     return "OTHER"
@@ -588,11 +638,15 @@ def _build_component_fuse_strip_rows(working_df: pd.DataFrame) -> tuple[list[tup
         if voltage_df.empty:
             continue
 
-        strip_rows.append((6.2, voltage_group))
+        strip_rows.append((_FUSE_STRIP_WIDTH, voltage_group))
         for row_index, row in enumerate(voltage_df.to_dict("records")):
             row_name = _stringify_cell(row.get("Name"))
-            row_space = 8.3 if last_f92_marker == (voltage_group, row_index) else 6.2
-            if row_space == 8.3:
+            row_space = (
+                _FUSE_STRIP_COVERED_WIDTH
+                if last_f92_marker == (voltage_group, row_index)
+                else _FUSE_STRIP_WIDTH
+            )
+            if row_space == _FUSE_STRIP_COVERED_WIDTH:
                 strip_stats["f92_wide_name"] = row_name
             strip_rows.append((row_space, row_name))
 
@@ -600,126 +654,67 @@ def _build_component_fuse_strip_rows(working_df: pd.DataFrame) -> tuple[list[tup
 
 
 def _build_component_relay_strip_rows(working_df: pd.DataFrame) -> tuple[list[tuple[Any, Any]], dict[str, Any]]:
-    """Build right-side relay strip rows in 2-pole, 4-pole, timed-relay order."""
+    """Build right-side relay strip rows in 1-pole, 2-pole, 4-pole order."""
     strip_stats = {
+        "1pole_rows": 0,
         "2pole_rows": 0,
         "4pole_rows": 0,
-        "timed_rows": 0,
-        "1pole_rows": 0,
         "clipfix_rows": 0,
+        "1pole_preview_names": [],
         "2pole_preview_names": [],
         "4pole_preview_names": [],
-        "timed_preview_names": [],
-        "1pole_preview_names": [],
+        "re17_width_rows": 0,
+        "re22_width_rows": 0,
+        "re17_width_names": [],
+        "re22_width_names": [],
     }
 
     relay_df = working_df.copy()
     relay_df["_relay_group"] = relay_df["TYPE"].map(_classify_component_strip_relay_group)
 
-    two_pole_df = relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy()
-    four_pole_df = relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy()
-    timed_df = relay_df.loc[relay_df["_relay_group"].eq("timed")].copy()
-    one_pole_df = relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy()
+    one_pole_df = _sort_component_relay_group_df(
+        relay_df.loc[relay_df["_relay_group"].eq("RELAY_1P")].copy()
+    )
+    two_pole_df = _sort_component_relay_group_df(
+        relay_df.loc[relay_df["_relay_group"].eq("RELAY_2P")].copy()
+    )
+    four_pole_df = _sort_component_relay_group_df(
+        relay_df.loc[relay_df["_relay_group"].eq("RELAY_4P")].copy()
+    )
 
-    if not two_pole_df.empty:
-        relay_sort_keys = two_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
-        two_pole_df[[
-            "_relay_sort_group",
-            "_relay_sort_family",
-            "_relay_sort_variant_kind",
-            "_relay_sort_variant_number",
-            "_relay_sort_suffix",
-            "_relay_sort_text",
-        ]] = pd.DataFrame(relay_sort_keys, index=two_pole_df.index)
-        two_pole_df = two_pole_df.sort_values(
-            by=[
-                "_relay_sort_group",
-                "_relay_sort_family",
-                "_relay_sort_variant_kind",
-                "_relay_sort_variant_number",
-                "_relay_sort_suffix",
-                "_relay_sort_text",
-                "_original_order",
-            ],
-            kind="mergesort",
-        ).reset_index(drop=True)
-
-    if not four_pole_df.empty:
-        relay_sort_keys = four_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
-        four_pole_df[[
-            "_relay_sort_group",
-            "_relay_sort_family",
-            "_relay_sort_variant_kind",
-            "_relay_sort_variant_number",
-            "_relay_sort_suffix",
-            "_relay_sort_text",
-        ]] = pd.DataFrame(relay_sort_keys, index=four_pole_df.index)
-        four_pole_df = four_pole_df.sort_values(
-            by=[
-                "_relay_sort_group",
-                "_relay_sort_family",
-                "_relay_sort_variant_kind",
-                "_relay_sort_variant_number",
-                "_relay_sort_suffix",
-                "_relay_sort_text",
-                "_original_order",
-            ],
-            kind="mergesort",
-        ).reset_index(drop=True)
-
-    if not timed_df.empty:
-        timed_sort_keys = timed_df["Name"].map(_component_timed_relay_name_sort_key).tolist()
-        timed_df[["_timed_sort_group", "_timed_sort_number", "_timed_sort_text"]] = pd.DataFrame(
-            timed_sort_keys,
-            index=timed_df.index,
-        )
-        timed_df = timed_df.sort_values(
-            by=["_timed_sort_group", "_timed_sort_number", "_timed_sort_text", "_original_order"],
-            kind="mergesort",
-        ).reset_index(drop=True)
-
-    if not one_pole_df.empty:
-        relay_sort_keys = one_pole_df["Name"].map(_component_relay_name_sort_key).tolist()
-        one_pole_df[[
-            "_relay_sort_group",
-            "_relay_sort_family",
-            "_relay_sort_variant_kind",
-            "_relay_sort_variant_number",
-            "_relay_sort_suffix",
-            "_relay_sort_text",
-        ]] = pd.DataFrame(relay_sort_keys, index=one_pole_df.index)
-        one_pole_df = one_pole_df.sort_values(
-            by=[
-                "_relay_sort_group",
-                "_relay_sort_family",
-                "_relay_sort_variant_kind",
-                "_relay_sort_variant_number",
-                "_relay_sort_suffix",
-                "_relay_sort_text",
-                "_original_order",
-            ],
-            kind="mergesort",
-        ).reset_index(drop=True)
-
+    strip_stats["1pole_rows"] = len(one_pole_df)
     strip_stats["2pole_rows"] = len(two_pole_df)
     strip_stats["4pole_rows"] = len(four_pole_df)
-    strip_stats["timed_rows"] = len(timed_df)
-    strip_stats["1pole_rows"] = len(one_pole_df)
+    strip_stats["1pole_preview_names"] = _component_strip_relay_preview_names(one_pole_df)
     strip_stats["2pole_preview_names"] = _component_strip_relay_preview_names(two_pole_df)
     strip_stats["4pole_preview_names"] = _component_strip_relay_preview_names(four_pole_df)
-    strip_stats["timed_preview_names"] = _component_strip_relay_preview_names(timed_df)
-    strip_stats["1pole_preview_names"] = _component_strip_relay_preview_names(one_pole_df)
 
-    relay_groups = [two_pole_df, four_pole_df, timed_df]
+    relay_groups = [
+        ("RELAY_1P", one_pole_df),
+        ("RELAY_2P", two_pole_df),
+        ("RELAY_4P", four_pole_df),
+    ]
     relay_strip_rows: list[tuple[Any, Any]] = []
-    for group_index, group_df in enumerate(relay_groups):
+    for group_index, (group_label, group_df) in enumerate(relay_groups):
         if group_df.empty:
             continue
-        relay_strip_rows.extend(
-            (_RELAY_STRIP_WIDTH, _stringify_cell(row.get("Name")))
-            for row in group_df.to_dict("records")
-        )
-        if any(not next_group.empty for next_group in relay_groups[group_index + 1 :]):
+        for row in group_df.to_dict("records"):
+            row_name = _stringify_cell(row.get("Name"))
+            row_type = row.get("TYPE")
+            row_space = _detect_component_relay_strip_space(row_type, group_label)
+            relay_strip_rows.append((row_space, row_name))
+
+            normalized_type = _normalize_component_type(row_type)
+            if normalized_type == "RE17LCBM":
+                strip_stats["re17_width_rows"] += 1
+                if row_name:
+                    strip_stats["re17_width_names"].append(row_name)
+            elif normalized_type == "RE22R1AMR":
+                strip_stats["re22_width_rows"] += 1
+                if row_name:
+                    strip_stats["re22_width_names"].append(row_name)
+
+        if any(not next_group_df.empty for _, next_group_df in relay_groups[group_index + 1 :]):
             relay_strip_rows.append((_RELAY_STRIP_CLIPFIX_SPACE, ""))
             strip_stats["clipfix_rows"] += 1
 
@@ -750,15 +745,17 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
         "24vdc_rows": 0,
         "230vac_rows": 0,
         "f92_wide_name": "",
+        "relay_1pole_rows": 0,
         "relay_2pole_rows": 0,
         "relay_4pole_rows": 0,
-        "relay_timed_rows": 0,
-        "relay_1pole_rows": 0,
         "relay_clipfix_rows": 0,
+        "relay_1pole_preview_names": [],
         "relay_2pole_preview_names": [],
         "relay_4pole_preview_names": [],
-        "relay_timed_preview_names": [],
-        "relay_1pole_preview_names": [],
+        "relay_re17_width_rows": 0,
+        "relay_re22_width_rows": 0,
+        "relay_re17_width_names": [],
+        "relay_re22_width_names": [],
         "layout_rows": 0,
     }
     if component_marking_sheet_df.empty:
@@ -773,15 +770,17 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
     fuse_strip_rows, fuse_stats = _build_component_fuse_strip_rows(working_df)
     relay_strip_rows, relay_stats = _build_component_relay_strip_rows(working_df)
     strip_stats.update(fuse_stats)
+    strip_stats["relay_1pole_rows"] = relay_stats["1pole_rows"]
     strip_stats["relay_2pole_rows"] = relay_stats["2pole_rows"]
     strip_stats["relay_4pole_rows"] = relay_stats["4pole_rows"]
-    strip_stats["relay_timed_rows"] = relay_stats["timed_rows"]
-    strip_stats["relay_1pole_rows"] = relay_stats["1pole_rows"]
     strip_stats["relay_clipfix_rows"] = relay_stats["clipfix_rows"]
+    strip_stats["relay_1pole_preview_names"] = relay_stats["1pole_preview_names"]
     strip_stats["relay_2pole_preview_names"] = relay_stats["2pole_preview_names"]
     strip_stats["relay_4pole_preview_names"] = relay_stats["4pole_preview_names"]
-    strip_stats["relay_timed_preview_names"] = relay_stats["timed_preview_names"]
-    strip_stats["relay_1pole_preview_names"] = relay_stats["1pole_preview_names"]
+    strip_stats["relay_re17_width_rows"] = relay_stats["re17_width_rows"]
+    strip_stats["relay_re22_width_rows"] = relay_stats["re22_width_rows"]
+    strip_stats["relay_re17_width_names"] = relay_stats["re17_width_names"]
+    strip_stats["relay_re22_width_names"] = relay_stats["re22_width_names"]
     strip_stats["layout_rows"] = max(len(fuse_strip_rows), len(relay_strip_rows))
 
     return _build_component_strip_layout(fuse_strip_rows, relay_strip_rows), strip_stats
@@ -1065,9 +1064,11 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     component_strip_sheet, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
     production_workbook_bytes = _export_component_production_workbook(production_df)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
+    group_counts = component_marking_sheet_df.get("Group", pd.Series(dtype=object)).value_counts(dropna=False)
 
     developer_debug_messages.append(f"component parser: moved {len(unused_df)} rows to Unused")
     developer_debug_messages.append(f"component parser: FUSE rows -> {int(category_counts.get('FUSE', 0))}")
+    developer_debug_messages.append(f"component parser: RELAY_1P rows -> {int(category_counts.get('RELAY_1P', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_4P rows -> {int(category_counts.get('RELAY_4P', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_2P rows -> {int(category_counts.get('RELAY_2P', 0))}")
     developer_debug_messages.append(f"component parser: BUTTON rows -> {int(category_counts.get('BUTTON', 0))}")
@@ -1080,6 +1081,15 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(f"grouped button rows count: {grouped_row_counts['button_rows']}")
     developer_debug_messages.append("Component Marking sheet kept flat with original row order")
     developer_debug_messages.append("Component Marking sheet uses Group classification column")
+    developer_debug_messages.append(
+        "Component Marking group counts -> "
+        f"FUSES={int(group_counts.get('FUSES', 0))}, "
+        f"RELAY_1P={int(group_counts.get('RELAY_1P', 0))}, "
+        f"RELAY_2P={int(group_counts.get('RELAY_2P', 0))}, "
+        f"RELAY_4P={int(group_counts.get('RELAY_4P', 0))}, "
+        f"BUTTONS={int(group_counts.get('BUTTONS', 0))}, "
+        f"OTHER={int(group_counts.get('OTHER', 0))}"
+    )
     developer_debug_messages.append("Buttons grouping applied to component production workbook")
     developer_debug_messages.append("production workbook header note added to Marked")
     developer_debug_messages.append("calculation sheet created")
@@ -1098,16 +1108,32 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
     developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
     developer_debug_messages.append(
+        "component strip supported widths -> "
+        f"fuse={_FUSE_STRIP_WIDTH}, "
+        f"fuse_with_cover={_FUSE_STRIP_COVERED_WIDTH}, "
+        f"separate_cover={_FUSE_STRIP_SEPARATE_COVER_WIDTH}, "
+        f"clipfix={_RELAY_STRIP_CLIPFIX_SPACE}, "
+        f"relay_1pole={_RELAY_STRIP_1POLE_WIDTH}, "
+        f"relay_standard={_RELAY_STRIP_STANDARD_WIDTH}, "
+        f"relay_re22={_RELAY_STRIP_RE22_WIDTH}"
+    )
+    developer_debug_messages.append(
         "component strip relay groups -> "
+        f"1 Pole={component_strip_stats['relay_1pole_rows']}, "
         f"2 Pole={component_strip_stats['relay_2pole_rows']}, "
-        f"4 Pole={component_strip_stats['relay_4pole_rows']}, "
-        f"Timed relays={component_strip_stats['relay_timed_rows']}, "
-        f"1 Pole={component_strip_stats['relay_1pole_rows']}"
+        f"4 Pole={component_strip_stats['relay_4pole_rows']}"
     )
     developer_debug_messages.append(
         f"component strip relay clipfix separators -> {component_strip_stats['relay_clipfix_rows']}"
     )
-    developer_debug_messages.append("component strip timed relays ordered as K192* then K192A*")
+    developer_debug_messages.append(
+        "component strip relay preview 1_pole -> "
+        + (
+            ", ".join(component_strip_stats["relay_1pole_preview_names"])
+            if component_strip_stats["relay_1pole_preview_names"]
+            else "none"
+        )
+    )
     developer_debug_messages.append(
         "component strip relay preview 2_pole -> "
         + (
@@ -1125,18 +1151,18 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         )
     )
     developer_debug_messages.append(
-        "component strip relay preview timed -> "
+        f"component strip width assignment RE17LCBM -> width {_RELAY_STRIP_STANDARD_WIDTH}, rows {component_strip_stats['relay_re17_width_rows']}, names "
         + (
-            ", ".join(component_strip_stats["relay_timed_preview_names"])
-            if component_strip_stats["relay_timed_preview_names"]
+            ", ".join(component_strip_stats["relay_re17_width_names"])
+            if component_strip_stats["relay_re17_width_names"]
             else "none"
         )
     )
     developer_debug_messages.append(
-        "component strip relay preview 1_pole -> "
+        f"component strip width assignment RE22R1AMR -> width {_RELAY_STRIP_RE22_WIDTH}, rows {component_strip_stats['relay_re22_width_rows']}, names "
         + (
-            ", ".join(component_strip_stats["relay_1pole_preview_names"])
-            if component_strip_stats["relay_1pole_preview_names"]
+            ", ".join(component_strip_stats["relay_re22_width_names"])
+            if component_strip_stats["relay_re22_width_names"]
             else "none"
         )
     )
