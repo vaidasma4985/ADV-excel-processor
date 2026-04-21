@@ -219,15 +219,22 @@ def _is_unused_component_name(name: Any) -> bool:
     text = _stringify_cell(name)
     if text == "":
         return True
-    if text.startswith("+"):
+
+    evaluation_text = text
+    if text.startswith("+A"):
+        cabinet_split_index = text.find("-", 2)
+        if cabinet_split_index != -1:
+            evaluation_text = text[cabinet_split_index:]
+
+    if text.startswith("+") and not text.startswith("+A"):
         return True
-    if text.startswith("-B"):
+    if evaluation_text.startswith("-B"):
         return True
-    if text.startswith("-W"):
+    if evaluation_text.startswith("-W"):
         return True
-    if text.startswith("-M") and not text.startswith("-M92"):
+    if evaluation_text.startswith("-M") and not evaluation_text.startswith("-M92"):
         return True
-    if text.startswith("-X") and not text.startswith("-X921"):
+    if evaluation_text.startswith("-X") and not evaluation_text.startswith("-X921"):
         return True
     return False
 
@@ -1207,8 +1214,12 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     if "Name" in component_df.columns:
         unused_mask = component_df["Name"].map(_is_unused_component_name)
+        cabinet_prefixed_mask = component_df["Name"].map(
+            lambda value: _stringify_cell(value).startswith("+A")
+        )
     else:
         unused_mask = pd.Series(True, index=component_df.index)
+        cabinet_prefixed_mask = pd.Series(False, index=component_df.index)
 
     unused_df = component_df.loc[unused_mask].reset_index(drop=True)
     component_marking_df = component_df.loc[~unused_mask].reset_index(drop=True)
@@ -1225,6 +1236,12 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
     group_counts = component_marking_sheet_df.get("Group", pd.Series(dtype=object)).value_counts(dropna=False)
 
+    developer_debug_messages.append(
+        f"component parser: kept +A* cabinet-prefixed rows in main Component flow -> {int((cabinet_prefixed_mask & ~unused_mask).sum())}"
+    )
+    developer_debug_messages.append(
+        f"component parser: +A* cabinet-prefixed rows still moved to Unused by normal rules -> {int((cabinet_prefixed_mask & unused_mask).sum())}"
+    )
     developer_debug_messages.append(f"component parser: moved {len(unused_df)} rows to Unused")
     developer_debug_messages.append(f"component parser: FUSE rows -> {int(category_counts.get('FUSE', 0))}")
     developer_debug_messages.append(f"component parser: RELAY_1P rows -> {int(category_counts.get('RELAY_1P', 0))}")
