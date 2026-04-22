@@ -485,6 +485,23 @@ def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[
     return button_other_groups
 
 
+def _build_component_cm_mounting_plate_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build one flat Mounting plate list from local non-strip component Names only."""
+    cm_source_df = _build_component_cm_source_df(component_df)
+    if cm_source_df.empty:
+        return []
+
+    mounting_plate_df = cm_source_df.loc[
+        cm_source_df["Name"].map(_stringify_cell).ne("")
+        & cm_source_df["TYPE"].map(_detect_fuse_voltage_group).isna()
+        & cm_source_df.apply(
+            lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")) == "",
+            axis=1,
+        )
+    ].copy()
+    return mounting_plate_df["Name"].map(_stringify_cell).tolist()
+
+
 def _build_component_cm_component_entries(component_df: pd.DataFrame) -> list[str]:
     """Build one CM Component-column list in strip-style group order with blank rows between groups."""
     cm_source_df = _build_component_cm_source_df(component_df)
@@ -513,6 +530,7 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
     if component_df is None or component_df.empty or "Name" not in component_df.columns:
         return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
 
+    mounting_plate_entries = _build_component_cm_mounting_plate_entries(component_df)
     local_names = component_df["Name"].map(_normalize_component_local_name)
     door_names = [
         local_name
@@ -520,10 +538,10 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
         if local_name.startswith("-P") or local_name.startswith("-S")
     ]
     component_entries = _build_component_cm_component_entries(component_df)
-    row_count = max(len(component_entries), len(door_names))
+    row_count = max(len(mounting_plate_entries), len(component_entries), len(door_names))
     return _ComponentCmSheetDataFrame(
         {
-            "Mounting plate": [""] * row_count,
+            "Mounting plate": mounting_plate_entries + [""] * (row_count - len(mounting_plate_entries)),
             "Component": component_entries + [""] * (row_count - len(component_entries)),
             "Door": door_names + [""] * (row_count - len(door_names)),
         },
