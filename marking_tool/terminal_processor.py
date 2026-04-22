@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 import re
 from typing import Any
+from copy import copy
 
 import pandas as pd
 
@@ -1925,6 +1926,20 @@ def _build_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
     )
 
 
+def _set_excel_font(cell: Any, *, name: str = "Arial") -> None:
+    """Update one cell font name while preserving unrelated font properties."""
+    updated_font = copy(cell.font)
+    updated_font.name = name
+    cell.font = updated_font
+
+
+def _apply_worksheet_arial_font_formatting(worksheet: Any) -> None:
+    """Render every written worksheet cell in Arial."""
+    for row in worksheet.iter_rows():
+        for cell in row:
+            _set_excel_font(cell, name="Arial")
+
+
 def _write_terminal_markings_sheet(
     writer: Any,
     sheet_name: str,
@@ -1951,6 +1966,8 @@ def _write_terminal_markings_sheet(
                 cell.value = ""
             else:
                 cell.value = str(cell.value)
+
+    _apply_worksheet_arial_font_formatting(worksheet)
 
 
 def _write_component_strip_sheet(
@@ -1979,6 +1996,8 @@ def _write_component_strip_sheet(
                 cell.value = ""
             else:
                 cell.value = str(cell.value)
+
+    _apply_worksheet_arial_font_formatting(worksheet)
 
 
 def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
@@ -2022,5 +2041,6 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                         cell.value = ""
                     else:
                         cell.value = str(cell.value)
+            _apply_worksheet_arial_font_formatting(worksheet)
     output.seek(0)
     return output.getvalue()
