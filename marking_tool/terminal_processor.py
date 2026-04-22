@@ -1927,9 +1927,11 @@ def _build_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
 
 
 def _set_excel_font(cell: Any, *, name: str = "Arial") -> None:
-    """Update one cell font name while preserving unrelated font properties."""
+    """Update one cell font while disabling theme-font fallback in Excel."""
     updated_font = copy(cell.font)
     updated_font.name = name
+    updated_font.scheme = None
+    updated_font.family = 2
     cell.font = updated_font
 
 
