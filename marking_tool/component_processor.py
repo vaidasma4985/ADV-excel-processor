@@ -147,7 +147,14 @@ def _stringify_cell(value: Any) -> str:
 
 def _is_filtered_component_name(value: Any) -> bool:
     """Remove global -S*.S component rows before they enter downstream processing."""
-    return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(_stringify_cell(value).upper()))
+    text = _stringify_cell(value)
+    evaluation_text = text
+    if text.startswith("+A"):
+        cabinet_split_index = text.find("-", 2)
+        if cabinet_split_index != -1:
+            evaluation_text = text[cabinet_split_index:]
+
+    return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(evaluation_text.upper()))
 
 
 def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
