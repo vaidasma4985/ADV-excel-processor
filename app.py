@@ -6,6 +6,7 @@ import pandas as pd
 import openpyxl
 
 from component_correction.ui import render_component_correction
+from marking_tool.ui import clear_marking_tool_state, render_marking_tool
 from wire_tool.ui import render_wire_tool
 
 
@@ -38,6 +39,23 @@ def _reset_component_correction_state() -> None:
         st.session_state.pop(key, None)
 
 
+def _marking_state_active() -> bool:
+    return any(
+        [
+            st.session_state.get("marking_component_bytes") is not None,
+            bool(st.session_state.get("marking_component_name")),
+            st.session_state.get("marking_terminal_bytes") is not None,
+            bool(st.session_state.get("marking_terminal_name")),
+            st.session_state.get("marking_wire_bytes") is not None,
+            bool(st.session_state.get("marking_wire_name")),
+            st.session_state.get("marking_results") is not None,
+            bool(st.session_state.get("marking_warnings")),
+            bool(st.session_state.get("marking_debug_info")),
+            st.session_state.get("marking_run_id") is not None,
+        ]
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="Excel įrankiai", layout="wide")
     st.title("Excel įrankiai")
@@ -55,9 +73,11 @@ def main() -> None:
     if "mode" not in st.session_state:
         st.session_state.mode = "none"
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Component correction", use_container_width=True):
+            if st.session_state.mode == "marking":
+                clear_marking_tool_state()
             component_state_active = any(
                 [
                     st.session_state.get("component_bytes") is not None,
@@ -90,7 +110,17 @@ def main() -> None:
             st.session_state.mode = "component"
     with c2:
         if st.button("Wire sizing tool", use_container_width=True):
+            if st.session_state.mode == "marking":
+                clear_marking_tool_state()
             st.session_state.mode = "wire"
+    with c3:
+        if st.button("Marking tool", use_container_width=True):
+            should_rerun = st.session_state.mode == "marking"
+            if st.session_state.mode != "marking" or _marking_state_active():
+                clear_marking_tool_state()
+            st.session_state.mode = "marking"
+            if should_rerun:
+                st.rerun()
 
     st.divider()
 
@@ -98,6 +128,8 @@ def main() -> None:
         render_component_correction()
     elif st.session_state.mode == "wire":
         render_wire_tool()
+    elif st.session_state.mode == "marking":
+        render_marking_tool()
     else:
         st.info("Pasirink įrankį viršuje.")
 
