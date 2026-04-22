@@ -348,9 +348,34 @@ def _build_component_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
     )
 
 
-def _build_component_cm_sheet_df() -> pd.DataFrame:
-    """Build an empty CM sheet skeleton for future simple component markings."""
-    return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
+def _normalize_component_local_name(name_value: Any) -> str:
+    """Return one cabinet-local component name, removing any +A* prefix when present."""
+    text = _stringify_cell(name_value)
+    cabinet_parts = _extract_component_cabinet_parts(text)
+    if cabinet_parts:
+        return cabinet_parts[2]
+    return text
+
+
+def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Build a CM sheet with only Door rows populated from local -P* / -S* component Names."""
+    if component_df is None or component_df.empty or "Name" not in component_df.columns:
+        return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
+
+    local_names = component_df["Name"].map(_normalize_component_local_name)
+    door_names = [
+        local_name
+        for local_name in local_names.tolist()
+        if local_name.startswith("-P") or local_name.startswith("-S")
+    ]
+    return _ComponentCmSheetDataFrame(
+        {
+            "Mounting plate": [""] * len(door_names),
+            "Component": [""] * len(door_names),
+            "Door": door_names,
+        },
+        columns=_COMPONENT_CM_COLUMNS,
+    )
 
 
 def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:
@@ -1879,7 +1904,9 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
             cabinet_component_sheets[cabinet_marking_sheet_name] = cabinet_marking_sheet_df
             cabinet_component_sheets[cabinet_strip_sheet_name] = cabinet_strip_sheet
             if multi_cabinet_cm_mode:
-                cabinet_component_sheets[cabinet_cm_sheet_name] = _build_component_cm_sheet_df()
+                cabinet_component_sheets[cabinet_cm_sheet_name] = _build_component_cm_sheet_df(
+                    cabinet_component_df
+                )
 
             developer_debug_messages.append(
                 f"component markings workbook: added {cabinet_marking_sheet_name}"
@@ -1900,7 +1927,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
 
     cm_main_sheets: dict[str, Any] = {}
     if not multi_cabinet_cm_mode:
-        cm_main_sheets["CM"] = _build_component_cm_sheet_df()
+        cm_main_sheets["CM"] = _build_component_cm_sheet_df(component_marking_df)
         developer_debug_messages.append("component markings workbook: added CM")
 
     developer_debug_messages.append("component production workbook created")
