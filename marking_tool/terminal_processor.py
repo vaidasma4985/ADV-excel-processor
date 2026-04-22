@@ -28,6 +28,9 @@ _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
+_TERMINAL_GROUP_SORTING_PATTERN = re.compile(r"^(?P<number>\d+)(?P<suffix>[A-Z])?$")
+_TERMINAL_SPECIAL_X6311_NAME = "-X6311"
+_TERMINAL_TYPE_SPECIAL_X6311 = "SPECIAL_X6311"
 _TERMINAL_STRIP_START_STOP_SPACE = 6.2
 _TERMINAL_STRIP_START_TEXT = "START"
 _TERMINAL_STRIP_STOP_TEXT = "STOP"
@@ -82,6 +85,11 @@ def _normalize_terminal_conns_value(value: Any) -> str:
     return text
 
 
+def _normalize_terminal_group_sorting_value(value: Any) -> str:
+    """Normalize terminal Group Sorting values before validation and sorting."""
+    return _stringify_cell(value).upper()
+
+
 def derive_output_filename(terminal_file_name: str) -> str:
     """Build the output workbook filename from the uploaded terminal file name."""
     match = _PROJECT_CODE_PATTERN.match((terminal_file_name or "").strip())
@@ -113,6 +121,21 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
         )
 
     return (10**9, 10**9, 10**9, text)
+
+
+def _terminal_group_sorting_sort_key(value: Any) -> tuple[int, int, str]:
+    """Sort GS by numeric base first, then optional suffix alphabetically."""
+    text = _normalize_terminal_group_sorting_value(value)
+    match = _TERMINAL_GROUP_SORTING_PATTERN.fullmatch(text)
+    if not match:
+        return (10**9, 2, text)
+
+    suffix = match.group("suffix") or ""
+    return (
+        int(match.group("number")),
+        0 if suffix == "" else 1,
+        suffix,
+    )
 
 
 def _get_terminal_conn_position(value: Any) -> tuple[str, int, str]:
@@ -204,7 +227,7 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         return None
 
     reordered_rows: list[pd.Series]
-    if terminal_type == "SPECIAL_GS_7030":
+    if terminal_type == _TERMINAL_TYPE_SPECIAL_X6311:
         remaining_numeric_rows = list(numeric_rows)
         remaining_top_like_rows = list(top_like_rows)
         remaining_blank_rows = list(blank_rows)
@@ -310,7 +333,7 @@ def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> tuple[pd.DataF
     reordered_group_counts: dict[str, int] = {}
     first_reordered_groups: list[str] = []
     first_normal_groups: list[str] = []
-    first_special_gs_7030_groups: list[str] = []
+    first_special_x6311_groups: list[str] = []
     for _, name_group_df in terminal_df.groupby(["Group Sorting", "Name"], sort=False, dropna=False):
         ordered_group_df = _reorder_terminal_name_group(name_group_df.reset_index(drop=True))
         reordered_groups.append(ordered_group_df)
@@ -330,14 +353,14 @@ def _reorder_terminal_conns_by_name(terminal_df: pd.DataFrame) -> tuple[pd.DataF
             name_value = _stringify_cell(ordered_group_df["Name"].iloc[0]) if "Name" in ordered_group_df.columns and not ordered_group_df.empty else ""
             conns_preview = ", ".join(ordered_group_df["Conns."].head(10).tolist()) if "Conns." in ordered_group_df.columns else ""
             first_normal_groups.append(f"{name_value}: [{conns_preview}]")
-        if terminal_type == "SPECIAL_GS_7030" and len(first_special_gs_7030_groups) < 3:
+        if terminal_type == _TERMINAL_TYPE_SPECIAL_X6311 and len(first_special_x6311_groups) < 3:
             name_value = _stringify_cell(ordered_group_df["Name"].iloc[0]) if "Name" in ordered_group_df.columns and not ordered_group_df.empty else ""
             conns_preview = ", ".join(ordered_group_df["Conns."].head(12).tolist()) if "Conns." in ordered_group_df.columns else ""
-            first_special_gs_7030_groups.append(f"{name_value}: [{conns_preview}]")
+            first_special_x6311_groups.append(f"{name_value}: [{conns_preview}]")
 
     if not reordered_groups:
-        return terminal_df.iloc[0:0].copy(), reordered_group_counts, first_reordered_groups, first_normal_groups, first_special_gs_7030_groups
-    return pd.concat(reordered_groups, ignore_index=True), reordered_group_counts, first_reordered_groups, first_normal_groups, first_special_gs_7030_groups
+        return terminal_df.iloc[0:0].copy(), reordered_group_counts, first_reordered_groups, first_normal_groups, first_special_x6311_groups
+    return pd.concat(reordered_groups, ignore_index=True), reordered_group_counts, first_reordered_groups, first_normal_groups, first_special_x6311_groups
 
 
 def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
@@ -345,10 +368,11 @@ def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
     if name_group_df.empty:
         return "NORMAL"
 
-    group_sorting_values = name_group_df["Group Sorting"].apply(_stringify_cell) if "Group Sorting" in name_group_df.columns else pd.Series(dtype=str)
-    if group_sorting_values.eq("7030").any():
-        return "SPECIAL_GS_7030"
+    name_value = _stringify_cell(name_group_df["Name"].iloc[0]) if "Name" in name_group_df.columns else ""
+    if name_value == _TERMINAL_SPECIAL_X6311_NAME:
+        return _TERMINAL_TYPE_SPECIAL_X6311
 
+    group_sorting_values = name_group_df["Group Sorting"].apply(_stringify_cell) if "Group Sorting" in name_group_df.columns else pd.Series(dtype=str)
     conns_values = name_group_df["Conns."].apply(_stringify_cell) if "Conns." in name_group_df.columns else pd.Series(dtype=str)
     is_group_sorting_4010 = bool(group_sorting_values.eq("4010").any())
     has_zero_vdc = bool(conns_values.eq("0VDC").any())
@@ -374,12 +398,15 @@ def _apply_terminal_type_classification(terminal_df: pd.DataFrame) -> tuple[pd.D
     classified_df = terminal_df.copy()
     group_types: dict[str, str] = {}
     detection_stats = {
+        "special_x6311_groups": 0,
         "special_gs_4010_groups": 0,
         "gs_4010_fallback_groups": 0,
     }
     for name_value, name_group_df in classified_df.groupby("Name", sort=False, dropna=False):
         group_type = _classify_terminal_name_group(name_group_df)
         group_types[name_value] = group_type
+        if name_value == _TERMINAL_SPECIAL_X6311_NAME and group_type == _TERMINAL_TYPE_SPECIAL_X6311:
+            detection_stats["special_x6311_groups"] += 1
         group_sorting_values = (
             name_group_df["Group Sorting"].apply(_stringify_cell)
             if "Group Sorting" in name_group_df.columns
@@ -459,7 +486,7 @@ def _split_terminal_pe_rows(
         pe_df["Conns."] = "PE"
         pe_df["Terminal Type"] = "PE"
 
-        pe_df["_group_sorting_sort"] = pe_df["Group Sorting"].astype(int)
+        pe_df["_group_sorting_sort"] = pe_df["Group Sorting"].apply(_terminal_group_sorting_sort_key)
         pe_df["_original_order"] = range(len(pe_df))
         pe_df = pe_df.sort_values(
             by=["_group_sorting_sort", "Group Sorting", "_original_order"],
@@ -571,7 +598,7 @@ def _expand_terminal_pe_rows(
             "plus_one_debug_messages": [],
         }
 
-    pe_terminal_df["_group_sorting_sort"] = pe_terminal_df["Group Sorting"].astype(int)
+    pe_terminal_df["_group_sorting_sort"] = pe_terminal_df["Group Sorting"].apply(_terminal_group_sorting_sort_key)
     pe_terminal_df["_original_order"] = range(len(pe_terminal_df))
     pe_terminal_df = pe_terminal_df.sort_values(
         by=["_group_sorting_sort", "Group Sorting", "_original_order"],
@@ -1397,7 +1424,7 @@ def _reintegrate_terminal_pe_rows(normal_terminal_df: pd.DataFrame, pe_terminal_
     pe_merged_df["_terminal_output_order"] = range(len(pe_merged_df))
 
     terminal_output_df = pd.concat([normal_merged_df, pe_merged_df], ignore_index=True)
-    terminal_output_df["_group_sorting_sort"] = terminal_output_df["Group Sorting"].astype(int)
+    terminal_output_df["_group_sorting_sort"] = terminal_output_df["Group Sorting"].apply(_terminal_group_sorting_sort_key)
     terminal_output_df["_terminal_output_origin_sort"] = (
         terminal_output_df["_terminal_output_origin"].eq("pe").astype(int)
     )
@@ -1497,6 +1524,11 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
             f"terminal normalize: zero-to-blank conversions -> {zero_to_blank_conversions}"
         )
 
+    normalized_lowercase_group_sorting = 0
+    if "Group Sorting" in terminal_df.columns:
+        normalized_lowercase_group_sorting = int(terminal_df["Group Sorting"].str.fullmatch(r"\d+[a-z]").sum())
+        terminal_df["Group Sorting"] = terminal_df["Group Sorting"].apply(_normalize_terminal_group_sorting_value)
+
     if "Name" not in terminal_df.columns or "Group Sorting" not in terminal_df.columns:
         if "Terminal Type" not in terminal_df.columns:
             terminal_df["Terminal Type"] = ""
@@ -1523,9 +1555,12 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     rows_with_non_empty_name = int(non_empty_name_mask.sum())
     terminal_df = terminal_df[non_empty_name_mask].copy()
 
-    valid_group_mask = terminal_df["Group Sorting"].str.fullmatch(r"\d+")
-    rows_with_numeric_group_sorting = int(valid_group_mask.sum())
-    removed_non_numeric_group_sorting = int((~valid_group_mask).sum())
+    developer_debug_messages.append("terminal gs: alphanumeric GS validation enabled")
+    valid_group_mask = terminal_df["Group Sorting"].apply(
+        lambda value: bool(_TERMINAL_GROUP_SORTING_PATTERN.fullmatch(value))
+    )
+    rows_with_valid_group_sorting = int(valid_group_mask.sum())
+    removed_invalid_group_sorting = int((~valid_group_mask).sum())
     terminal_df = terminal_df[valid_group_mask].copy()
 
     gs_7210_mask = terminal_df["Group Sorting"].eq("7210")
@@ -1564,7 +1599,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append("terminal detection: started")
     normal_terminal_df, terminal_type_counts, classified_groups_preview, detection_stats = _apply_terminal_type_classification(normal_terminal_df)
 
-    normal_terminal_df["_group_sorting_sort"] = normal_terminal_df["Group Sorting"].astype(int)
+    normal_terminal_df["_group_sorting_sort"] = normal_terminal_df["Group Sorting"].apply(_terminal_group_sorting_sort_key)
     normal_terminal_df["_original_order"] = range(len(normal_terminal_df))
     normal_terminal_df["_terminal_name_sort"] = normal_terminal_df["Name"].apply(_terminal_name_sort_key)
     if "Conns." in normal_terminal_df.columns:
@@ -1575,7 +1610,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         by=["_group_sorting_sort", "_terminal_name_sort", "Name", "_terminal_conns_sort", "_original_order"],
         kind="mergesort",
     ).drop(columns=["_group_sorting_sort", "_terminal_name_sort", "_terminal_conns_sort", "_original_order"]).reset_index(drop=True)
-    normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_gs_7030_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
+    normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_x6311_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
 
     terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, expanded_pe_terminal_df)
 
@@ -1585,17 +1620,22 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     user_info_messages.append(f"terminal groups reordered by terminal type: {terminal_df['Name'].nunique()}")
     user_info_messages.append(
         "removed rows summary: "
-        f"{removed_visible_no + removed_non_numeric_group_sorting + removed_group_sorting_7210 + removed_xtb + removed_xpe}"
+        f"{removed_visible_no + removed_invalid_group_sorting + removed_group_sorting_7210 + removed_xtb + removed_xpe}"
     )
 
     developer_debug_messages.append(f"terminal parser: removed {removed_visible_no} rows due to Visible == No")
     developer_debug_messages.append(f"terminal parser: rows with non-empty Name -> {rows_with_non_empty_name}")
     developer_debug_messages.append(
-        "terminal parser: rows with numeric Group Sorting after non-empty Name filter -> "
-        f"{rows_with_numeric_group_sorting}"
+        "terminal parser: rows with valid Group Sorting after non-empty Name filter -> "
+        f"{rows_with_valid_group_sorting}"
     )
     developer_debug_messages.append(f"terminal parser: raw rows matching -XTB* by Name -> {raw_xtb_matches}")
-    developer_debug_messages.append(f"terminal parser: removed {removed_non_numeric_group_sorting} rows due to non-numeric Group Sorting")
+    developer_debug_messages.append(
+        f"terminal gs: normalized lowercase suffix values -> {normalized_lowercase_group_sorting}"
+    )
+    developer_debug_messages.append(
+        f"terminal parser: removed {removed_invalid_group_sorting} rows due to invalid Group Sorting"
+    )
     developer_debug_messages.append(f"terminal parser: removed {removed_group_sorting_7210} rows due to Group Sorting == 7210")
     developer_debug_messages.append(f"terminal parser: removed {removed_xtb} rows due to Name startswith -XTB after earlier cleanup")
     developer_debug_messages.append(f"terminal parser: removed {removed_xpe} rows due to Name == -XPE after earlier cleanup")
@@ -1604,7 +1644,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + (
             ", ".join(
                 f"{terminal_type}={terminal_type_counts.get(terminal_type, 0)}"
-                for terminal_type in ("SPECIAL_GS_7030", "SPECIAL_GS_4010", "SIGNAL", "NORMAL")
+                for terminal_type in (_TERMINAL_TYPE_SPECIAL_X6311, "SPECIAL_GS_4010", "SIGNAL", "NORMAL")
             )
             if terminal_type_counts
             else "none"
@@ -1613,6 +1653,10 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(
         "terminal detection: first 10 classified Name groups -> "
         + (" | ".join(classified_groups_preview) if classified_groups_preview else "none")
+    )
+    developer_debug_messages.append(
+        "terminal detection: special -X6311 rule applied -> "
+        + str(detection_stats.get("special_x6311_groups", 0))
     )
     developer_debug_messages.append("terminal detection: narrowed SPECIAL_GS_4010 criteria applied")
     developer_debug_messages.append(
@@ -1626,7 +1670,7 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append("terminal parser: applied GS/Name/Conns sorting")
     developer_debug_messages.append("terminal reorder: applied Supporting Data conn placement mapping")
     developer_debug_messages.append("terminal reorder: applied Terminal Type based Conns ordering")
-    developer_debug_messages.append("terminal reorder: applied SPECIAL_GS_7030 flat sorting mode")
+    developer_debug_messages.append("terminal reorder: applied -X6311 special flat ordering")
     developer_debug_messages.append("terminal reorder: applied NORMAL middle-after-first-signal rule")
     developer_debug_messages.append("terminal reorder: applied NORMAL no-signal blank/middle/bottom rule")
     developer_debug_messages.append("terminal pe: expanded PE rows inserted into Terminal Marking")
@@ -1639,16 +1683,16 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
         + (" | ".join(normal_groups_preview) if normal_groups_preview else "none")
     )
     developer_debug_messages.append(
-        "terminal reorder: SPECIAL_GS_7030 groups count -> "
-        + str(reordered_group_counts.get("SPECIAL_GS_7030", 0))
+        "terminal reorder: special -X6311 groups count -> "
+        + str(reordered_group_counts.get(_TERMINAL_TYPE_SPECIAL_X6311, 0))
     )
     developer_debug_messages.append(
-        "terminal reorder: SPECIAL_GS_7030 groups reordered -> "
-        + str(reordered_group_counts.get("SPECIAL_GS_7030", 0))
+        "terminal reorder: special -X6311 groups reordered -> "
+        + str(reordered_group_counts.get(_TERMINAL_TYPE_SPECIAL_X6311, 0))
     )
     developer_debug_messages.append(
-        "terminal reorder: first 3 SPECIAL_GS_7030 groups preview -> "
-        + (" | ".join(special_gs_7030_groups_preview) if special_gs_7030_groups_preview else "none")
+        "terminal reorder: first 3 special -X6311 groups preview -> "
+        + (" | ".join(special_x6311_groups_preview) if special_x6311_groups_preview else "none")
     )
     developer_debug_messages.append(
         "terminal reorder: SPECIAL_GS_4010 groups count -> "
@@ -1670,6 +1714,15 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     developer_debug_messages.append(
         "terminal output: first 10 GS values after PE reintegration -> "
         + (", ".join(first_gs_values_after_pe_reintegration) if first_gs_values_after_pe_reintegration else "none")
+    )
+    sorted_gs_preview = (
+        terminal_df["Group Sorting"].drop_duplicates().head(10).tolist()
+        if "Group Sorting" in terminal_df.columns
+        else []
+    )
+    developer_debug_messages.append(
+        "terminal gs: first 10 sorted GS values -> "
+        + (", ".join(sorted_gs_preview) if sorted_gs_preview else "none")
     )
     preview_columns = [column_name for column_name in ("Group Sorting", "Name", "Conns.", "TYPE", "Terminal Type") if column_name in terminal_df.columns]
     preview_rows = terminal_df.loc[:, preview_columns].head(15).to_dict(orient="records") if preview_columns else []
