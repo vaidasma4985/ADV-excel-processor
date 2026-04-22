@@ -30,12 +30,17 @@ _RELAY_4P_TYPES = {
     "RXZE2S114M",
 }
 
+_RELAY_RE22_TYPES = {
+    "RE22R1AMR",
+    "RE22R1KMR",
+}
+
 _RELAY_2P_TYPES = {
     "RXG22BD",
     "RXG22P7",
     "RGZE1S48M",
     "RE17LCBM",
-    "RE22R1AMR",
+    *_RELAY_RE22_TYPES,
 }
 
 _RELAY_1P_TYPES = {
@@ -83,7 +88,7 @@ _RELAY_STRIP_GROUP_BY_TYPE = {
     "RXG22P7": "2_pole",
     "RGZE1S48M": "2_pole",
     "RE17LCBM": "2_pole",
-    "RE22R1AMR": "2_pole",
+    **{relay_type: "2_pole" for relay_type in _RELAY_RE22_TYPES},
     "RXM4GB2P7": "4_pole",
     "RXM4GB2BD": "4_pole",
     "RXZE2S114M": "4_pole",
@@ -91,6 +96,7 @@ _RELAY_STRIP_GROUP_BY_TYPE = {
 }
 _RELAY_STRIP_TYPE_PRIORITY = {
     "RE22R1AMR": 0,
+    "RE22R1KMR": 0,
     "RE17LCBM": 1,
     "RGZE1S48M": 2,
     "RXZE2S114M": 3,
@@ -574,7 +580,7 @@ def _detect_component_relay_strip_space(type_value: Any, relay_group: str) -> fl
         return _RELAY_STRIP_4POLE_WIDTH
     if relay_group == "1_pole":
         return _RELAY_STRIP_1POLE_WIDTH
-    if normalized_type == "RE22R1AMR":
+    if normalized_type in _RELAY_RE22_TYPES:
         return _RELAY_STRIP_RE22_WIDTH
     return _RELAY_STRIP_2POLE_WIDTH
 
