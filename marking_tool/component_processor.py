@@ -17,6 +17,7 @@ _COMPONENT_EXPECTED_COLUMNS = {
 
 _COMPONENT_OPTIONAL_COLUMNS = {
     "description": "Description",
+    "article no": "Article No.",
 }
 
 _FUSE_TYPES = {
@@ -115,11 +116,13 @@ _RELAY_NAME_SORT_PATTERN = re.compile(r"^-K(?P<number>\d+)(?P<suffix>.*)$", re.I
 _TIMED_RELAY_PATTERN = re.compile(r"^-K192(?!A)(?P<suffix_number>\d+)\b", re.IGNORECASE)
 _TIMED_RELAY_A_PATTERN = re.compile(r"^-K192A(?P<suffix_number>\d+)\b", re.IGNORECASE)
 
-_PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description", "Comments"]
+_PRODUCTION_COLUMNS = ["Name", "Article No.", "TYPE", "Quantity", "Marked", "Description", "Comments"]
 _RELAY_SECTION_LABEL = "Relays"
 _FUSE_SECTION_LABEL = "Fuses"
 _BUTTON_SECTION_LABEL = "Buttons"
+_OTHER_SECTION_LABEL = "Other"
 _PRODUCTION_TECHNICAL_FLAG_COLUMN = "_IncludeInCalculation"
+_PRODUCTION_ONLY_COMPONENT_COLUMNS = ("Article No.",)
 _GROUPED_COMPONENT_SECTIONS = (
     (_RELAY_SECTION_LABEL, {"RELAY_1P", "RELAY_4P", "RELAY_2P"}, "relay_rows"),
     (_FUSE_SECTION_LABEL, {"FUSE"}, "fuse_rows"),
@@ -738,6 +741,11 @@ def _component_group_label_from_category(category_value: Any) -> str:
     return "OTHER"
 
 
+def _drop_production_only_component_columns(component_df: pd.DataFrame) -> pd.DataFrame:
+    """Keep production-only source fields out of non-production workbook sheets."""
+    return component_df.drop(columns=list(_PRODUCTION_ONLY_COMPONENT_COLUMNS), errors="ignore").copy()
+
+
 def _split_component_groups(
     component_marking_df: pd.DataFrame,
 ) -> tuple[list[tuple[str, pd.DataFrame, str]], pd.DataFrame, dict[str, int]]:
@@ -771,6 +779,7 @@ def _build_production_section_row(label: str) -> dict[str, Any]:
     """Create a visual section row for grouped component entries."""
     return {
         "Name": label,
+        "Article No.": "",
         "TYPE": "",
         "Quantity": "",
         "Marked": "",
@@ -786,6 +795,7 @@ def _build_production_separator_row() -> dict[str, Any]:
     """Create an empty visual separator row after a grouped section."""
     return {
         "Name": "",
+        "Article No.": "",
         "TYPE": "",
         "Quantity": "",
         "Marked": "",
@@ -803,7 +813,7 @@ def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[di
         return []
 
     production_rows = pd.DataFrame(index=component_df.index)
-    for column_name in ("Name", "TYPE", "Quantity", "Description"):
+    for column_name in ("Name", "Article No.", "TYPE", "Quantity", "Description"):
         if column_name in component_df.columns:
             production_rows[column_name] = component_df[column_name]
         else:
@@ -821,12 +831,12 @@ def _build_component_marking_sheet_df(
 ) -> pd.DataFrame:
     """Build a flat Component Marking data sheet with a stable Group column."""
     if component_marking_df.empty:
-        output_df = component_marking_df.copy().reset_index(drop=True)
+        output_df = _drop_production_only_component_columns(component_marking_df).reset_index(drop=True)
         if "Group" not in output_df.columns:
             output_df["Group"] = pd.Series(dtype=object)
         return output_df
 
-    output_df = component_marking_df.copy().reset_index(drop=True)
+    output_df = _drop_production_only_component_columns(component_marking_df).reset_index(drop=True)
     output_df["Group"] = output_df.get("Category", pd.Series(index=output_df.index, dtype=object)).map(
         _component_group_label_from_category
     ).fillna("OTHER")
@@ -1133,7 +1143,9 @@ def _build_component_production_df(
         ordered_records.append(_build_production_separator_row())
 
     if not other_df.empty:
+        ordered_records.append(_build_production_section_row(_OTHER_SECTION_LABEL))
         ordered_records.extend(_component_rows_to_production_records(other_df))
+        ordered_records.append(_build_production_separator_row())
 
     production_df = pd.DataFrame(
         ordered_records,
@@ -1210,7 +1222,7 @@ def _write_component_production_sheet(
         if is_separator_row:
             continue
 
-        for text_column in ("Name", "TYPE", "Description", "Comments"):
+        for text_column in ("Name", "Article No.", "TYPE", "Description", "Comments"):
             value = _stringify_cell(row_data.get(text_column))
             column_index = column_indexes[text_column]
             if value:
@@ -1304,6 +1316,7 @@ def _write_component_calculation_block(
     source_production_df: pd.DataFrame,
     calculation_columns: list[str],
     calculation_widths: dict[str, int],
+    production_column_indexes: dict[str, int],
     technical_flag_col_index: int,
     xl_col_to_name: Any,
     xl_rowcol_to_cell: Any,
@@ -1348,9 +1361,12 @@ def _write_component_calculation_block(
 
     last_excel_row = len(source_production_df) + 1
     sheet_reference = "'" + source_sheet_name.replace("'", "''") + "'"
-    type_range = f"{sheet_reference}!$B$2:$B${last_excel_row}"
-    quantity_range = f"{sheet_reference}!$C$2:$C${last_excel_row}"
-    marked_range = f"{sheet_reference}!$D$2:$D${last_excel_row}"
+    type_col_letter = xl_col_to_name(production_column_indexes["TYPE"])
+    quantity_col_letter = xl_col_to_name(production_column_indexes["Quantity"])
+    marked_col_letter = xl_col_to_name(production_column_indexes["Marked"])
+    type_range = f"{sheet_reference}!${type_col_letter}$2:${type_col_letter}${last_excel_row}"
+    quantity_range = f"{sheet_reference}!${quantity_col_letter}$2:${quantity_col_letter}${last_excel_row}"
+    marked_range = f"{sheet_reference}!${marked_col_letter}$2:${marked_col_letter}${last_excel_row}"
     include_range = (
         f"{sheet_reference}!${xl_col_to_name(technical_flag_col_index)}$2:"
         f"${xl_col_to_name(technical_flag_col_index)}${last_excel_row}"
@@ -1461,6 +1477,7 @@ def _export_component_production_workbook(
     columns = list(_PRODUCTION_COLUMNS)
     column_widths = {
         "Name": 28,
+        "Article No.": 20,
         "TYPE": 24,
         "Quantity": 12,
         "Marked": 10,
@@ -1537,6 +1554,7 @@ def _export_component_production_workbook(
                 source_production_df=cabinet_production_dfs[cabinet_id],
                 calculation_columns=calculation_columns,
                 calculation_widths=calculation_widths,
+                production_column_indexes=column_indexes,
                 technical_flag_col_index=technical_flag_col_index,
                 xl_col_to_name=xl_col_to_name,
                 xl_rowcol_to_cell=xl_rowcol_to_cell,
@@ -1559,6 +1577,7 @@ def _export_component_production_workbook(
             source_production_df=production_df,
             calculation_columns=calculation_columns,
             calculation_widths=calculation_widths,
+            production_column_indexes=column_indexes,
             technical_flag_col_index=technical_flag_col_index,
             xl_col_to_name=xl_col_to_name,
             xl_rowcol_to_cell=xl_rowcol_to_cell,
@@ -1622,6 +1641,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
     component_marking_sheet_df = _build_component_marking_sheet_df(component_marking_df)
     component_strip_sheet, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
+    unused_export_df = _drop_production_only_component_columns(unused_df)
     production_workbook_bytes = _export_component_production_workbook(production_df, cabinet_production_dfs)
     category_counts = component_marking_df["Category"].value_counts(dropna=False)
     group_counts = component_marking_sheet_df.get("Group", pd.Series(dtype=object)).value_counts(dropna=False)
@@ -1691,6 +1711,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         f"OTHER={int(group_counts.get('OTHER', 0))}"
     )
     developer_debug_messages.append("Buttons grouping applied to component production workbook")
+    developer_debug_messages.append("component production: Article No. column enabled")
     developer_debug_messages.append("production workbook header note added to Marked")
     developer_debug_messages.append("calculation sheet created")
     if sorted_cabinet_ids:
@@ -1866,7 +1887,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         main_component_sheets = {
             "Component Marking": component_marking_sheet_df,
             "Component Strip": component_strip_sheet,
-            "Unused": unused_df,
+            "Unused": unused_export_df,
         }
         debug_component_sheets = {}
         developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
@@ -1877,7 +1898,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         debug_component_sheets = {
             "Component Marking": component_marking_sheet_df,
             "Component Strip": component_strip_sheet,
-            "Unused": unused_df,
+            "Unused": unused_export_df,
         }
         developer_debug_messages.append(
             f"component workbook routing: cabinet mode active -> {cabinet_mode_label}"
