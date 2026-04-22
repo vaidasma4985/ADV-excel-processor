@@ -1934,10 +1934,24 @@ def _set_excel_font(cell: Any, *, name: str = "Arial") -> None:
 
 
 def _apply_worksheet_arial_font_formatting(worksheet: Any) -> None:
-    """Render every written worksheet cell in Arial."""
-    for row in worksheet.iter_rows():
+    """Render every visible worksheet cell in Arial, including headers."""
+    if worksheet.max_row < 1 or worksheet.max_column < 1:
+        return
+
+    for row in worksheet.iter_rows(
+        min_row=1,
+        max_row=worksheet.max_row,
+        min_col=1,
+        max_col=worksheet.max_column,
+    ):
         for cell in row:
             _set_excel_font(cell, name="Arial")
+
+
+def _apply_workbook_arial_font_formatting(workbook: Any) -> None:
+    """Apply Arial to every used cell across the whole exported workbook."""
+    for worksheet in workbook.worksheets:
+        _apply_worksheet_arial_font_formatting(worksheet)
 
 
 def _write_terminal_markings_sheet(
@@ -1967,8 +1981,6 @@ def _write_terminal_markings_sheet(
             else:
                 cell.value = str(cell.value)
 
-    _apply_worksheet_arial_font_formatting(worksheet)
-
 
 def _write_component_strip_sheet(
     writer: Any,
@@ -1996,8 +2008,6 @@ def _write_component_strip_sheet(
                 cell.value = ""
             else:
                 cell.value = str(cell.value)
-
-    _apply_worksheet_arial_font_formatting(worksheet)
 
 
 def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
@@ -2041,6 +2051,6 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                         cell.value = ""
                     else:
                         cell.value = str(cell.value)
-            _apply_worksheet_arial_font_formatting(worksheet)
+        _apply_workbook_arial_font_formatting(writer.book)
     output.seek(0)
     return output.getvalue()
