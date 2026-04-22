@@ -54,6 +54,8 @@ _BUTTON_P_TYPES = {
     "XB4BVB3",
 }
 
+_COMPONENT_CM_COLUMNS = ["Mounting plate", "Component", "Door"]
+_COMPONENT_CM_COLUMN_WIDTH = 13.5
 _COMPONENT_STRIP_SIDE_COLUMNS = ["Space", "Text"]
 _COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
 _COMPONENT_CABINET_NAME_PATTERN = re.compile(
@@ -128,6 +130,28 @@ _GROUPED_COMPONENT_SECTIONS = (
     (_FUSE_SECTION_LABEL, {"FUSE"}, "fuse_rows"),
     (_BUTTON_SECTION_LABEL, {"BUTTON"}, "button_rows"),
 )
+
+
+class _ComponentCmSheetDataFrame(pd.DataFrame):
+    """Small DataFrame subtype that applies fixed CM column widths during export."""
+
+    @property
+    def _constructor(self) -> type["_ComponentCmSheetDataFrame"]:
+        return _ComponentCmSheetDataFrame
+
+    def to_excel(self, excel_writer: Any, *args: Any, **kwargs: Any) -> Any:
+        """Write the CM skeleton sheet and keep all three columns at the requested width."""
+        result = super().to_excel(excel_writer, *args, **kwargs)
+        sheet_name = kwargs.get("sheet_name")
+        if sheet_name and hasattr(excel_writer, "book"):
+            from openpyxl.utils import get_column_letter
+
+            worksheet = excel_writer.book[sheet_name]
+            for column_index, _ in enumerate(self.columns, start=1):
+                worksheet.column_dimensions[get_column_letter(column_index)].width = (
+                    _COMPONENT_CM_COLUMN_WIDTH
+                )
+        return result
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -322,6 +346,11 @@ def _build_component_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
         [{"Index": index + 1, "Message": message} for index, message in enumerate(messages)],
         columns=["Index", "Message"],
     )
+
+
+def _build_component_cm_sheet_df() -> pd.DataFrame:
+    """Build an empty CM sheet skeleton for future simple component markings."""
+    return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
 
 
 def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:
@@ -1829,6 +1858,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         f"component strip rows exported -> {component_strip_stats['layout_rows']}"
     )
     cabinet_component_sheets: dict[str, Any] = {}
+    multi_cabinet_cm_mode = len(sorted_cabinet_ids) > 1
     if sorted_cabinet_ids:
         developer_debug_messages.append(
             "component markings workbook: cabinet sheets added -> "
@@ -1842,11 +1872,14 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
             cabinet_strip_sheet_name = _build_component_markings_workbook_sheet_name(
                 cabinet_id, "Component Strip"
             )
+            cabinet_cm_sheet_name = _build_component_markings_workbook_sheet_name(cabinet_id, "CM")
             cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_component_df)
             cabinet_strip_sheet, cabinet_strip_sheet_stats = _build_component_strip_df(cabinet_marking_sheet_df)
 
             cabinet_component_sheets[cabinet_marking_sheet_name] = cabinet_marking_sheet_df
             cabinet_component_sheets[cabinet_strip_sheet_name] = cabinet_strip_sheet
+            if multi_cabinet_cm_mode:
+                cabinet_component_sheets[cabinet_cm_sheet_name] = _build_component_cm_sheet_df()
 
             developer_debug_messages.append(
                 f"component markings workbook: added {cabinet_marking_sheet_name}"
@@ -1854,12 +1887,22 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
             developer_debug_messages.append(
                 f"component markings workbook: added {cabinet_strip_sheet_name}"
             )
+            if multi_cabinet_cm_mode:
+                developer_debug_messages.append(
+                    f"component markings workbook: added {cabinet_cm_sheet_name}"
+                )
             developer_debug_messages.append(
                 f"component markings workbook: {cabinet_marking_sheet_name} rows -> {len(cabinet_marking_sheet_df)}"
             )
             developer_debug_messages.append(
                 f"component markings workbook: {cabinet_strip_sheet_name} rows -> {cabinet_strip_sheet_stats['layout_rows']}"
             )
+
+    cm_main_sheets: dict[str, Any] = {}
+    if not multi_cabinet_cm_mode:
+        cm_main_sheets["CM"] = _build_component_cm_sheet_df()
+        developer_debug_messages.append("component markings workbook: added CM")
+
     developer_debug_messages.append("component production workbook created")
     developer_debug_messages.append(f"production rows exported: {len(production_df)}")
     developer_debug_messages.append("production workbook uses filtered Component Marking rows only")
@@ -1888,12 +1931,14 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
             "Component Marking": component_marking_sheet_df,
             "Component Strip": component_strip_sheet,
             "Unused": unused_export_df,
+            **cm_main_sheets,
         }
         debug_component_sheets = {}
         developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
     else:
         main_component_sheets = {
             **cabinet_component_sheets,
+            **cm_main_sheets,
         }
         debug_component_sheets = {
             "Component Marking": component_marking_sheet_df,
