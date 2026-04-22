@@ -59,6 +59,7 @@ _COMPONENT_CABINET_NAME_PATTERN = re.compile(
     r"^\+(?P<cabinet_id>A\d+)\b(?:[^A-Za-z0-9-]*)?(?P<normalized_name>-.*)$",
     re.IGNORECASE,
 )
+_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN = re.compile(r"^-S.*\.S$")
 _COMPONENT_INVALID_EXCEL_SHEET_CHAR_PATTERN = re.compile(r"[\\/\?\*\[\]:]")
 _FUSE_TYPE_TO_VOLTAGE_GROUP = {
     "2002-1611/1000-541": "24VDC",
@@ -144,6 +145,11 @@ def _stringify_cell(value: Any) -> str:
     return str(value).strip()
 
 
+def _is_filtered_component_name(value: Any) -> bool:
+    """Remove global -S*.S component rows before they enter downstream processing."""
+    return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(_stringify_cell(value).upper()))
+
+
 def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Read the first sheet, drop fully empty rows, and retain expected columns if present."""
     developer_debug_messages: list[str] = []
@@ -221,6 +227,15 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
             component_df[column_name] = component_df[column_name].map(
                 lambda value: _stringify_cell(value) if pd.notna(value) else value
             )
+
+    filtered_s_suffix_rows = 0
+    if "Name" in component_df.columns:
+        filtered_s_suffix_mask = component_df["Name"].map(_is_filtered_component_name)
+        filtered_s_suffix_rows = int(filtered_s_suffix_mask.sum())
+        component_df = component_df.loc[~filtered_s_suffix_mask].reset_index(drop=True)
+    developer_debug_messages.append(
+        f"component filter: removed {filtered_s_suffix_rows} rows matching -S*.S pattern"
+    )
 
     return component_df, found_columns, developer_debug_messages
 
