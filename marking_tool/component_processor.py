@@ -115,7 +115,7 @@ _RELAY_NAME_SORT_PATTERN = re.compile(r"^-K(?P<number>\d+)(?P<suffix>.*)$", re.I
 _TIMED_RELAY_PATTERN = re.compile(r"^-K192(?!A)(?P<suffix_number>\d+)\b", re.IGNORECASE)
 _TIMED_RELAY_A_PATTERN = re.compile(r"^-K192A(?P<suffix_number>\d+)\b", re.IGNORECASE)
 
-_PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description"]
+_PRODUCTION_COLUMNS = ["Name", "TYPE", "Quantity", "Marked", "Description", "Comments"]
 _RELAY_SECTION_LABEL = "Relays"
 _FUSE_SECTION_LABEL = "Fuses"
 _BUTTON_SECTION_LABEL = "Buttons"
@@ -775,6 +775,7 @@ def _build_production_section_row(label: str) -> dict[str, Any]:
         "Quantity": "",
         "Marked": "",
         "Description": "",
+        "Comments": "",
         "_is_section": True,
         "_is_separator": False,
         _PRODUCTION_TECHNICAL_FLAG_COLUMN: 0,
@@ -789,6 +790,7 @@ def _build_production_separator_row() -> dict[str, Any]:
         "Quantity": "",
         "Marked": "",
         "Description": "",
+        "Comments": "",
         "_is_section": False,
         "_is_separator": True,
         _PRODUCTION_TECHNICAL_FLAG_COLUMN: 0,
@@ -807,6 +809,7 @@ def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[di
         else:
             production_rows[column_name] = ""
     production_rows["Marked"] = ""
+    production_rows["Comments"] = ""
     production_rows["_is_section"] = False
     production_rows["_is_separator"] = False
     production_rows[_PRODUCTION_TECHNICAL_FLAG_COLUMN] = 1
@@ -1207,7 +1210,7 @@ def _write_component_production_sheet(
         if is_separator_row:
             continue
 
-        for text_column in ("Name", "TYPE", "Description"):
+        for text_column in ("Name", "TYPE", "Description", "Comments"):
             value = _stringify_cell(row_data.get(text_column))
             column_index = column_indexes[text_column]
             if value:
@@ -1461,7 +1464,8 @@ def _export_component_production_workbook(
         "TYPE": 24,
         "Quantity": 12,
         "Marked": 10,
-        "Description": 42,
+        "Description": 85,
+        "Comments": 28,
     }
     column_indexes = {column_name: column_index for column_index, column_name in enumerate(columns)}
     marked_col_index = column_indexes["Marked"]
