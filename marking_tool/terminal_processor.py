@@ -1070,29 +1070,6 @@ def _render_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> pd.Data
     return pd.DataFrame(rendered_rows, columns=strip_columns)
 
 
-def _wrap_terminal_strip_with_start_stop(terminal_strip_df: pd.DataFrame) -> pd.DataFrame:
-    """Add START/STOP rows to the exported Terminal Strip without changing planner spacing logic."""
-    strip_columns = ["Space", "Text"]
-    if terminal_strip_df.empty:
-        return terminal_strip_df.copy().reset_index(drop=True)
-
-    start_stop_df = pd.DataFrame(
-        [
-            {"Space": _TERMINAL_STRIP_START_STOP_SPACE, "Text": _TERMINAL_STRIP_START_TEXT},
-            {"Space": _TERMINAL_STRIP_START_STOP_SPACE, "Text": _TERMINAL_STRIP_STOP_TEXT},
-        ],
-        columns=strip_columns,
-    )
-    return pd.concat(
-        [
-            start_stop_df.iloc[[0]].copy(),
-            terminal_strip_df.loc[:, strip_columns].copy(),
-            start_stop_df.iloc[[1]].copy(),
-        ],
-        ignore_index=True,
-    )
-
-
 def _build_terminal_strip_sheet_with_debug(
     terminal_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
@@ -1128,7 +1105,6 @@ def _build_terminal_strip_sheet_with_debug(
     tmb_count_map = _build_terminal_tmb_count_map(terminal_df)
     strip_blocks = _build_terminal_strip_blocks(strip_input_df, tmb_count_map)
     terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
-    terminal_strip_df = _wrap_terminal_strip_with_start_stop(terminal_strip_df)
     terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
 
     non_pe_sequence_count = sum(1 for sequence in strip_sequences if sequence["sequence_kind"] == "NON_PE")
@@ -1267,7 +1243,7 @@ def _build_terminal_strip_sheet_with_debug(
     developer_debug_messages.extend(
         validation_warnings if validation_warnings else ["terminal strip: validation warnings -> none"]
     )
-    developer_debug_messages.append("terminal strip: START/STOP rows added")
+    developer_debug_messages.append("terminal strip: START/STOP rows removed from final export")
     return terminal_strip_df, developer_debug_messages, terminal_strip_debug_df
 
 
@@ -1926,17 +1902,19 @@ def _build_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
     )
 
 
-def _set_excel_font(cell: Any, *, name: str = "Arial") -> None:
+def _set_excel_font(cell: Any, *, name: str = "Arial", bold: bool | None = None) -> None:
     """Update one cell font while disabling theme-font fallback in Excel."""
     updated_font = copy(cell.font)
     updated_font.name = name
     updated_font.scheme = None
     updated_font.family = 2
+    if bold is not None:
+        updated_font.bold = bold
     cell.font = updated_font
 
 
 def _apply_worksheet_arial_font_formatting(worksheet: Any) -> None:
-    """Render every visible worksheet cell in Arial, including headers."""
+    """Render every visible worksheet cell in Arial with a non-bold base style."""
     if worksheet.max_row < 1 or worksheet.max_column < 1:
         return
 
@@ -1947,13 +1925,123 @@ def _apply_worksheet_arial_font_formatting(worksheet: Any) -> None:
         max_col=worksheet.max_column,
     ):
         for cell in row:
-            _set_excel_font(cell, name="Arial")
+            _set_excel_font(cell, name="Arial", bold=False)
 
 
 def _apply_workbook_arial_font_formatting(workbook: Any) -> None:
     """Apply Arial to every used cell across the whole exported workbook."""
     for worksheet in workbook.worksheets:
         _apply_worksheet_arial_font_formatting(worksheet)
+
+
+def _find_worksheet_header_columns(worksheet: Any) -> dict[str, list[int]]:
+    """Map header labels from the first row to one or more worksheet column indexes."""
+    if worksheet.max_row < 1 or worksheet.max_column < 1:
+        return {}
+
+    header_columns: dict[str, list[int]] = {}
+    for column_index in range(1, worksheet.max_column + 1):
+        header_value = _stringify_cell(worksheet.cell(row=1, column=column_index).value)
+        if header_value == "":
+            continue
+        header_columns.setdefault(header_value, []).append(column_index)
+    return header_columns
+
+
+def _set_non_empty_column_cells_bold(worksheet: Any, column_indexes: list[int]) -> None:
+    """Bold non-empty data cells in the requested worksheet columns."""
+    if worksheet.max_row < 2:
+        return
+
+    for column_index in column_indexes:
+        for row_index in range(2, worksheet.max_row + 1):
+            cell = worksheet.cell(row=row_index, column=column_index)
+            if _stringify_cell(cell.value) == "":
+                continue
+            _set_excel_font(cell, name="Arial", bold=True)
+
+
+_NON_BOLD_CM_SECTION_LABELS = {
+    "Fuses 24VDC",
+    "Fuses 230VAC",
+    "Relays 2_Pole",
+    "Relays 4_Pole",
+    "Relays Timed",
+    "Relays 1_Pole",
+    "Buttons",
+    "Other",
+}
+
+
+def _set_matching_non_empty_column_cells_bold(
+    worksheet: Any,
+    column_indexes: list[int],
+    matcher: Any,
+) -> None:
+    """Bold non-empty data cells in the requested columns when they match one rule."""
+    if worksheet.max_row < 2:
+        return
+
+    for column_index in column_indexes:
+        for row_index in range(2, worksheet.max_row + 1):
+            cell = worksheet.cell(row=row_index, column=column_index)
+            text_value = _stringify_cell(cell.value)
+            if text_value == "" or not matcher(text_value):
+                continue
+            _set_excel_font(cell, name="Arial", bold=True)
+
+
+def _is_component_marking_sheet_name(sheet_name: str) -> bool:
+    """Return whether one worksheet title represents a Component Marking sheet."""
+    normalized_name = _stringify_cell(sheet_name)
+    return normalized_name == "Component Marking" or normalized_name.endswith(" Component Marking")
+
+
+def _is_component_strip_sheet_name(sheet_name: str) -> bool:
+    """Return whether one worksheet title represents a Component Strip sheet."""
+    normalized_name = _stringify_cell(sheet_name)
+    return normalized_name == "Component Strip" or normalized_name.endswith(" Component Strip")
+
+
+def _is_component_cm_sheet_name(sheet_name: str) -> bool:
+    """Return whether one worksheet title represents a CM sheet."""
+    normalized_name = _stringify_cell(sheet_name)
+    return normalized_name == "CM" or normalized_name.endswith(" CM")
+
+
+def _apply_component_marking_label_bold_formatting(worksheet: Any) -> None:
+    """Bold Name-column values in Component Marking sheets."""
+    header_columns = _find_worksheet_header_columns(worksheet)
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Name", []))
+
+
+def _apply_component_cm_label_bold_formatting(worksheet: Any) -> None:
+    """Bold CM marking entries while keeping section labels non-bold."""
+    header_columns = _find_worksheet_header_columns(worksheet)
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Mounting plate", []))
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Door", []))
+    _set_matching_non_empty_column_cells_bold(
+        worksheet,
+        header_columns.get("Component", []),
+        lambda text_value: text_value not in _NON_BOLD_CM_SECTION_LABELS,
+    )
+
+
+def _apply_component_strip_label_bold_formatting(worksheet: Any) -> None:
+    """Bold non-empty Text-column values in Component Strip sheets."""
+    header_columns = _find_worksheet_header_columns(worksheet)
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Text", []))
+
+
+def _apply_workbook_component_label_bold_formatting(workbook: Any) -> None:
+    """Bold only the component-related marking label cells in the workbook."""
+    for worksheet in workbook.worksheets:
+        if _is_component_marking_sheet_name(worksheet.title):
+            _apply_component_marking_label_bold_formatting(worksheet)
+        elif _is_component_strip_sheet_name(worksheet.title):
+            _apply_component_strip_label_bold_formatting(worksheet)
+        elif _is_component_cm_sheet_name(worksheet.title):
+            _apply_component_cm_label_bold_formatting(worksheet)
 
 
 def _write_terminal_markings_sheet(
@@ -2054,5 +2142,6 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                     else:
                         cell.value = str(cell.value)
         _apply_workbook_arial_font_formatting(writer.book)
+        _apply_workbook_component_label_bold_formatting(writer.book)
     output.seek(0)
     return output.getvalue()
