@@ -56,6 +56,8 @@ _BUTTON_P_TYPES = {
 
 _COMPONENT_CM_COLUMNS = ["Mounting plate", "Component", "Door"]
 _COMPONENT_CM_COLUMN_WIDTH = 14.8
+_COMPONENT_STRIP_INTERNAL_GAP_COLUMNS = 2
+_COMPONENT_FINAL_CM_GAP_COLUMNS = 3
 _COMPONENT_CM_FUSE_GROUP_LABELS = {
     "24VDC": "Fuses 24VDC",
     "230VAC": "Fuses 230VAC",
@@ -158,11 +160,136 @@ class _ComponentCmSheetDataFrame(pd.DataFrame):
             from openpyxl.utils import get_column_letter
 
             worksheet = excel_writer.book[sheet_name]
-            for column_index, _ in enumerate(self.columns, start=1):
-                worksheet.column_dimensions[get_column_letter(column_index)].width = (
+            startcol = int(kwargs.get("startcol", 0) or 0)
+            for column_offset, _ in enumerate(self.columns, start=1):
+                worksheet.column_dimensions[get_column_letter(startcol + column_offset)].width = (
                     _COMPONENT_CM_COLUMN_WIDTH
                 )
         return result
+
+
+class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
+    """Self-rendering final component sheet with Strip on the left and CM on the right."""
+
+    _metadata = [
+        "layout",
+        "component_strip_layout",
+        "component_cm_df",
+        "strip_internal_gap_columns",
+        "cm_gap_columns",
+    ]
+
+    def __init__(
+        self,
+        *args: Any,
+        component_strip_layout: dict[str, Any] | None = None,
+        component_cm_df: pd.DataFrame | None = None,
+        strip_internal_gap_columns: int = _COMPONENT_STRIP_INTERNAL_GAP_COLUMNS,
+        cm_gap_columns: int = _COMPONENT_FINAL_CM_GAP_COLUMNS,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.layout = "component_markings_final"
+        self.component_strip_layout = component_strip_layout or {
+            "layout": "component_strip",
+            "fuse_strip_df": pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+            "relay_strip_df": pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+        }
+        self.component_cm_df = (
+            component_cm_df.copy().reset_index(drop=True)
+            if component_cm_df is not None
+            else _build_component_cm_sheet_df()
+        )
+        self.strip_internal_gap_columns = strip_internal_gap_columns
+        self.cm_gap_columns = cm_gap_columns
+
+    @property
+    def _constructor(self) -> type["_ComponentFinalMarkingSheetDataFrame"]:
+        return _ComponentFinalMarkingSheetDataFrame
+
+    def copy(self, deep: bool = True) -> "_ComponentFinalMarkingSheetDataFrame":
+        """Keep the layout metadata attached when pandas copies the export frame."""
+        copied_df = super().copy(deep=deep)
+        copied_df.layout = self.layout
+        copied_df.component_strip_layout = {
+            "layout": self.component_strip_layout.get("layout", "component_strip"),
+            "fuse_strip_df": self.component_strip_layout.get(
+                "fuse_strip_df",
+                pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+            ).copy(deep=deep),
+            "relay_strip_df": self.component_strip_layout.get(
+                "relay_strip_df",
+                pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+            ).copy(deep=deep),
+        }
+        copied_df.component_cm_df = self.component_cm_df.copy(deep=deep)
+        copied_df.strip_internal_gap_columns = self.strip_internal_gap_columns
+        copied_df.cm_gap_columns = self.cm_gap_columns
+        return copied_df
+
+    def to_excel(self, excel_writer: Any, *args: Any, **kwargs: Any) -> Any:
+        """Write one final component sheet with Strip blocks and CM side-by-side."""
+        sheet_name = kwargs.get("sheet_name")
+        if not sheet_name:
+            raise ValueError("component final marking export requires a sheet_name")
+
+        startrow = int(kwargs.get("startrow", 0) or 0)
+        startcol = int(kwargs.get("startcol", 0) or 0)
+
+        fuse_strip_df = self.component_strip_layout.get(
+            "fuse_strip_df",
+            pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+        ).copy().reset_index(drop=True)
+        relay_strip_df = self.component_strip_layout.get(
+            "relay_strip_df",
+            pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+        ).copy().reset_index(drop=True)
+        component_cm_export_df = self.component_cm_df.copy().reset_index(drop=True)
+        if not isinstance(component_cm_export_df, _ComponentCmSheetDataFrame):
+            component_cm_export_df = _ComponentCmSheetDataFrame(
+                component_cm_export_df,
+                columns=_COMPONENT_CM_COLUMNS,
+            )
+
+        for export_df in (fuse_strip_df, relay_strip_df, component_cm_export_df):
+            for column_name in export_df.columns:
+                export_df[column_name] = export_df[column_name].map(_stringify_cell)
+
+        relay_start_col = startcol + len(fuse_strip_df.columns) + self.strip_internal_gap_columns
+        cm_start_col = relay_start_col + len(relay_strip_df.columns) + self.cm_gap_columns
+
+        worksheet = excel_writer.book.create_sheet(title=sheet_name)
+        excel_writer.sheets[sheet_name] = worksheet
+        fuse_strip_df.to_excel(
+            excel_writer,
+            sheet_name=sheet_name,
+            index=False,
+            startrow=startrow,
+            startcol=startcol,
+        )
+        relay_strip_df.to_excel(
+            excel_writer,
+            sheet_name=sheet_name,
+            index=False,
+            startrow=startrow,
+            startcol=relay_start_col,
+        )
+        component_cm_export_df.to_excel(
+            excel_writer,
+            sheet_name=sheet_name,
+            index=False,
+            startrow=startrow,
+            startcol=cm_start_col,
+        )
+
+        for row in worksheet.iter_rows():
+            for cell in row:
+                cell.number_format = "@"
+                if cell.value is None:
+                    cell.value = ""
+                else:
+                    cell.value = str(cell.value)
+        return None
 
 
 def _normalize_column_name(value: Any) -> str:
@@ -357,6 +484,207 @@ def _build_component_debug_messages_sheet(messages: list[str]) -> pd.DataFrame:
         [{"Index": index + 1, "Message": message} for index, message in enumerate(messages)],
         columns=["Index", "Message"],
     )
+
+
+def _determine_component_routing_mode(
+    sorted_cabinet_ids: list[str],
+    use_single_cabinet_local_dataset: bool,
+) -> str:
+    """Choose the component workbook routing mode from detected cabinet context."""
+    cabinet_count = len(sorted_cabinet_ids)
+    if cabinet_count > 1:
+        return "multi_cabinet"
+    if cabinet_count == 1 or use_single_cabinet_local_dataset:
+        return "single_cabinet"
+    return "no_cabinet"
+
+
+def _build_component_local_name_source_df(component_df: pd.DataFrame) -> pd.DataFrame:
+    """Create one component dataset with cabinet prefixes removed from Name values only."""
+    localized_df = component_df.copy().reset_index(drop=True)
+    if localized_df.empty or "Name" not in localized_df.columns:
+        return localized_df
+    localized_df["Name"] = localized_df["Name"].map(_normalize_component_local_name)
+    return localized_df
+
+
+def _build_component_general_information_sheet(
+    *,
+    routing_mode: str,
+    detected_cabinet_ids: list[str],
+    total_input_rows: int,
+    component_marking_rows: int,
+    unused_rows: int,
+    cabinet_source_row_counts: dict[str, int],
+    final_main_sheet_names: list[str],
+    final_debug_sheet_names: list[str],
+) -> pd.DataFrame:
+    """Build one flat routing/debug summary sheet for the component debug workbook."""
+    info_rows: list[dict[str, Any]] = [
+        {"Field": "Routing mode", "Value": routing_mode},
+        {
+            "Field": "Detected cabinet ids",
+            "Value": ", ".join(detected_cabinet_ids) if detected_cabinet_ids else "none",
+        },
+        {"Field": "Input rows", "Value": total_input_rows},
+        {"Field": "Component Marking source rows", "Value": component_marking_rows},
+        {"Field": "Unused source rows", "Value": unused_rows},
+        {
+            "Field": "Final main sheets",
+            "Value": ", ".join(final_main_sheet_names) if final_main_sheet_names else "none",
+        },
+        {
+            "Field": "Final debug sheets",
+            "Value": ", ".join(final_debug_sheet_names) if final_debug_sheet_names else "none",
+        },
+    ]
+
+    if cabinet_source_row_counts:
+        for cabinet_id, row_count in cabinet_source_row_counts.items():
+            info_rows.append(
+                {
+                    "Field": f"Cabinet {cabinet_id} source rows",
+                    "Value": row_count,
+                }
+            )
+    else:
+        info_rows.append({"Field": "Cabinet source rows", "Value": "none"})
+
+    return pd.DataFrame(info_rows, columns=["Field", "Value"])
+
+
+def _validate_component_routing_sheet_sets(
+    routing_mode: str,
+    final_main_sheet_names: list[str],
+    final_debug_sheet_names: list[str],
+    expected_final_component_marking_sheet_names: list[str] | None = None,
+) -> None:
+    """Validate that main/debug component sheet routing matches the derived mode."""
+    main_sheet_set = set(final_main_sheet_names)
+    debug_sheet_set = set(final_debug_sheet_names)
+    expected_final_sheet_set = set(expected_final_component_marking_sheet_names or [])
+
+    if routing_mode == "no_cabinet":
+        expected_main_sheet_set = {"Component Marking", "Component Strip", "Unused", "CM"}
+        missing_main_sheets = expected_main_sheet_set - main_sheet_set
+        unexpected_main_sheets = main_sheet_set - expected_main_sheet_set
+        if missing_main_sheets or unexpected_main_sheets:
+            details: list[str] = []
+            if missing_main_sheets:
+                details.append("missing " + ", ".join(sorted(missing_main_sheets)))
+            if unexpected_main_sheets:
+                details.append("unexpected " + ", ".join(sorted(unexpected_main_sheets)))
+            raise ValueError(
+                "component workbook routing: no_cabinet main workbook mismatch -> "
+                + "; ".join(details)
+            )
+
+        unexpected_debug_sheets = debug_sheet_set - {"Developer Debug"}
+        if unexpected_debug_sheets:
+            raise ValueError(
+                "component workbook routing: no_cabinet debug workbook unexpectedly includes "
+                + ", ".join(sorted(unexpected_debug_sheets))
+            )
+        return
+
+    if routing_mode == "single_cabinet":
+        expected_main_sheet_set = expected_final_sheet_set or {"Component Marking"}
+        missing_main_sheets = expected_main_sheet_set - main_sheet_set
+        unexpected_main_sheets = main_sheet_set - expected_main_sheet_set
+        forbidden_intermediate_sheet_names = sorted(
+            sheet_name
+            for sheet_name in final_main_sheet_names
+            if _stringify_cell(sheet_name) in {"Component Strip", "CM"}
+            or _stringify_cell(sheet_name).endswith(" Component Strip")
+            or _stringify_cell(sheet_name).endswith(" CM")
+        )
+        if missing_main_sheets or unexpected_main_sheets:
+            details = []
+            if missing_main_sheets:
+                details.append("missing " + ", ".join(sorted(missing_main_sheets)))
+            if unexpected_main_sheets:
+                details.append("unexpected " + ", ".join(sorted(unexpected_main_sheets)))
+            raise ValueError(
+                "component workbook routing: single_cabinet main workbook mismatch -> "
+                + "; ".join(details)
+            )
+        if forbidden_intermediate_sheet_names:
+            raise ValueError(
+                "component workbook routing: single_cabinet main workbook unexpectedly includes intermediate sheets "
+                + ", ".join(forbidden_intermediate_sheet_names)
+            )
+
+        expected_debug_sheet_set = {
+            "General information",
+            "Component Marking",
+            "Unused",
+            "Developer Debug",
+        }
+        missing_debug_sheets = expected_debug_sheet_set - debug_sheet_set
+        unexpected_debug_sheets = debug_sheet_set - expected_debug_sheet_set
+        if missing_debug_sheets or unexpected_debug_sheets:
+            details = []
+            if missing_debug_sheets:
+                details.append("missing " + ", ".join(sorted(missing_debug_sheets)))
+            if unexpected_debug_sheets:
+                details.append("unexpected " + ", ".join(sorted(unexpected_debug_sheets)))
+            raise ValueError(
+                "component workbook routing: single_cabinet debug workbook mismatch -> "
+                + "; ".join(details)
+            )
+        return
+
+    if routing_mode == "multi_cabinet":
+        missing_main_sheets = expected_final_sheet_set - main_sheet_set
+        unexpected_main_sheets = main_sheet_set - expected_final_sheet_set
+        forbidden_intermediate_sheet_names = sorted(
+            sheet_name
+            for sheet_name in final_main_sheet_names
+            if _stringify_cell(sheet_name) in {"Component Strip", "CM", "Unused"}
+            or _stringify_cell(sheet_name).endswith(" Component Strip")
+            or _stringify_cell(sheet_name).endswith(" CM")
+        )
+        if missing_main_sheets or unexpected_main_sheets:
+            details = []
+            if missing_main_sheets:
+                details.append("missing " + ", ".join(sorted(missing_main_sheets)))
+            if unexpected_main_sheets:
+                details.append("unexpected " + ", ".join(sorted(unexpected_main_sheets)))
+            raise ValueError(
+                "component workbook routing: multi_cabinet main workbook mismatch -> "
+                + "; ".join(details)
+            )
+        if forbidden_intermediate_sheet_names:
+            raise ValueError(
+                "component workbook routing: multi_cabinet main workbook unexpectedly includes intermediate sheets "
+                + ", ".join(forbidden_intermediate_sheet_names)
+            )
+        if not final_main_sheet_names:
+            raise ValueError("component workbook routing: multi_cabinet main workbook is empty")
+
+        required_debug_sheet_set = {
+            "General information",
+            "Component Marking",
+            "Component Marking Raw",
+            "Unused",
+            "Developer Debug",
+        }
+        missing_debug_sheets = required_debug_sheet_set - debug_sheet_set
+        if missing_debug_sheets:
+            raise ValueError(
+                "component workbook routing: multi_cabinet debug workbook missing "
+                + ", ".join(sorted(missing_debug_sheets))
+            )
+
+        unexpected_debug_sheets = {"Component Strip"} & debug_sheet_set
+        if unexpected_debug_sheets:
+            raise ValueError(
+                "component workbook routing: multi_cabinet debug workbook unexpectedly includes "
+                + ", ".join(sorted(unexpected_debug_sheets))
+            )
+        return
+
+    raise ValueError(f"component workbook routing: unsupported routing mode {routing_mode!r}")
 
 
 def _normalize_component_local_name(name_value: Any) -> str:
@@ -1485,6 +1813,28 @@ def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple
     return strip_layout, strip_stats
 
 
+def _build_component_final_marking_sheet(
+    component_strip_layout: dict[str, Any],
+    component_cm_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build one final main-workbook component sheet with Strip and CM blocks combined."""
+    return _ComponentFinalMarkingSheetDataFrame(
+        pd.DataFrame(),
+        component_strip_layout={
+            "layout": "component_strip",
+            "fuse_strip_df": component_strip_layout.get(
+                "fuse_strip_df",
+                pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+            ).copy().reset_index(drop=True),
+            "relay_strip_df": component_strip_layout.get(
+                "relay_strip_df",
+                pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+            ).copy().reset_index(drop=True),
+        },
+        component_cm_df=component_cm_df.copy().reset_index(drop=True),
+    )
+
+
 def _build_component_production_df(
     component_marking_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -2025,6 +2375,10 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         developer_debug_messages.append(
             "component cabinet detection: multi cabinet ids -> " + ", ".join(sorted_cabinet_ids)
         )
+    elif len(sorted_cabinet_ids) == 1:
+        developer_debug_messages.append(
+            "component cabinet detection: single detected cabinet -> " + sorted_cabinet_ids[0]
+        )
     elif use_single_cabinet_local_dataset:
         developer_debug_messages.append(
             "component cabinet detection: no +A* found, using single-cabinet local dataset"
@@ -2200,53 +2554,48 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(
         f"component strip rows exported -> {component_strip_stats['layout_rows']}"
     )
-    cabinet_component_sheets: dict[str, Any] = {}
+    cabinet_final_component_sheets: dict[str, Any] = {}
     multi_cabinet_cm_mode = len(sorted_cabinet_ids) > 1
-    if sorted_cabinet_ids:
+    if multi_cabinet_cm_mode:
         developer_debug_messages.append(
-            "component markings workbook: cabinet sheets added -> "
+            "component markings workbook: final cabinet sheets added -> "
             + ", ".join(sorted_cabinet_ids)
         )
         for cabinet_id in sorted_cabinet_ids:
             cabinet_component_df = cabinet_map[cabinet_id].copy().reset_index(drop=True)
-            cabinet_marking_sheet_name = _build_component_markings_workbook_sheet_name(
+            cabinet_final_sheet_name = _build_component_markings_workbook_sheet_name(
                 cabinet_id, "Component Marking"
             )
-            cabinet_strip_sheet_name = _build_component_markings_workbook_sheet_name(
-                cabinet_id, "Component Strip"
-            )
-            cabinet_cm_sheet_name = _build_component_markings_workbook_sheet_name(cabinet_id, "CM")
             cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_component_df)
             cabinet_strip_sheet, cabinet_strip_sheet_stats = _build_component_strip_df(cabinet_marking_sheet_df)
-
-            cabinet_component_sheets[cabinet_marking_sheet_name] = cabinet_marking_sheet_df
-            cabinet_component_sheets[cabinet_strip_sheet_name] = cabinet_strip_sheet
-            if multi_cabinet_cm_mode:
-                cabinet_component_sheets[cabinet_cm_sheet_name] = _build_component_cm_sheet_df(
-                    cabinet_component_df
-                )
-
-            developer_debug_messages.append(
-                f"component markings workbook: added {cabinet_marking_sheet_name}"
-            )
-            developer_debug_messages.append(
-                f"component markings workbook: added {cabinet_strip_sheet_name}"
-            )
-            if multi_cabinet_cm_mode:
-                developer_debug_messages.append(
-                    f"component markings workbook: added {cabinet_cm_sheet_name}"
-                )
-            developer_debug_messages.append(
-                f"component markings workbook: {cabinet_marking_sheet_name} rows -> {len(cabinet_marking_sheet_df)}"
-            )
-            developer_debug_messages.append(
-                f"component markings workbook: {cabinet_strip_sheet_name} rows -> {cabinet_strip_sheet_stats['layout_rows']}"
+            cabinet_cm_sheet_df = _build_component_cm_sheet_df(cabinet_component_df)
+            cabinet_final_component_sheets[cabinet_final_sheet_name] = _build_component_final_marking_sheet(
+                cabinet_strip_sheet,
+                cabinet_cm_sheet_df,
             )
 
-    cm_main_sheets: dict[str, Any] = {}
-    if not multi_cabinet_cm_mode:
-        cm_main_sheets["CM"] = _build_component_cm_sheet_df(component_marking_df)
-        developer_debug_messages.append("component markings workbook: added CM")
+            developer_debug_messages.append(
+                f"component markings workbook: added final combined sheet {cabinet_final_sheet_name}"
+            )
+            developer_debug_messages.append(
+                f"component markings workbook: {cabinet_final_sheet_name} strip rows -> {cabinet_strip_sheet_stats['layout_rows']}"
+            )
+            developer_debug_messages.append(
+                f"component workbook routing: removed standalone intermediate sheets for {cabinet_final_sheet_name}"
+            )
+
+    localized_component_source_df = _build_component_local_name_source_df(component_marking_df)
+    localized_component_marking_sheet_df = _build_component_marking_sheet_df(localized_component_source_df)
+    localized_component_strip_sheet, _ = _build_component_strip_df(localized_component_marking_sheet_df)
+    component_cm_sheet = _build_component_cm_sheet_df(component_marking_df)
+    single_final_component_sheet = _build_component_final_marking_sheet(
+        localized_component_strip_sheet,
+        component_cm_sheet,
+    )
+    routing_mode = _determine_component_routing_mode(
+        sorted_cabinet_ids,
+        use_single_cabinet_local_dataset,
+    )
 
     developer_debug_messages.append("component production workbook created")
     developer_debug_messages.append(f"production rows exported: {len(production_df)}")
@@ -2256,78 +2605,134 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         "component input processed successfully",
         f"component rows exported: {len(component_marking_df)}",
         f"unused component rows exported: {len(unused_df)}",
-        "component strip sheet created",
+        "component marking sheets created",
         "component production workbook created",
         f"production rows exported: {len(production_df)}",
         "production workbook uses filtered Component Marking rows only",
     ]
 
-    cabinet_count = len(sorted_cabinet_ids)
-    cabinet_mode_label = (
-        "multi_cabinet"
-        if cabinet_count > 1
-        else ("single_cabinet" if has_detected_cabinet_ids or use_single_cabinet_local_dataset else "no_cabinet")
-    )
     main_component_sheets: dict[str, Any]
-    debug_component_sheets: dict[str, Any] = {}
-    developer_debug_messages.append(f"component debug workbook: mode -> {cabinet_mode_label}")
-    if not has_detected_cabinet_ids:
+    debug_component_sheets: dict[str, Any]
+    final_debug_sheet_names: list[str]
+    expected_final_component_marking_sheet_names: list[str] = []
+    developer_debug_messages.append(f"component debug workbook: mode -> {routing_mode}")
+    if routing_mode == "no_cabinet":
         main_component_sheets = {
             "Component Marking": component_marking_sheet_df,
             "Component Strip": component_strip_sheet,
             "Unused": unused_export_df,
-            **cm_main_sheets,
+            "CM": component_cm_sheet,
         }
         debug_component_sheets = {}
+        final_debug_sheet_names = ["Developer Debug"]
+        developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
+    elif routing_mode == "single_cabinet":
+        main_component_sheets = {
+            "Component Marking": single_final_component_sheet,
+        }
+        expected_final_component_marking_sheet_names = ["Component Marking"]
+        final_main_sheet_names = list(main_component_sheets.keys())
+        final_debug_sheet_names = [
+            "General information",
+            "Component Marking",
+            "Unused",
+            "Developer Debug",
+        ]
+        debug_component_sheets = {
+            "General information": _build_component_general_information_sheet(
+                routing_mode=routing_mode,
+                detected_cabinet_ids=sorted_cabinet_ids,
+                total_input_rows=len(component_df),
+                component_marking_rows=len(component_marking_df),
+                unused_rows=len(unused_df),
+                cabinet_source_row_counts=cabinet_source_row_counts,
+                final_main_sheet_names=final_main_sheet_names,
+                final_debug_sheet_names=final_debug_sheet_names,
+            ),
+            "Component Marking": localized_component_marking_sheet_df,
+            "Unused": unused_export_df,
+        }
         if use_single_cabinet_local_dataset:
             developer_debug_messages.append(
-                "component workbook routing: single-cabinet local dataset active"
+                "component workbook routing: single_cabinet local dataset active"
             )
         else:
-            developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
+            developer_debug_messages.append(
+                "component workbook routing: single detected cabinet routed through single_cabinet mode"
+            )
+        developer_debug_messages.append(
+            "component workbook routing: single_cabinet main workbook uses one final combined Component Marking sheet"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: moved Component Marking to debug workbook in single_cabinet mode"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: moved Unused to debug workbook in single_cabinet mode"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: removed standalone Component Strip and CM sheets from single_cabinet main workbook"
+        )
     else:
         main_component_sheets = {
-            **cabinet_component_sheets,
-            **cm_main_sheets,
+            **cabinet_final_component_sheets,
         }
+        expected_final_component_marking_sheet_names = [
+            _build_component_markings_workbook_sheet_name(cabinet_id, "Component Marking")
+            for cabinet_id in sorted_cabinet_ids
+        ]
+        final_main_sheet_names = list(main_component_sheets.keys())
+        final_debug_sheet_names = [
+            "General information",
+            "Component Marking",
+            "Component Marking Raw",
+            "Unused",
+            "Developer Debug",
+        ]
         debug_component_sheets = {
-            "Component Marking": component_marking_sheet_df,
-            "Component Strip": component_strip_sheet,
+            "General information": _build_component_general_information_sheet(
+                routing_mode=routing_mode,
+                detected_cabinet_ids=sorted_cabinet_ids,
+                total_input_rows=len(component_df),
+                component_marking_rows=len(component_marking_df),
+                unused_rows=len(unused_df),
+                cabinet_source_row_counts=cabinet_source_row_counts,
+                final_main_sheet_names=final_main_sheet_names,
+                final_debug_sheet_names=final_debug_sheet_names,
+            ),
+            "Component Marking": localized_component_marking_sheet_df,
+            "Component Marking Raw": component_marking_sheet_df,
             "Unused": unused_export_df,
         }
         developer_debug_messages.append(
-            f"component workbook routing: cabinet mode active -> {cabinet_mode_label}"
+            f"component workbook routing: cabinet mode active -> {routing_mode}"
         )
         developer_debug_messages.append(
-            "component workbook routing: moved Unused to debug workbook"
+            "component workbook routing: moved global Component Marking to debug workbook in multi_cabinet mode"
         )
         developer_debug_messages.append(
-            "component workbook routing: main workbook excludes global support sheets in cabinet mode"
+            "component workbook routing: moved raw cabinet-aware Component Marking view to debug workbook"
         )
         developer_debug_messages.append(
-            "component markings workbook: global Component sheets moved to debug workbook in cabinet mode"
+            "component workbook routing: moved Unused to debug workbook in multi_cabinet mode"
         )
         developer_debug_messages.append(
-            "component markings workbook: global Unused moved to debug workbook in cabinet mode"
+            "component workbook routing: multi_cabinet main workbook uses one final combined Component Marking sheet per cabinet"
+        )
+        developer_debug_messages.append(
+            "component workbook routing: removed standalone Component Strip and CM sheets from multi_cabinet main workbook"
         )
 
+    if "General information" in debug_component_sheets:
+        developer_debug_messages.append("component debug workbook: added General information sheet")
+    if "Component Marking" in debug_component_sheets:
+        developer_debug_messages.append("component debug workbook: added Component Marking sheet")
+    if "Component Marking Raw" in debug_component_sheets:
+        developer_debug_messages.append("component debug workbook: added Component Marking Raw sheet")
     if "Unused" in debug_component_sheets:
         developer_debug_messages.append("component debug workbook: added Unused sheet")
 
-    developer_debug_messages.append("component debug workbook: added Developer Debug sheet")
-    developer_debug_messages.append("component debug workbook: general debug workbook generated")
-    developer_debug_messages.append("component debug UI: verbose debug moved from UI to workbook")
-    debug_component_sheets["Developer Debug"] = _build_component_debug_messages_sheet(
-        developer_debug_messages
-    )
-    developer_debug_messages.append(
-        "component debug workbook sheets -> " + ", ".join(debug_component_sheets.keys())
-    )
-    ui_component_debug_messages = ["Detailed component debug is available in the downloaded debug workbook."]
-
     component_sheets = main_component_sheets
     final_main_sheet_names = list(component_sheets.keys())
-    final_debug_sheet_names = list(debug_component_sheets.keys())
     developer_debug_messages.append(
         "component workbook routing: final main sheets -> "
         + (", ".join(final_main_sheet_names) if final_main_sheet_names else "none")
@@ -2336,24 +2741,24 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         "component workbook routing: final debug sheets -> "
         + (", ".join(final_debug_sheet_names) if final_debug_sheet_names else "none")
     )
-    if cabinet_count > 0:
-        unexpected_main_sheets = {"Component Marking", "Component Strip", "Unused"} & set(final_main_sheet_names)
-        if unexpected_main_sheets:
-            raise ValueError(
-                "component workbook routing: cabinet mode main workbook unexpectedly includes "
-                + ", ".join(sorted(unexpected_main_sheets))
-            )
-        missing_debug_sheets = {"Component Marking", "Component Strip", "Unused", "Developer Debug"} - set(
-            final_debug_sheet_names
-        )
-        if missing_debug_sheets:
-            raise ValueError(
-                "component workbook routing: cabinet mode debug workbook missing "
-                + ", ".join(sorted(missing_debug_sheets))
-            )
-        developer_debug_messages.append(
-            "component workbook routing: cabinet mode final routing applied successfully"
-        )
+    _validate_component_routing_sheet_sets(
+        routing_mode,
+        final_main_sheet_names,
+        final_debug_sheet_names,
+        expected_final_component_marking_sheet_names,
+    )
+    developer_debug_messages.append(
+        f"component workbook routing: {routing_mode} final routing applied successfully"
+    )
+    developer_debug_messages.append("component debug workbook: added Developer Debug sheet")
+    developer_debug_messages.append("component debug workbook: general debug workbook generated")
+    developer_debug_messages.append("component debug UI: verbose debug moved from UI to workbook")
+    developer_debug_messages.append(
+        "component debug workbook sheets -> "
+        + (", ".join(final_debug_sheet_names) if final_debug_sheet_names else "none")
+    )
+    ui_component_debug_messages = ["Detailed component debug is available in the downloaded debug workbook."]
+
     debug_component_sheets["Developer Debug"] = _build_component_debug_messages_sheet(
         developer_debug_messages
     )

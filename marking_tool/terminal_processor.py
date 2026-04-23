@@ -1972,6 +1972,13 @@ _NON_BOLD_CM_SECTION_LABELS = {
     "Other",
 }
 
+_NON_BOLD_COMPONENT_STRIP_LABELS = {
+    "24VDC",
+    "230VAC",
+    "START",
+    "STOP",
+}
+
 
 def _set_matching_non_empty_column_cells_bold(
     worksheet: Any,
@@ -2010,9 +2017,33 @@ def _is_component_cm_sheet_name(sheet_name: str) -> bool:
 
 
 def _apply_component_marking_label_bold_formatting(worksheet: Any) -> None:
-    """Bold Name-column values in Component Marking sheets."""
+    """Bold raw or final-layout Component Marking labels while skipping non-marking section text."""
     header_columns = _find_worksheet_header_columns(worksheet)
-    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Name", []))
+    has_raw_name_format = bool(header_columns.get("Name"))
+    has_combined_final_format = bool(header_columns.get("Text")) and any(
+        header_columns.get(column_name)
+        for column_name in ("Mounting plate", "Component", "Door")
+    )
+
+    if has_raw_name_format:
+        _set_non_empty_column_cells_bold(worksheet, header_columns.get("Name", []))
+        return
+
+    if not has_combined_final_format:
+        return
+
+    _set_matching_non_empty_column_cells_bold(
+        worksheet,
+        header_columns.get("Text", []),
+        lambda text_value: text_value not in _NON_BOLD_COMPONENT_STRIP_LABELS,
+    )
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Mounting plate", []))
+    _set_matching_non_empty_column_cells_bold(
+        worksheet,
+        header_columns.get("Component", []),
+        lambda text_value: text_value not in _NON_BOLD_CM_SECTION_LABELS,
+    )
+    _set_non_empty_column_cells_bold(worksheet, header_columns.get("Door", []))
 
 
 def _apply_component_cm_label_bold_formatting(worksheet: Any) -> None:
