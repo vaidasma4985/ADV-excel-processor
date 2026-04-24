@@ -408,6 +408,32 @@ def _is_filtered_component_name(value: Any) -> bool:
     return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(evaluation_text.upper()))
 
 
+def _extract_component_cabinet_number(cabinet_id_value: Any) -> int | None:
+    """Extract the numeric part from one cabinet id such as A2."""
+    cabinet_id = _stringify_cell(cabinet_id_value).upper()
+    if not cabinet_id.startswith("A"):
+        return None
+    cabinet_number_text = cabinet_id[1:]
+    if not cabinet_number_text.isdigit():
+        return None
+    return int(cabinet_number_text)
+
+
+def _is_cabinet_door_m_component(name_value: Any, *, cabinet_id: Any | None = None) -> bool:
+    """Return whether one name represents an A2+ cabinet-prefixed local -M* Door component."""
+    local_name = _normalize_component_local_name(name_value)
+    if not _normalize_component_name(local_name).startswith("-M"):
+        return False
+
+    cabinet_number = _extract_component_cabinet_number(cabinet_id) if cabinet_id is not None else None
+    if cabinet_number is None:
+        cabinet_parts = _extract_component_cabinet_parts(name_value)
+        if not cabinet_parts:
+            return False
+        cabinet_number = _extract_component_cabinet_number(cabinet_parts[0])
+    return cabinet_number is not None and cabinet_number >= 2
+
+
 def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Read the first sheet, drop fully empty rows, and retain expected columns if present."""
     developer_debug_messages: list[str] = []
@@ -516,6 +542,8 @@ def _is_unused_component_name(name: Any) -> bool:
         return True
     if evaluation_text.startswith("-W"):
         return True
+    if _is_cabinet_door_m_component(text):
+        return False
     if evaluation_text.startswith("-M") and not evaluation_text.startswith("-M92"):
         return True
     if evaluation_text.startswith("-X") and not evaluation_text.startswith("-X921"):
@@ -812,6 +840,21 @@ def _is_component_cm_p92_name(name_value: Any) -> bool:
     return bool(_COMPONENT_CM_P92_NAME_PATTERN.match(_stringify_cell(name_value)))
 
 
+def _is_component_cm_door_candidate_name(name_value: Any, *, cabinet_id: Any | None = None) -> bool:
+    """Return whether one raw/local component Name should contribute its local name to the Door column."""
+    raw_name = _stringify_cell(name_value)
+    if raw_name == "":
+        return False
+
+    local_name = _normalize_component_local_name(raw_name)
+    normalized_local_name = _normalize_component_name(local_name)
+    if normalized_local_name == "" or _is_component_cm_p92_name(local_name):
+        return False
+    if normalized_local_name.startswith("-P") or normalized_local_name.startswith("-S"):
+        return True
+    return _is_cabinet_door_m_component(raw_name, cabinet_id=cabinet_id)
+
+
 def _classify_component_cm_relay_group(type_value: Any) -> str:
     """Classify one relay TYPE into the CM-only Component-column relay display groups."""
     return _COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE.get(_normalize_component_type(type_value), "")
@@ -843,18 +886,23 @@ def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, 
     return int(rule_set["default_max_occurrences"])
 
 
-def _build_component_cm_door_entries(component_df: pd.DataFrame) -> list[str]:
-    """Build the Door-column list as one deduplicated non-P92 block repeated twice."""
+def _build_component_cm_door_source_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build the unique Door-name source list before the final x2 Door duplication."""
     if component_df.empty or "Name" not in component_df.columns:
         return []
 
-    local_names = component_df["Name"].map(_normalize_component_local_name)
+    cabinet_id = component_df.attrs.get("cabinet_id")
     door_names = [
-        local_name
-        for local_name in local_names.tolist()
-        if (local_name.startswith("-P") or local_name.startswith("-S")) and not _is_component_cm_p92_name(local_name)
+        _normalize_component_local_name(raw_name)
+        for raw_name in component_df["Name"].tolist()
+        if _is_component_cm_door_candidate_name(raw_name, cabinet_id=cabinet_id)
     ]
-    deduplicated_door_names = list(dict.fromkeys(door_names))
+    return list(dict.fromkeys(door_names))
+
+
+def _build_component_cm_door_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build the Door-column list as one deduplicated non-P92 block repeated twice."""
+    deduplicated_door_names = _build_component_cm_door_source_entries(component_df)
     return deduplicated_door_names + deduplicated_door_names
 
 
@@ -1041,8 +1089,10 @@ def _build_component_cm_mounting_plate_entries(component_df: pd.DataFrame) -> li
     if cm_source_df.empty:
         return []
 
+    door_name_set = set(_build_component_cm_door_source_entries(component_df))
     mounting_plate_df = cm_source_df.loc[
         cm_source_df["Name"].map(_stringify_cell).ne("")
+        & ~cm_source_df["Name"].map(_stringify_cell).isin(door_name_set)
         & cm_source_df["TYPE"].map(_detect_fuse_voltage_group).isna()
         & cm_source_df.apply(
             lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")) == "",
@@ -1173,7 +1223,9 @@ def _build_component_cabinet_map(
         normalized_df = normalized_df.drop(
             columns=["_cabinet_raw_id", "_cabinet_id", "_cabinet_normalized_name"]
         )
-        cabinet_map[cabinet_id] = normalized_df.reset_index(drop=True)
+        normalized_df = normalized_df.reset_index(drop=True)
+        normalized_df.attrs["cabinet_id"] = raw_cabinet_id
+        cabinet_map[cabinet_id] = normalized_df
         cabinet_stats["row_counts"][cabinet_id] = len(normalized_df)
 
     return cabinet_map, cabinet_stats
