@@ -817,6 +817,20 @@ def _classify_component_cm_relay_group(type_value: Any) -> str:
     return _COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE.get(_normalize_component_type(type_value), "")
 
 
+def _infer_component_production_relay_group(name_group_df: pd.DataFrame) -> str:
+    """Infer one production relay display group from the coil/timed TYPE rows within one Name group."""
+    if name_group_df.empty:
+        return ""
+
+    direct_group_df = name_group_df.copy()
+    direct_group_df["_production_relay_group"] = direct_group_df["TYPE"].map(_classify_component_cm_relay_group)
+    direct_group_df = direct_group_df.loc[direct_group_df["_production_relay_group"].ne("")].copy()
+    if direct_group_df.empty:
+        return ""
+    representative_row = direct_group_df.sort_values("_original_order", kind="mergesort").iloc[0]
+    return _stringify_cell(representative_row["_production_relay_group"])
+
+
 def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, type_value: Any) -> int:
     """Resolve the allowed CM multiplicity for one Name/TYPE pair."""
     rule_set = _COMPONENT_CM_MARKING_MULTIPLICITY_RULES[column_key]
@@ -1629,28 +1643,37 @@ def _build_component_production_fuse_sections(
 def _build_component_production_relay_sections(
     working_df: pd.DataFrame,
 ) -> tuple[list[tuple[str, pd.DataFrame]], int]:
-    """Build production relay sections in strip-style group order without deduplicating any rows."""
-    relay_df = working_df.copy()
-    relay_df["_relay_group"] = relay_df.apply(
-        lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")),
-        axis=1,
-    )
-    relay_df = relay_df.loc[relay_df["_relay_group"].ne("")].copy()
+    """Build production relay sections in CM display-group order without deduplicating rows."""
+    relay_df = working_df.loc[working_df["Category"].isin({"RELAY_1P", "RELAY_2P", "RELAY_4P"})].copy()
     if relay_df.empty:
         return [], 0
 
-    relay_group_dfs = [
-        ("2_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy())),
-        ("4_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy())),
-        ("timed", _sort_component_timed_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("timed")].copy())),
-        ("1_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy())),
-    ]
-    ordered_sections = [
-        (_COMPONENT_CM_RELAY_GROUP_LABELS[group_label], group_df.reset_index(drop=True))
-        for group_label, group_df in relay_group_dfs
-        if not group_df.empty
-    ]
-    relay_row_count = sum(len(group_df) for _, group_df in relay_group_dfs)
+    production_relay_rows: list[pd.DataFrame] = []
+    for _, same_name_df in relay_df.groupby("Name", sort=False, dropna=False):
+        production_relay_group = _infer_component_production_relay_group(same_name_df)
+        if production_relay_group == "":
+            continue
+        grouped_name_df = same_name_df.copy()
+        grouped_name_df["_production_relay_group"] = production_relay_group
+        production_relay_rows.append(grouped_name_df)
+    if not production_relay_rows:
+        return [], 0
+
+    production_relay_df = pd.concat(production_relay_rows, ignore_index=True)
+    ordered_sections: list[tuple[str, pd.DataFrame]] = []
+    relay_row_count = 0
+    for group_label in _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER:
+        group_df = production_relay_df.loc[
+            production_relay_df["_production_relay_group"].eq(group_label)
+        ].copy()
+        if group_df.empty:
+            continue
+        if group_label == "Timed relays":
+            group_df = _sort_component_timed_relay_group_df(group_df)
+        else:
+            group_df = _sort_component_relay_group_df(group_df)
+        ordered_sections.append((group_label, group_df.reset_index(drop=True)))
+        relay_row_count += len(group_df)
     return ordered_sections, relay_row_count
 
 
