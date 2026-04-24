@@ -69,6 +69,9 @@ _COMPONENT_CM_RELAY_GROUP_LABELS = {
     "1_pole": "Relays 1_Pole",
 }
 _COMPONENT_CM_BUTTONS_LABEL = "Buttons"
+_COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS = 2
+_COMPONENT_FINAL_FUSES_BLOCK_TITLE = "FUSES"
+_COMPONENT_FINAL_RELAYS_BLOCK_TITLE = "RELAYS"
 _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER = (
     "24VDC_2_pole",
     "230VAC_2_pole",
@@ -90,10 +93,20 @@ _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL = {
     "230VAC_2_pole": "F4CCCC",
     "24VDC_4_pole": "C6EFCE",
     "230VAC_4_pole": "F4CCCC",
+    "230VAC_4A_pole": "F4CCCC",
+}
+_COMPONENT_FINAL_MOVED_CM_FUSE_GROUP_LABELS = tuple(_COMPONENT_CM_FUSE_GROUP_LABELS.values())
+_COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES = {
+    "24VDC_2_pole": "24VDC_2_pole",
+    "230VAC_2_pole": "230VAC_2_pole",
+    "24VDC_4_pole": "24VDC_4_pole",
+    "230VAC_4_pole": "230VAC_4A_pole",
+    "230VAC_4A_pole": "230VAC_4A_pole",
 }
 _COMPONENT_CM_SECTION_LABELS = {
     *_COMPONENT_CM_FUSE_GROUP_LABELS.values(),
     *_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER,
+    "230VAC_4A_pole",
     _COMPONENT_CM_BUTTONS_LABEL,
     "Other",
 }
@@ -281,6 +294,8 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
         if not sheet_name:
             raise ValueError("component final marking export requires a sheet_name")
 
+        from openpyxl.utils import get_column_letter
+
         startrow = int(kwargs.get("startrow", 0) or 0)
         startcol = int(kwargs.get("startcol", 0) or 0)
 
@@ -292,19 +307,17 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
             "relay_strip_df",
             pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
         ).copy().reset_index(drop=True)
-        component_cm_export_df = self.component_cm_df.copy().reset_index(drop=True)
-        if not isinstance(component_cm_export_df, _ComponentCmSheetDataFrame):
-            component_cm_export_df = _ComponentCmSheetDataFrame(
-                component_cm_export_df,
-                columns=_COMPONENT_CM_COLUMNS,
-            )
+        component_cm_export_df, fuse_block_export_df, relay_block_export_df = _split_final_component_cm_layout(
+            self.component_cm_df
+        )
 
-        for export_df in (fuse_strip_df, relay_strip_df, component_cm_export_df):
+        for export_df in (fuse_strip_df, relay_strip_df, component_cm_export_df, fuse_block_export_df, relay_block_export_df):
             for column_name in export_df.columns:
                 export_df[column_name] = export_df[column_name].map(_stringify_cell)
 
         relay_start_col = startcol + len(fuse_strip_df.columns) + self.strip_internal_gap_columns
         cm_start_col = relay_start_col + len(relay_strip_df.columns) + self.cm_gap_columns
+        side_block_start_col = cm_start_col + len(component_cm_export_df.columns) + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
 
         worksheet = excel_writer.book.create_sheet(title=sheet_name)
         excel_writer.sheets[sheet_name] = worksheet
@@ -329,6 +342,35 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
             startrow=startrow,
             startcol=cm_start_col,
         )
+        current_side_block_start_col = side_block_start_col
+        if not fuse_block_export_df.empty:
+            fuse_block_export_df.to_excel(
+                excel_writer,
+                sheet_name=sheet_name,
+                index=False,
+                startrow=startrow,
+                startcol=current_side_block_start_col,
+            )
+            worksheet.column_dimensions[
+                get_column_letter(current_side_block_start_col + 1)
+            ].width = _COMPONENT_CM_COLUMN_WIDTH
+            current_side_block_start_col += len(fuse_block_export_df.columns) + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        if not relay_block_export_df.empty:
+            relay_block_export_df.to_excel(
+                excel_writer,
+                sheet_name=sheet_name,
+                index=False,
+                startrow=startrow,
+                startcol=current_side_block_start_col,
+            )
+            relay_column_index = current_side_block_start_col + 1
+            worksheet.column_dimensions[get_column_letter(relay_column_index)].width = _COMPONENT_CM_COLUMN_WIDTH
+            _apply_component_cm_relay_color_formatting_for_column(
+                worksheet,
+                column_index=relay_column_index,
+                data_start_row=startrow + 2,
+                data_row_count=len(relay_block_export_df),
+            )
 
         for row in worksheet.iter_rows():
             for cell in row:
@@ -377,6 +419,42 @@ def _apply_component_cm_component_relay_color_formatting(
     active_fill_color = ""
     for row_index in range(data_start_row, data_end_row + 1):
         cell = worksheet.cell(row=row_index, column=component_column_index)
+        text_value = _stringify_cell(cell.value)
+        if text_value == "":
+            active_fill_color = ""
+            continue
+        if text_value in _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL:
+            active_fill_color = _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL[text_value]
+            continue
+        if text_value in _COMPONENT_CM_SECTION_LABELS:
+            active_fill_color = ""
+            continue
+        if active_fill_color == "":
+            continue
+        cell.fill = PatternFill(
+            fill_type="solid",
+            start_color=active_fill_color,
+            end_color=active_fill_color,
+        )
+
+
+def _apply_component_cm_relay_color_formatting_for_column(
+    worksheet: Any,
+    *,
+    column_index: int,
+    data_start_row: int,
+    data_row_count: int,
+) -> None:
+    """Color relay marking cells in one final-sheet column by the active relay section label."""
+    if data_row_count <= 0:
+        return
+
+    from openpyxl.styles import PatternFill
+
+    data_end_row = data_start_row + data_row_count - 1
+    active_fill_color = ""
+    for row_index in range(data_start_row, data_end_row + 1):
+        cell = worksheet.cell(row=row_index, column=column_index)
         text_value = _stringify_cell(cell.value)
         if text_value == "":
             active_fill_color = ""
@@ -1141,6 +1219,72 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
         },
         columns=_COMPONENT_CM_COLUMNS,
     )
+
+
+def _extract_component_cm_component_groups(component_entries: list[Any]) -> list[tuple[str, list[str]]]:
+    """Parse one flat CM Component-column list into ordered section-label/name groups."""
+    ordered_groups: list[tuple[str, list[str]]] = []
+    current_label = ""
+    current_names: list[str] = []
+    for entry_value in [*component_entries, ""]:
+        text_value = _stringify_cell(entry_value)
+        if text_value == "":
+            if current_label != "":
+                ordered_groups.append((current_label, current_names.copy()))
+            current_label = ""
+            current_names = []
+            continue
+        if current_label == "":
+            current_label = text_value
+            continue
+        current_names.append(text_value)
+    return ordered_groups
+
+
+def _build_component_cm_group_entries(groups: list[tuple[str, list[str]]]) -> list[str]:
+    """Flatten ordered CM section groups back into one column with blank separators."""
+    valid_groups = [(group_label, group_names) for group_label, group_names in groups if _stringify_cell(group_label) != ""]
+    entries: list[str] = []
+    for group_index, (group_label, group_names) in enumerate(valid_groups):
+        entries.append(_stringify_cell(group_label))
+        entries.extend([_stringify_cell(group_name) for group_name in group_names if _stringify_cell(group_name) != ""])
+        if group_index < len(valid_groups) - 1:
+            entries.append("")
+    return entries
+
+
+def _split_final_component_cm_layout(
+    component_cm_df: pd.DataFrame,
+) -> tuple[_ComponentCmSheetDataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split the final-sheet CM Component column into main, FUSES, and RELAYS right-side blocks."""
+    working_df = component_cm_df.copy().reset_index(drop=True)
+    component_entries = working_df.get("Component", pd.Series(dtype=object)).tolist()
+    ordered_groups = _extract_component_cm_component_groups(component_entries)
+
+    main_component_groups: list[tuple[str, list[str]]] = []
+    fuse_groups: list[tuple[str, list[str]]] = []
+    relay_groups: list[tuple[str, list[str]]] = []
+    for group_label, group_names in ordered_groups:
+        normalized_group_label = _stringify_cell(group_label)
+        if normalized_group_label in _COMPONENT_FINAL_MOVED_CM_FUSE_GROUP_LABELS:
+            fuse_groups.append((normalized_group_label, group_names))
+            continue
+        relay_display_label = _COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES.get(normalized_group_label, "")
+        if relay_display_label:
+            relay_groups.append((relay_display_label, group_names))
+            continue
+        main_component_groups.append((normalized_group_label, group_names))
+
+    main_component_entries = _build_component_cm_group_entries(main_component_groups)
+    row_count = len(working_df.index)
+    working_df["Component"] = main_component_entries + [""] * max(0, row_count - len(main_component_entries))
+    main_component_df = _ComponentCmSheetDataFrame(working_df, columns=_COMPONENT_CM_COLUMNS)
+
+    fuse_block_entries = _build_component_cm_group_entries(fuse_groups)
+    relay_block_entries = _build_component_cm_group_entries(relay_groups)
+    fuse_block_df = pd.DataFrame({_COMPONENT_FINAL_FUSES_BLOCK_TITLE: fuse_block_entries})
+    relay_block_df = pd.DataFrame({_COMPONENT_FINAL_RELAYS_BLOCK_TITLE: relay_block_entries})
+    return main_component_df, fuse_block_df, relay_block_df
 
 
 def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:

@@ -1972,6 +1972,7 @@ _NON_BOLD_CM_SECTION_LABELS = {
     "230VAC_2_pole",
     "24VDC_4_pole",
     "230VAC_4_pole",
+    "230VAC_4A_pole",
     "Timed relays",
     "Buttons",
     "Other",
@@ -2049,6 +2050,16 @@ def _apply_component_marking_label_bold_formatting(worksheet: Any) -> None:
         lambda text_value: text_value not in _NON_BOLD_CM_SECTION_LABELS,
     )
     _set_non_empty_column_cells_bold(worksheet, header_columns.get("Door", []))
+    _set_matching_non_empty_column_cells_bold(
+        worksheet,
+        header_columns.get("FUSES", []),
+        lambda text_value: text_value not in _NON_BOLD_CM_SECTION_LABELS,
+    )
+    _set_matching_non_empty_column_cells_bold(
+        worksheet,
+        header_columns.get("RELAYS", []),
+        lambda text_value: text_value not in _NON_BOLD_CM_SECTION_LABELS,
+    )
 
 
 def _apply_component_cm_label_bold_formatting(worksheet: Any) -> None:
