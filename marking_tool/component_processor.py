@@ -72,6 +72,12 @@ _COMPONENT_CM_BUTTONS_LABEL = "Buttons"
 _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS = 2
 _COMPONENT_FINAL_FUSES_BLOCK_TITLE = "FUSES"
 _COMPONENT_FINAL_RELAYS_BLOCK_TITLE = "RELAYS"
+_COMPONENT_FINAL_BLOCK_HEADER_ROW_COUNT = 2
+_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE = "Wago 210-872"
+_COMPONENT_FINAL_COMPONENT_BLOCK_TITLE = "Components"
+_COMPONENT_FINAL_COMPONENT_BLOCK_SUBTITLE = "Phoenix EML-16,5x5"
+_COMPONENT_FINAL_FUSES_BLOCK_SUBTITLE = "Wago 2009-115"
+_COMPONENT_FINAL_RELAYS_BLOCK_SUBTITLE = "Phoenix UC1-TM5"
 _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER = (
     "24VDC_2_pole",
     "230VAC_2_pole",
@@ -318,62 +324,114 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
         relay_start_col = startcol + len(fuse_strip_df.columns) + self.strip_internal_gap_columns
         cm_start_col = relay_start_col + len(relay_strip_df.columns) + self.cm_gap_columns
         side_block_start_col = cm_start_col + len(component_cm_export_df.columns) + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        block_data_startrow = startrow + _COMPONENT_FINAL_BLOCK_HEADER_ROW_COUNT
 
         worksheet = excel_writer.book.create_sheet(title=sheet_name)
         excel_writer.sheets[sheet_name] = worksheet
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=startcol,
+            block_width=max(1, len(fuse_strip_df.columns)),
+            title="FUSE STRIP",
+            subtitle=_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE,
+        )
         fuse_strip_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=startcol,
+        )
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=relay_start_col,
+            block_width=max(1, len(relay_strip_df.columns)),
+            title="RELAYS STRIP",
+            subtitle=_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE,
         )
         relay_strip_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=relay_start_col,
+        )
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=cm_start_col,
+            block_width=max(1, len(component_cm_export_df.columns)),
+            title=_COMPONENT_FINAL_COMPONENT_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_COMPONENT_BLOCK_SUBTITLE,
         )
         component_cm_export_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=cm_start_col,
         )
         current_side_block_start_col = side_block_start_col
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=current_side_block_start_col,
+            block_width=1,
+            title=_COMPONENT_FINAL_FUSES_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_FUSES_BLOCK_SUBTITLE,
+        )
         if not fuse_block_export_df.empty:
             fuse_block_export_df.to_excel(
                 excel_writer,
                 sheet_name=sheet_name,
                 index=False,
-                startrow=startrow,
+                startrow=block_data_startrow,
                 startcol=current_side_block_start_col,
+                header=False,
             )
             worksheet.column_dimensions[
                 get_column_letter(current_side_block_start_col + 1)
             ].width = _COMPONENT_CM_COLUMN_WIDTH
-            current_side_block_start_col += len(fuse_block_export_df.columns) + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        else:
+            worksheet.column_dimensions[
+                get_column_letter(current_side_block_start_col + 1)
+            ].width = _COMPONENT_CM_COLUMN_WIDTH
+        current_side_block_start_col += 1 + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=current_side_block_start_col,
+            block_width=1,
+            title=_COMPONENT_FINAL_RELAYS_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_RELAYS_BLOCK_SUBTITLE,
+        )
         if not relay_block_export_df.empty:
             relay_block_export_df.to_excel(
                 excel_writer,
                 sheet_name=sheet_name,
                 index=False,
-                startrow=startrow,
+                startrow=block_data_startrow,
                 startcol=current_side_block_start_col,
+                header=False,
             )
             relay_column_index = current_side_block_start_col + 1
             worksheet.column_dimensions[get_column_letter(relay_column_index)].width = _COMPONENT_CM_COLUMN_WIDTH
             _apply_component_cm_relay_color_formatting_for_column(
                 worksheet,
                 column_index=relay_column_index,
-                data_start_row=startrow + 2,
+                data_start_row=block_data_startrow + 1,
                 data_row_count=len(relay_block_export_df),
             )
+        else:
+            relay_column_index = current_side_block_start_col + 1
+            worksheet.column_dimensions[get_column_letter(relay_column_index)].width = _COMPONENT_CM_COLUMN_WIDTH
 
         for row in worksheet.iter_rows():
             for cell in row:
+                if cell.__class__.__name__ == "MergedCell":
+                    continue
                 cell.number_format = "@"
                 if cell.value is None:
                     cell.value = ""
@@ -398,6 +456,36 @@ def _stringify_cell(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _write_component_final_block_header(
+    worksheet: Any,
+    *,
+    startrow: int,
+    startcol: int,
+    block_width: int,
+    title: str,
+    subtitle: str,
+) -> None:
+    """Write one two-row block header above one final Component Marking block."""
+    start_row_index = startrow + 1
+    start_column_index = startcol + 1
+    end_column_index = start_column_index + max(0, block_width - 1)
+    if block_width > 1:
+        worksheet.merge_cells(
+            start_row=start_row_index,
+            start_column=start_column_index,
+            end_row=start_row_index,
+            end_column=end_column_index,
+        )
+        worksheet.merge_cells(
+            start_row=start_row_index + 1,
+            start_column=start_column_index,
+            end_row=start_row_index + 1,
+            end_column=end_column_index,
+        )
+    worksheet.cell(row=start_row_index, column=start_column_index).value = title
+    worksheet.cell(row=start_row_index + 1, column=start_column_index).value = subtitle
 
 
 def _apply_component_cm_component_relay_color_formatting(
