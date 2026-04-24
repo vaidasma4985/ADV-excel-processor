@@ -69,6 +69,65 @@ _COMPONENT_CM_RELAY_GROUP_LABELS = {
     "1_pole": "Relays 1_Pole",
 }
 _COMPONENT_CM_BUTTONS_LABEL = "Buttons"
+_COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS = 2
+_COMPONENT_FINAL_FUSES_BLOCK_TITLE = "FUSES"
+_COMPONENT_FINAL_RELAYS_BLOCK_TITLE = "RELAYS"
+_COMPONENT_FINAL_BLOCK_HEADER_ROW_COUNT = 2
+_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE = "Wago 210-872"
+_COMPONENT_FINAL_COMPONENT_BLOCK_TITLE = "Components"
+_COMPONENT_FINAL_COMPONENT_BLOCK_SUBTITLE = "Phoenix EML-16,5x5"
+_COMPONENT_FINAL_FUSES_BLOCK_SUBTITLE = "Wago 2009-115"
+_COMPONENT_FINAL_RELAYS_BLOCK_SUBTITLE = "Phoenix UC1-TM5"
+_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER = (
+    "24VDC_2_pole",
+    "230VAC_2_pole",
+    "24VDC_4_pole",
+    "230VAC_4_pole",
+    "Timed relays",
+)
+_COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE = {
+    "RXG22BD": "24VDC_2_pole",
+    "RXG22P7": "230VAC_2_pole",
+    "RXM4GB2BD": "24VDC_4_pole",
+    "RXM4GB2P7": "230VAC_4_pole",
+    "RE22R1AMR": "Timed relays",
+    "RE22R1KMR": "Timed relays",
+    "RE17LCBM": "Timed relays",
+}
+_COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL = {
+    "24VDC_2_pole": "C6EFCE",
+    "230VAC_2_pole": "F4CCCC",
+    "24VDC_4_pole": "C6EFCE",
+    "230VAC_4_pole": "F4CCCC",
+    "230VAC_4A_pole": "F4CCCC",
+}
+_COMPONENT_FINAL_MOVED_CM_FUSE_GROUP_LABELS = tuple(_COMPONENT_CM_FUSE_GROUP_LABELS.values())
+_COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES = {
+    "24VDC_2_pole": "24VDC_2_pole",
+    "230VAC_2_pole": "230VAC_2_pole",
+    "24VDC_4_pole": "24VDC_4_pole",
+    "230VAC_4_pole": "230VAC_4A_pole",
+    "230VAC_4A_pole": "230VAC_4A_pole",
+}
+_COMPONENT_CM_SECTION_LABELS = {
+    *_COMPONENT_CM_FUSE_GROUP_LABELS.values(),
+    *_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER,
+    "230VAC_4A_pole",
+    _COMPONENT_CM_BUTTONS_LABEL,
+    "Other",
+}
+_COMPONENT_CM_MARKING_MULTIPLICITY_RULES = {
+    "mounting_plate": {
+        "default_max_occurrences": 1,
+        "name_overrides": {"Q81": 1},
+        "type_overrides": {},
+    },
+    "component": {
+        "default_max_occurrences": 1,
+        "name_overrides": {"Q81": 1},
+        "type_overrides": {"LA1KN40": 2},
+    },
+}
 _COMPONENT_STRIP_SIDE_COLUMNS = ["Space", "Text"]
 _COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
 _COMPONENT_CABINET_NAME_PATTERN = re.compile(
@@ -76,6 +135,7 @@ _COMPONENT_CABINET_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN = re.compile(r"^-S.*\.S$")
+_COMPONENT_CM_P92_NAME_PATTERN = re.compile(r"^-P92", re.IGNORECASE)
 _COMPONENT_INVALID_EXCEL_SHEET_CHAR_PATTERN = re.compile(r"[\\/\?\*\[\]:]")
 _FUSE_TYPE_TO_VOLTAGE_GROUP = {
     "2002-1611/1000-541": "24VDC",
@@ -160,11 +220,18 @@ class _ComponentCmSheetDataFrame(pd.DataFrame):
             from openpyxl.utils import get_column_letter
 
             worksheet = excel_writer.book[sheet_name]
+            startrow = int(kwargs.get("startrow", 0) or 0)
             startcol = int(kwargs.get("startcol", 0) or 0)
             for column_offset, _ in enumerate(self.columns, start=1):
                 worksheet.column_dimensions[get_column_letter(startcol + column_offset)].width = (
                     _COMPONENT_CM_COLUMN_WIDTH
                 )
+            _apply_component_cm_component_relay_color_formatting(
+                worksheet,
+                startrow=startrow,
+                startcol=startcol,
+                data_row_count=len(self),
+            )
         return result
 
 
@@ -233,6 +300,8 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
         if not sheet_name:
             raise ValueError("component final marking export requires a sheet_name")
 
+        from openpyxl.utils import get_column_letter
+
         startrow = int(kwargs.get("startrow", 0) or 0)
         startcol = int(kwargs.get("startcol", 0) or 0)
 
@@ -244,46 +313,125 @@ class _ComponentFinalMarkingSheetDataFrame(pd.DataFrame):
             "relay_strip_df",
             pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
         ).copy().reset_index(drop=True)
-        component_cm_export_df = self.component_cm_df.copy().reset_index(drop=True)
-        if not isinstance(component_cm_export_df, _ComponentCmSheetDataFrame):
-            component_cm_export_df = _ComponentCmSheetDataFrame(
-                component_cm_export_df,
-                columns=_COMPONENT_CM_COLUMNS,
-            )
+        component_cm_export_df, fuse_block_export_df, relay_block_export_df = _split_final_component_cm_layout(
+            self.component_cm_df
+        )
 
-        for export_df in (fuse_strip_df, relay_strip_df, component_cm_export_df):
+        for export_df in (fuse_strip_df, relay_strip_df, component_cm_export_df, fuse_block_export_df, relay_block_export_df):
             for column_name in export_df.columns:
                 export_df[column_name] = export_df[column_name].map(_stringify_cell)
 
         relay_start_col = startcol + len(fuse_strip_df.columns) + self.strip_internal_gap_columns
         cm_start_col = relay_start_col + len(relay_strip_df.columns) + self.cm_gap_columns
+        side_block_start_col = cm_start_col + len(component_cm_export_df.columns) + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        block_data_startrow = startrow + _COMPONENT_FINAL_BLOCK_HEADER_ROW_COUNT
 
         worksheet = excel_writer.book.create_sheet(title=sheet_name)
         excel_writer.sheets[sheet_name] = worksheet
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=startcol,
+            block_width=max(1, len(fuse_strip_df.columns)),
+            title="FUSE STRIP",
+            subtitle=_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE,
+        )
         fuse_strip_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=startcol,
+        )
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=relay_start_col,
+            block_width=max(1, len(relay_strip_df.columns)),
+            title="RELAYS STRIP",
+            subtitle=_COMPONENT_FINAL_STRIP_BLOCK_SUBTITLE,
         )
         relay_strip_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=relay_start_col,
+        )
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=cm_start_col,
+            block_width=max(1, len(component_cm_export_df.columns)),
+            title=_COMPONENT_FINAL_COMPONENT_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_COMPONENT_BLOCK_SUBTITLE,
         )
         component_cm_export_df.to_excel(
             excel_writer,
             sheet_name=sheet_name,
             index=False,
-            startrow=startrow,
+            startrow=block_data_startrow,
             startcol=cm_start_col,
         )
+        current_side_block_start_col = side_block_start_col
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=current_side_block_start_col,
+            block_width=1,
+            title=_COMPONENT_FINAL_FUSES_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_FUSES_BLOCK_SUBTITLE,
+        )
+        if not fuse_block_export_df.empty:
+            fuse_block_export_df.to_excel(
+                excel_writer,
+                sheet_name=sheet_name,
+                index=False,
+                startrow=block_data_startrow,
+                startcol=current_side_block_start_col,
+                header=False,
+            )
+            worksheet.column_dimensions[
+                get_column_letter(current_side_block_start_col + 1)
+            ].width = _COMPONENT_CM_COLUMN_WIDTH
+        else:
+            worksheet.column_dimensions[
+                get_column_letter(current_side_block_start_col + 1)
+            ].width = _COMPONENT_CM_COLUMN_WIDTH
+        current_side_block_start_col += 1 + _COMPONENT_FINAL_SIDE_BLOCK_GAP_COLUMNS
+        _write_component_final_block_header(
+            worksheet,
+            startrow=startrow,
+            startcol=current_side_block_start_col,
+            block_width=1,
+            title=_COMPONENT_FINAL_RELAYS_BLOCK_TITLE,
+            subtitle=_COMPONENT_FINAL_RELAYS_BLOCK_SUBTITLE,
+        )
+        if not relay_block_export_df.empty:
+            relay_block_export_df.to_excel(
+                excel_writer,
+                sheet_name=sheet_name,
+                index=False,
+                startrow=block_data_startrow,
+                startcol=current_side_block_start_col,
+                header=False,
+            )
+            relay_column_index = current_side_block_start_col + 1
+            worksheet.column_dimensions[get_column_letter(relay_column_index)].width = _COMPONENT_CM_COLUMN_WIDTH
+            _apply_component_cm_relay_color_formatting_for_column(
+                worksheet,
+                column_index=relay_column_index,
+                data_start_row=block_data_startrow + 1,
+                data_row_count=len(relay_block_export_df),
+            )
+        else:
+            relay_column_index = current_side_block_start_col + 1
+            worksheet.column_dimensions[get_column_letter(relay_column_index)].width = _COMPONENT_CM_COLUMN_WIDTH
 
         for row in worksheet.iter_rows():
             for cell in row:
+                if cell.__class__.__name__ == "MergedCell":
+                    continue
                 cell.number_format = "@"
                 if cell.value is None:
                     cell.value = ""
@@ -310,6 +458,110 @@ def _stringify_cell(value: Any) -> str:
     return str(value).strip()
 
 
+def _write_component_final_block_header(
+    worksheet: Any,
+    *,
+    startrow: int,
+    startcol: int,
+    block_width: int,
+    title: str,
+    subtitle: str,
+) -> None:
+    """Write one two-row block header above one final Component Marking block."""
+    start_row_index = startrow + 1
+    start_column_index = startcol + 1
+    end_column_index = start_column_index + max(0, block_width - 1)
+    if block_width > 1:
+        worksheet.merge_cells(
+            start_row=start_row_index,
+            start_column=start_column_index,
+            end_row=start_row_index,
+            end_column=end_column_index,
+        )
+        worksheet.merge_cells(
+            start_row=start_row_index + 1,
+            start_column=start_column_index,
+            end_row=start_row_index + 1,
+            end_column=end_column_index,
+        )
+    worksheet.cell(row=start_row_index, column=start_column_index).value = title
+    worksheet.cell(row=start_row_index + 1, column=start_column_index).value = subtitle
+
+
+def _apply_component_cm_component_relay_color_formatting(
+    worksheet: Any,
+    *,
+    startrow: int,
+    startcol: int,
+    data_row_count: int,
+) -> None:
+    """Color CM Component relay marking cells by the active CM-only relay section."""
+    if data_row_count <= 0:
+        return
+
+    from openpyxl.styles import PatternFill
+
+    component_column_index = startcol + _COMPONENT_CM_COLUMNS.index("Component") + 1
+    data_start_row = startrow + 2
+    data_end_row = data_start_row + data_row_count - 1
+    active_fill_color = ""
+    for row_index in range(data_start_row, data_end_row + 1):
+        cell = worksheet.cell(row=row_index, column=component_column_index)
+        text_value = _stringify_cell(cell.value)
+        if text_value == "":
+            active_fill_color = ""
+            continue
+        if text_value in _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL:
+            active_fill_color = _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL[text_value]
+            continue
+        if text_value in _COMPONENT_CM_SECTION_LABELS:
+            active_fill_color = ""
+            continue
+        if active_fill_color == "":
+            continue
+        cell.fill = PatternFill(
+            fill_type="solid",
+            start_color=active_fill_color,
+            end_color=active_fill_color,
+        )
+
+
+def _apply_component_cm_relay_color_formatting_for_column(
+    worksheet: Any,
+    *,
+    column_index: int,
+    data_start_row: int,
+    data_row_count: int,
+) -> None:
+    """Color relay marking cells in one final-sheet column by the active relay section label."""
+    if data_row_count <= 0:
+        return
+
+    from openpyxl.styles import PatternFill
+
+    data_end_row = data_start_row + data_row_count - 1
+    active_fill_color = ""
+    for row_index in range(data_start_row, data_end_row + 1):
+        cell = worksheet.cell(row=row_index, column=column_index)
+        text_value = _stringify_cell(cell.value)
+        if text_value == "":
+            active_fill_color = ""
+            continue
+        if text_value in _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL:
+            active_fill_color = _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL[text_value]
+            continue
+        if text_value in _COMPONENT_CM_SECTION_LABELS:
+            active_fill_color = ""
+            continue
+        if active_fill_color == "":
+            continue
+        cell.fill = PatternFill(
+            fill_type="solid",
+            start_color=active_fill_color,
+            end_color=active_fill_color,
+        )
+
+
 def _is_filtered_component_name(value: Any) -> bool:
     """Remove global -S*.S component rows before they enter downstream processing."""
     text = _stringify_cell(value)
@@ -320,6 +572,32 @@ def _is_filtered_component_name(value: Any) -> bool:
             evaluation_text = text[cabinet_split_index:]
 
     return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(evaluation_text.upper()))
+
+
+def _extract_component_cabinet_number(cabinet_id_value: Any) -> int | None:
+    """Extract the numeric part from one cabinet id such as A2."""
+    cabinet_id = _stringify_cell(cabinet_id_value).upper()
+    if not cabinet_id.startswith("A"):
+        return None
+    cabinet_number_text = cabinet_id[1:]
+    if not cabinet_number_text.isdigit():
+        return None
+    return int(cabinet_number_text)
+
+
+def _is_cabinet_door_m_component(name_value: Any, *, cabinet_id: Any | None = None) -> bool:
+    """Return whether one name represents an A2+ cabinet-prefixed local -M* Door component."""
+    local_name = _normalize_component_local_name(name_value)
+    if not _normalize_component_name(local_name).startswith("-M"):
+        return False
+
+    cabinet_number = _extract_component_cabinet_number(cabinet_id) if cabinet_id is not None else None
+    if cabinet_number is None:
+        cabinet_parts = _extract_component_cabinet_parts(name_value)
+        if not cabinet_parts:
+            return False
+        cabinet_number = _extract_component_cabinet_number(cabinet_parts[0])
+    return cabinet_number is not None and cabinet_number >= 2
 
 
 def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
@@ -430,6 +708,8 @@ def _is_unused_component_name(name: Any) -> bool:
         return True
     if evaluation_text.startswith("-W"):
         return True
+    if _is_cabinet_door_m_component(text):
+        return False
     if evaluation_text.startswith("-M") and not evaluation_text.startswith("-M92"):
         return True
     if evaluation_text.startswith("-X") and not evaluation_text.startswith("-X921"):
@@ -713,13 +993,183 @@ def _build_component_cm_source_df(component_df: pd.DataFrame) -> pd.DataFrame:
     return cm_source_df
 
 
-def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
+def _component_cm_marking_rule_key(name_value: Any) -> str:
+    """Return the centralized multiplicity-rule key for one CM marking Name."""
+    marking_name = _stringify_cell(name_value).upper()
+    if marking_name in {"Q81", "-Q81"}:
+        return "Q81"
+    return marking_name
+
+
+def _is_component_cm_p92_name(name_value: Any) -> bool:
+    """Return whether one local CM Name belongs to the P92* exception family."""
+    return bool(_COMPONENT_CM_P92_NAME_PATTERN.match(_stringify_cell(name_value)))
+
+
+def _is_component_cm_door_candidate_name(name_value: Any, *, cabinet_id: Any | None = None) -> bool:
+    """Return whether one raw/local component Name should contribute its local name to the Door column."""
+    raw_name = _stringify_cell(name_value)
+    if raw_name == "":
+        return False
+
+    local_name = _normalize_component_local_name(raw_name)
+    normalized_local_name = _normalize_component_name(local_name)
+    if normalized_local_name == "" or _is_component_cm_p92_name(local_name):
+        return False
+    if normalized_local_name.startswith("-P") or normalized_local_name.startswith("-S"):
+        return True
+    return _is_cabinet_door_m_component(raw_name, cabinet_id=cabinet_id)
+
+
+def _classify_component_cm_relay_group(type_value: Any) -> str:
+    """Classify one relay TYPE into the CM-only Component-column relay display groups."""
+    return _COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE.get(_normalize_component_type(type_value), "")
+
+
+def _infer_component_production_relay_group(name_group_df: pd.DataFrame) -> str:
+    """Infer one production relay display group from the coil/timed TYPE rows within one Name group."""
+    if name_group_df.empty:
+        return ""
+
+    direct_group_df = name_group_df.copy()
+    direct_group_df["_production_relay_group"] = direct_group_df["TYPE"].map(_classify_component_cm_relay_group)
+    direct_group_df = direct_group_df.loc[direct_group_df["_production_relay_group"].ne("")].copy()
+    if direct_group_df.empty:
+        return ""
+    representative_row = direct_group_df.sort_values("_original_order", kind="mergesort").iloc[0]
+    return _stringify_cell(representative_row["_production_relay_group"])
+
+
+def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, type_value: Any) -> int:
+    """Resolve the allowed CM multiplicity for one Name/TYPE pair."""
+    rule_set = _COMPONENT_CM_MARKING_MULTIPLICITY_RULES[column_key]
+    normalized_type = _normalize_component_type(type_value)
+    rule_key = _component_cm_marking_rule_key(name_value)
+    if rule_key in rule_set["name_overrides"]:
+        return int(rule_set["name_overrides"][rule_key])
+    if normalized_type in rule_set["type_overrides"]:
+        return int(rule_set["type_overrides"][normalized_type])
+    return int(rule_set["default_max_occurrences"])
+
+
+def _build_component_cm_door_source_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build the unique Door-name source list before the final x2 Door duplication."""
+    if component_df.empty or "Name" not in component_df.columns:
+        return []
+
+    cabinet_id = component_df.attrs.get("cabinet_id")
+    door_names = [
+        _normalize_component_local_name(raw_name)
+        for raw_name in component_df["Name"].tolist()
+        if _is_component_cm_door_candidate_name(raw_name, cabinet_id=cabinet_id)
+    ]
+    return list(dict.fromkeys(door_names))
+
+
+def _build_component_cm_door_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build the Door-column list as one deduplicated non-P92 block repeated twice."""
+    deduplicated_door_names = _build_component_cm_door_source_entries(component_df)
+    return deduplicated_door_names + deduplicated_door_names
+
+
+def _deduplicate_component_cm_marking_rows(
+    marking_df: pd.DataFrame,
+    *,
+    column_key: str,
+    seen_counts: dict[str, int] | None = None,
+) -> tuple[list[str], dict[str, int]]:
+    """Deduplicate CM marking rows with centralized rules while preserving order."""
+    if marking_df.empty:
+        return [], dict(seen_counts or {})
+
+    working_df = marking_df.copy()
+    if "Name" not in working_df.columns:
+        working_df["Name"] = ""
+    if "TYPE" not in working_df.columns:
+        working_df["TYPE"] = ""
+
+    occurrence_counts = dict(seen_counts or {})
+    grouped_rule_entries: dict[str, dict[str, Any]] = {}
+    ordered_rule_keys: list[str] = []
+    for row in working_df.loc[:, ["Name", "TYPE"]].itertuples(index=False):
+        display_name = _stringify_cell(row.Name)
+        if display_name == "":
+            continue
+        rule_key = _component_cm_marking_rule_key(display_name)
+        max_occurrences = _get_component_cm_marking_max_occurrences(column_key, display_name, row.TYPE)
+        if rule_key not in grouped_rule_entries:
+            grouped_rule_entries[rule_key] = {
+                "display_name": display_name,
+                "max_occurrences": max_occurrences,
+            }
+            ordered_rule_keys.append(rule_key)
+            continue
+        grouped_rule_entries[rule_key]["max_occurrences"] = max(
+            int(grouped_rule_entries[rule_key]["max_occurrences"]),
+            max_occurrences,
+        )
+
+    deduplicated_names: list[str] = []
+    for rule_key in ordered_rule_keys:
+        display_name = _stringify_cell(grouped_rule_entries[rule_key]["display_name"])
+        max_occurrences = int(grouped_rule_entries[rule_key]["max_occurrences"])
+        remaining_occurrences = max(0, max_occurrences - occurrence_counts.get(rule_key, 0))
+        if remaining_occurrences == 0:
+            continue
+        deduplicated_names.extend([display_name] * remaining_occurrences)
+        occurrence_counts[rule_key] = occurrence_counts.get(rule_key, 0) + remaining_occurrences
+    return deduplicated_names, occurrence_counts
+
+
+def _deduplicate_marking_names_default(marking_names: list[Any], *, column_key: str) -> list[str]:
+    """Apply the centralized default x1 CM rule to one flat marking Name list."""
+    if not marking_names:
+        return []
+    marking_df = pd.DataFrame({"Name": marking_names, "TYPE": [""] * len(marking_names)})
+    deduplicated_names, _ = _deduplicate_component_cm_marking_rows(marking_df, column_key=column_key)
+    return deduplicated_names
+
+
+def _deduplicate_component_cm_entries(
+    ordered_groups: list[tuple[str, pd.DataFrame]],
+    *,
+    blocked_rule_keys: set[str] | None = None,
+) -> list[str]:
+    """Build grouped Component CM entries while keeping group labels outside name deduplication."""
+    if not ordered_groups:
+        return []
+
+    component_entries: list[str] = []
+    seen_counts: dict[str, int] = {}
+    blocked_rule_keys = blocked_rule_keys or set()
+    for group_label, group_df in ordered_groups:
+        filtered_group_df = group_df.loc[
+            group_df["Name"].map(
+                lambda name_value: _component_cm_marking_rule_key(name_value) not in blocked_rule_keys
+                or _is_component_cm_p92_name(name_value)
+            )
+        ].copy()
+        group_names, seen_counts = _deduplicate_component_cm_marking_rows(
+            filtered_group_df,
+            column_key="component",
+            seen_counts=seen_counts,
+        )
+        if not group_names:
+            continue
+        if component_entries:
+            component_entries.append("")
+        component_entries.append(group_label)
+        component_entries.extend(group_names)
+    return component_entries
+
+
+def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     """Build CM fuse groups in the same voltage-group and natural-name order as the strip layout."""
     fuse_df = cm_source_df.loc[cm_source_df["Category"].eq("FUSE")].copy()
     if fuse_df.empty:
         return []
 
-    fuse_groups: list[tuple[str, list[str]]] = []
+    fuse_groups: list[tuple[str, pd.DataFrame]] = []
     for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
         voltage_df = fuse_df.loc[
             fuse_df["TYPE"].map(_detect_fuse_voltage_group).eq(voltage_group)
@@ -760,56 +1210,42 @@ def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[st
         fuse_groups.append(
             (
                 _COMPONENT_CM_FUSE_GROUP_LABELS[voltage_group],
-                voltage_df["Name"].map(_stringify_cell).tolist(),
+                voltage_df.reset_index(drop=True),
             )
         )
     return fuse_groups
 
 
-def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
-    """Build CM relay groups in the same deduplicated group order used by the strip layout."""
+def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Build CM-only relay display groups without changing the strip relay logic."""
     relay_df = cm_source_df.copy()
-    relay_df["_relay_group"] = relay_df.apply(
-        lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")),
-        axis=1,
-    )
-    relay_df = relay_df.loc[relay_df["_relay_group"].ne("")].copy()
+    relay_df["_cm_relay_group"] = relay_df["TYPE"].map(_classify_component_cm_relay_group)
+    relay_df = relay_df.loc[relay_df["_cm_relay_group"].ne("")].copy()
     if relay_df.empty:
         return []
 
-    relay_df, _ = _deduplicate_component_relay_strip_source(relay_df)
-    relay_group_dfs = [
-        ("2_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy())),
-        ("4_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy())),
-        ("timed", _sort_component_timed_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("timed")].copy())),
-        ("1_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy())),
-    ]
-    return [
-        (
-            _COMPONENT_CM_RELAY_GROUP_LABELS[group_label],
-            group_df["Name"].map(_stringify_cell).tolist(),
-        )
-        for group_label, group_df in relay_group_dfs
-        if not group_df.empty
-    ]
+    relay_groups: list[tuple[str, pd.DataFrame]] = []
+    for group_label in _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER:
+        group_df = relay_df.loc[relay_df["_cm_relay_group"].eq(group_label)].copy()
+        if group_df.empty:
+            continue
+        if group_label == "Timed relays":
+            group_df = _sort_component_timed_relay_group_df(group_df)
+        else:
+            group_df = _sort_component_relay_group_df(group_df)
+        relay_groups.append((group_label, group_df.reset_index(drop=True)))
+    return relay_groups
 
 
-def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
-    """Build CM button/other groups with stable local-name ordering."""
-    button_df = _sort_grouped_component_rows(
-        cm_source_df.loc[cm_source_df["Category"].eq("BUTTON")].copy()
-    )
+def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Build CM other groups with stable local-name ordering while leaving Buttons out of Component."""
     other_df = _sort_grouped_component_rows(
         cm_source_df.loc[cm_source_df["Category"].eq("OTHER")].copy()
     )
 
-    button_other_groups: list[tuple[str, list[str]]] = []
-    if not button_df.empty:
-        button_other_groups.append(
-            (_COMPONENT_CM_BUTTONS_LABEL, button_df["Name"].map(_stringify_cell).tolist())
-        )
+    button_other_groups: list[tuple[str, pd.DataFrame]] = []
     if not other_df.empty:
-        button_other_groups.append((_OTHER_SECTION_LABEL, other_df["Name"].map(_stringify_cell).tolist()))
+        button_other_groups.append((_OTHER_SECTION_LABEL, other_df.reset_index(drop=True)))
     return button_other_groups
 
 
@@ -819,15 +1255,20 @@ def _build_component_cm_mounting_plate_entries(component_df: pd.DataFrame) -> li
     if cm_source_df.empty:
         return []
 
+    door_name_set = set(_build_component_cm_door_source_entries(component_df))
     mounting_plate_df = cm_source_df.loc[
         cm_source_df["Name"].map(_stringify_cell).ne("")
+        & ~cm_source_df["Name"].map(_stringify_cell).isin(door_name_set)
         & cm_source_df["TYPE"].map(_detect_fuse_voltage_group).isna()
         & cm_source_df.apply(
             lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")) == "",
             axis=1,
         )
     ].copy()
-    return mounting_plate_df["Name"].map(_stringify_cell).tolist()
+    return _deduplicate_marking_names_default(
+        mounting_plate_df["Name"].map(_stringify_cell).tolist(),
+        column_key="mounting_plate",
+    )
 
 
 def _build_component_cm_component_entries(component_df: pd.DataFrame) -> list[str]:
@@ -841,16 +1282,12 @@ def _build_component_cm_component_entries(component_df: pd.DataFrame) -> list[st
         *_build_component_cm_relay_groups(cm_source_df),
         *_build_component_cm_button_other_groups(cm_source_df),
     ]
-
-    component_entries: list[str] = []
-    for group_index, (group_label, group_names) in enumerate(ordered_groups):
-        if not group_names:
-            continue
-        component_entries.append(group_label)
-        component_entries.extend(group_names)
-        if group_index < len(ordered_groups) - 1:
-            component_entries.append("")
-    return component_entries
+    blocked_rule_keys = {
+        _component_cm_marking_rule_key(door_name)
+        for door_name in _build_component_cm_door_entries(component_df)
+        if not _is_component_cm_p92_name(door_name)
+    }
+    return _deduplicate_component_cm_entries(ordered_groups, blocked_rule_keys=blocked_rule_keys)
 
 
 def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -859,12 +1296,7 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
         return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
 
     mounting_plate_entries = _build_component_cm_mounting_plate_entries(component_df)
-    local_names = component_df["Name"].map(_normalize_component_local_name)
-    door_names = [
-        local_name
-        for local_name in local_names.tolist()
-        if local_name.startswith("-P") or local_name.startswith("-S")
-    ]
+    door_names = _build_component_cm_door_entries(component_df)
     component_entries = _build_component_cm_component_entries(component_df)
     row_count = max(len(mounting_plate_entries), len(component_entries), len(door_names))
     return _ComponentCmSheetDataFrame(
@@ -875,6 +1307,72 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
         },
         columns=_COMPONENT_CM_COLUMNS,
     )
+
+
+def _extract_component_cm_component_groups(component_entries: list[Any]) -> list[tuple[str, list[str]]]:
+    """Parse one flat CM Component-column list into ordered section-label/name groups."""
+    ordered_groups: list[tuple[str, list[str]]] = []
+    current_label = ""
+    current_names: list[str] = []
+    for entry_value in [*component_entries, ""]:
+        text_value = _stringify_cell(entry_value)
+        if text_value == "":
+            if current_label != "":
+                ordered_groups.append((current_label, current_names.copy()))
+            current_label = ""
+            current_names = []
+            continue
+        if current_label == "":
+            current_label = text_value
+            continue
+        current_names.append(text_value)
+    return ordered_groups
+
+
+def _build_component_cm_group_entries(groups: list[tuple[str, list[str]]]) -> list[str]:
+    """Flatten ordered CM section groups back into one column with blank separators."""
+    valid_groups = [(group_label, group_names) for group_label, group_names in groups if _stringify_cell(group_label) != ""]
+    entries: list[str] = []
+    for group_index, (group_label, group_names) in enumerate(valid_groups):
+        entries.append(_stringify_cell(group_label))
+        entries.extend([_stringify_cell(group_name) for group_name in group_names if _stringify_cell(group_name) != ""])
+        if group_index < len(valid_groups) - 1:
+            entries.append("")
+    return entries
+
+
+def _split_final_component_cm_layout(
+    component_cm_df: pd.DataFrame,
+) -> tuple[_ComponentCmSheetDataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split the final-sheet CM Component column into main, FUSES, and RELAYS right-side blocks."""
+    working_df = component_cm_df.copy().reset_index(drop=True)
+    component_entries = working_df.get("Component", pd.Series(dtype=object)).tolist()
+    ordered_groups = _extract_component_cm_component_groups(component_entries)
+
+    main_component_groups: list[tuple[str, list[str]]] = []
+    fuse_groups: list[tuple[str, list[str]]] = []
+    relay_groups: list[tuple[str, list[str]]] = []
+    for group_label, group_names in ordered_groups:
+        normalized_group_label = _stringify_cell(group_label)
+        if normalized_group_label in _COMPONENT_FINAL_MOVED_CM_FUSE_GROUP_LABELS:
+            fuse_groups.append((normalized_group_label, group_names))
+            continue
+        relay_display_label = _COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES.get(normalized_group_label, "")
+        if relay_display_label:
+            relay_groups.append((relay_display_label, group_names))
+            continue
+        main_component_groups.append((normalized_group_label, group_names))
+
+    main_component_entries = _build_component_cm_group_entries(main_component_groups)
+    row_count = len(working_df.index)
+    working_df["Component"] = main_component_entries + [""] * max(0, row_count - len(main_component_entries))
+    main_component_df = _ComponentCmSheetDataFrame(working_df, columns=_COMPONENT_CM_COLUMNS)
+
+    fuse_block_entries = _build_component_cm_group_entries(fuse_groups)
+    relay_block_entries = _build_component_cm_group_entries(relay_groups)
+    fuse_block_df = pd.DataFrame({_COMPONENT_FINAL_FUSES_BLOCK_TITLE: fuse_block_entries})
+    relay_block_df = pd.DataFrame({_COMPONENT_FINAL_RELAYS_BLOCK_TITLE: relay_block_entries})
+    return main_component_df, fuse_block_df, relay_block_df
 
 
 def _extract_component_cabinet_parts(name_value: Any) -> tuple[str, str, str] | None:
@@ -957,7 +1455,9 @@ def _build_component_cabinet_map(
         normalized_df = normalized_df.drop(
             columns=["_cabinet_raw_id", "_cabinet_id", "_cabinet_normalized_name"]
         )
-        cabinet_map[cabinet_id] = normalized_df.reset_index(drop=True)
+        normalized_df = normalized_df.reset_index(drop=True)
+        normalized_df.attrs["cabinet_id"] = raw_cabinet_id
+        cabinet_map[cabinet_id] = normalized_df
         cabinet_stats["row_counts"][cabinet_id] = len(normalized_df)
 
     return cabinet_map, cabinet_stats
@@ -1299,6 +1799,29 @@ def _drop_production_only_component_columns(component_df: pd.DataFrame) -> pd.Da
     return component_df.drop(columns=list(_PRODUCTION_ONLY_COMPONENT_COLUMNS), errors="ignore").copy()
 
 
+def _filter_component_production_fuse_rows(component_df: pd.DataFrame) -> pd.DataFrame:
+    """Remove fuse rows from the production-only flow without changing row shape."""
+    if component_df.empty:
+        return component_df.copy().reset_index(drop=True)
+
+    group_values = component_df.get("Group", pd.Series("", index=component_df.index, dtype=object)).map(
+        _stringify_cell
+    )
+    category_values = component_df.get(
+        "Category", pd.Series("", index=component_df.index, dtype=object)
+    ).map(_stringify_cell)
+    type_values = component_df.get("TYPE", pd.Series("", index=component_df.index, dtype=object)).map(
+        _normalize_component_type
+    )
+
+    include_mask = ~(
+        group_values.str.upper().eq("FUSES")
+        | category_values.str.upper().eq("FUSE")
+        | type_values.isin(_FUSE_TYPES)
+    )
+    return component_df.loc[include_mask].copy().reset_index(drop=True)
+
+
 def _split_component_groups(
     component_marking_df: pd.DataFrame,
 ) -> tuple[list[tuple[str, pd.DataFrame, str]], pd.DataFrame, dict[str, int]]:
@@ -1404,28 +1927,37 @@ def _build_component_production_fuse_sections(
 def _build_component_production_relay_sections(
     working_df: pd.DataFrame,
 ) -> tuple[list[tuple[str, pd.DataFrame]], int]:
-    """Build production relay sections in strip-style group order without deduplicating any rows."""
-    relay_df = working_df.copy()
-    relay_df["_relay_group"] = relay_df.apply(
-        lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")),
-        axis=1,
-    )
-    relay_df = relay_df.loc[relay_df["_relay_group"].ne("")].copy()
+    """Build production relay sections in CM display-group order without deduplicating rows."""
+    relay_df = working_df.loc[working_df["Category"].isin({"RELAY_1P", "RELAY_2P", "RELAY_4P"})].copy()
     if relay_df.empty:
         return [], 0
 
-    relay_group_dfs = [
-        ("2_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy())),
-        ("4_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy())),
-        ("timed", _sort_component_timed_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("timed")].copy())),
-        ("1_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy())),
-    ]
-    ordered_sections = [
-        (_COMPONENT_CM_RELAY_GROUP_LABELS[group_label], group_df.reset_index(drop=True))
-        for group_label, group_df in relay_group_dfs
-        if not group_df.empty
-    ]
-    relay_row_count = sum(len(group_df) for _, group_df in relay_group_dfs)
+    production_relay_rows: list[pd.DataFrame] = []
+    for _, same_name_df in relay_df.groupby("Name", sort=False, dropna=False):
+        production_relay_group = _infer_component_production_relay_group(same_name_df)
+        if production_relay_group == "":
+            continue
+        grouped_name_df = same_name_df.copy()
+        grouped_name_df["_production_relay_group"] = production_relay_group
+        production_relay_rows.append(grouped_name_df)
+    if not production_relay_rows:
+        return [], 0
+
+    production_relay_df = pd.concat(production_relay_rows, ignore_index=True)
+    ordered_sections: list[tuple[str, pd.DataFrame]] = []
+    relay_row_count = 0
+    for group_label in _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER:
+        group_df = production_relay_df.loc[
+            production_relay_df["_production_relay_group"].eq(group_label)
+        ].copy()
+        if group_df.empty:
+            continue
+        if group_label == "Timed relays":
+            group_df = _sort_component_timed_relay_group_df(group_df)
+        else:
+            group_df = _sort_component_relay_group_df(group_df)
+        ordered_sections.append((group_label, group_df.reset_index(drop=True)))
+        relay_row_count += len(group_df)
     return ordered_sections, relay_row_count
 
 
@@ -1453,7 +1985,9 @@ def _build_component_production_ordered_sections(
 ) -> tuple[list[tuple[str, pd.DataFrame]], dict[str, int]]:
     """Build production workbook sections in the same visible order as Marking."""
     group_counts = {"relay_rows": 0, "fuse_rows": 0, "button_rows": 0}
-    working_df = _build_component_production_source_df(component_marking_df)
+    working_df = _filter_component_production_fuse_rows(
+        _build_component_production_source_df(component_marking_df)
+    )
     if working_df.empty:
         return [], group_counts
 
@@ -1499,13 +2033,14 @@ def _build_production_separator_row() -> dict[str, Any]:
 
 def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert actual component rows into production-sheet records."""
-    if component_df.empty:
+    filtered_component_df = _filter_component_production_fuse_rows(component_df)
+    if filtered_component_df.empty:
         return []
 
-    production_rows = pd.DataFrame(index=component_df.index)
+    production_rows = pd.DataFrame(index=filtered_component_df.index)
     for column_name in ("Name", "Article No.", "TYPE", "Quantity", "Description"):
-        if column_name in component_df.columns:
-            production_rows[column_name] = component_df[column_name]
+        if column_name in filtered_component_df.columns:
+            production_rows[column_name] = filtered_component_df[column_name]
         else:
             production_rows[column_name] = ""
     production_rows["Marked"] = ""
@@ -1848,8 +2383,11 @@ def _build_component_production_df(
     ordered_sections, group_counts = _build_component_production_ordered_sections(component_marking_df)
     ordered_records: list[dict[str, Any]] = []
     for section_label, section_df in ordered_sections:
+        section_records = _component_rows_to_production_records(section_df)
+        if not section_records:
+            continue
         ordered_records.append(_build_production_section_row(section_label))
-        ordered_records.extend(_component_rows_to_production_records(section_df))
+        ordered_records.extend(section_records)
         ordered_records.append(_build_production_separator_row())
 
     production_df = pd.DataFrame(
@@ -1994,9 +2532,12 @@ def _list_component_calculation_types(production_df: pd.DataFrame) -> list[str]:
         errors="coerce",
     ).fillna(0).astype(int) == 1
     actual_rows_df = production_df.loc[include_mask].copy()
-    return list(
-        dict.fromkeys(actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist())
-    )
+    type_values = [
+        type_value
+        for type_value in actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist()
+        if type_value != ""
+    ]
+    return list(dict.fromkeys(type_values))
 
 
 def _count_component_production_actual_rows(production_df: pd.DataFrame) -> int:
