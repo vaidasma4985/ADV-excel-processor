@@ -102,12 +102,13 @@ def classify_component(name: str, raw_type: str, group_sorting: Any) -> Dict[str
     raw_type_str = "" if raw_type is None or pd.isna(raw_type) else str(raw_type).strip()
     normalized_type = normalize_type(raw_type)
 
+    gs_text = "" if group_sorting is None or pd.isna(group_sorting) else str(group_sorting).strip()
     gs_num = pd.to_numeric(group_sorting, errors="coerce")
     gs_numeric = None if pd.isna(gs_num) else float(gs_num)
     gs_is_non_numeric = bool(
-        not pd.isna(group_sorting)
-        and str(group_sorting).strip() != ""
+        gs_text != ""
         and pd.isna(gs_num)
+        and not re.fullmatch(r"\d+[A-Za-z]*", gs_text)
     )
 
     removed_by_name_prefix = name_str.startswith(_REMOVE_PREFIXES)
@@ -219,6 +220,26 @@ def _gs_int(v: Any) -> int | None:
 def _gs_str(v: Any) -> str:
     n = _gs_int(v)
     return "" if n is None else str(n)
+
+
+def _normalize_alphanumeric_gs(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    gs_text = df["Group Sorting"].astype(str).str.strip()
+    valid = df["Group Sorting"].notna() & gs_text.str.fullmatch(r"\d+[A-Za-z]*", na=False)
+    parsed = gs_text[valid].str.extract(r"^(\d+)([A-Za-z]*)$")
+
+    suffix_maps: dict[int, dict[str, int]] = {}
+    suffixed = parsed[1].ne("")
+    for base_text, suffixes in parsed.loc[suffixed].assign(suffix=parsed.loc[suffixed, 1].str.upper()).groupby(0)[
+        "suffix"
+    ]:
+        base = int(base_text)
+        suffix_maps[base] = {suffix: base + i for i, suffix in enumerate(sorted(suffixes.unique()), start=1)}
+
+    for idx, (base_text, suffix) in parsed.loc[suffixed].iterrows():
+        df.at[idx, "Group Sorting"] = suffix_maps[int(base_text)][str(suffix).upper()]
+
+    return df
 
 
 def _starts_with_any(s: pd.Series, prefixes: Tuple[str, ...]) -> pd.Series:
@@ -508,6 +529,7 @@ def process_excel(
     df = _normalize_schema_dtypes(df)
 
     removed_parts: List[pd.DataFrame] = []
+    df = _normalize_alphanumeric_gs(df)
 
     # -------------------------------------------------------------------------
     # STEP 0 – remove non-numeric Group Sorting (but not empty)

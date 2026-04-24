@@ -22,6 +22,7 @@ RELAY_ALLOWED_RAW_TYPES = {
     "RXM4GB2BD",
 }
 FUSE_CONFLICT_TYPES = {"2002-1611/1000-836", "2002-1611/1000-541"}
+GS_TEXT_PATTERN = r"\d+[A-Za-z]*"
 
 
 def _normalize_selected_terminal_type(type_value: str) -> str:
@@ -707,7 +708,7 @@ def render_component_correction() -> None:
                         disabled=["Name", "Type", "_idx"],
                         column_config={
                             "_idx": None,
-                            "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
+                            "Group Sorting": st.column_config.TextColumn("Group sorting"),
                         },
                     )
 
@@ -741,7 +742,7 @@ def render_component_correction() -> None:
                     disabled=["Name", "Type", "_idx"],
                     column_config={
                         "_idx": None,
-                        "Group Sorting": st.column_config.NumberColumn("Group sorting", step=1),
+                        "Group Sorting": st.column_config.TextColumn("Group sorting"),
                     },
                 )
             elif show_type_section:
@@ -782,13 +783,13 @@ def render_component_correction() -> None:
                     {"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA}
                 )
                 gs_fix_df = gs_fix_df.loc[gs_fix_df["Group Sorting"].notna()].copy()
+                gs_fix_df["Group Sorting"] = gs_fix_df["Group Sorting"].str.upper()
 
             gs_values = gs_fix_df["Group Sorting"] if "Group Sorting" in gs_fix_df.columns else pd.Series(dtype=object)
             gs_text = gs_values.astype(str).str.strip()
             gs_text = gs_text.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
-            gs_numeric = pd.to_numeric(gs_text, errors="coerce")
             invalid_mask = (
-                (gs_text.notna() & (gs_numeric.isna() | (gs_numeric % 1 != 0)))
+                (gs_text.notna() & ~gs_text.str.fullmatch(GS_TEXT_PATTERN, na=False))
                 if not gs_fix_df.empty and "Group Sorting" in gs_fix_df.columns
                 else pd.Series(False, index=gs_fix_df.index, dtype=bool)
             )
@@ -820,7 +821,7 @@ def render_component_correction() -> None:
                 invalid_type_mask = pd.Series([True])
 
             if invalid_mask.any():
-                st.error("Klaida: terminalų (2002-3201 / 2002-3207) Group Sorting turi būti sveiki skaičiai.")
+                st.error("Klaida: terminalų (2002-3201 / 2002-3207) Group Sorting formatas neteisingas.")
             elif invalid_type_mask.any():
                 st.error("Klaida: parink Correct Type iš leidžiamų reikšmių.")
             else:
@@ -835,14 +836,10 @@ def render_component_correction() -> None:
                         st.warning("Nepavyko pritaikyti pataisymų: trūksta stulpelių: " + ", ".join(missing_apply_cols))
                     else:
                         corrected_raw_df = raw_df.copy()
-                        if "Group Sorting" in corrected_raw_df.columns:
-                            corrected_raw_df["Group Sorting"] = pd.to_numeric(
-                                corrected_raw_df["Group Sorting"], errors="coerce"
-                            )
 
                         # Apply GS fixes
                         for _, row in gs_fix_df.iterrows():
-                            corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = int(float(row["Group Sorting"]))
+                            corrected_raw_df.loc[int(row["_idx"]), "Group Sorting"] = str(row["Group Sorting"]).strip().upper()
 
                         # Apply Type fixes (WRITE BASE TYPE ONLY)
                         for _, row in type_fix_df.iterrows():
