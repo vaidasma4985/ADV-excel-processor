@@ -1968,6 +1968,11 @@ _NON_BOLD_CM_SECTION_LABELS = {
     "Relays 4_Pole",
     "Relays Timed",
     "Relays 1_Pole",
+    "24VDC_2_pole",
+    "230VAC_2_pole",
+    "24VDC_4_pole",
+    "230VAC_4_pole",
+    "Timed relays",
     "Buttons",
     "Other",
 }

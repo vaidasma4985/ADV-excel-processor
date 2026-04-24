@@ -69,6 +69,34 @@ _COMPONENT_CM_RELAY_GROUP_LABELS = {
     "1_pole": "Relays 1_Pole",
 }
 _COMPONENT_CM_BUTTONS_LABEL = "Buttons"
+_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER = (
+    "24VDC_2_pole",
+    "230VAC_2_pole",
+    "24VDC_4_pole",
+    "230VAC_4_pole",
+    "Timed relays",
+)
+_COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE = {
+    "RXG22BD": "24VDC_2_pole",
+    "RXG22P7": "230VAC_2_pole",
+    "RXM4GB2BD": "24VDC_4_pole",
+    "RXM4GB2P7": "230VAC_4_pole",
+    "RE22R1AMR": "Timed relays",
+    "RE22R1KMR": "Timed relays",
+    "RE17LCBM": "Timed relays",
+}
+_COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL = {
+    "24VDC_2_pole": "C6EFCE",
+    "230VAC_2_pole": "F4CCCC",
+    "24VDC_4_pole": "C6EFCE",
+    "230VAC_4_pole": "F4CCCC",
+}
+_COMPONENT_CM_SECTION_LABELS = {
+    *_COMPONENT_CM_FUSE_GROUP_LABELS.values(),
+    *_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER,
+    _COMPONENT_CM_BUTTONS_LABEL,
+    "Other",
+}
 _COMPONENT_CM_MARKING_MULTIPLICITY_RULES = {
     "mounting_plate": {
         "default_max_occurrences": 1,
@@ -173,11 +201,18 @@ class _ComponentCmSheetDataFrame(pd.DataFrame):
             from openpyxl.utils import get_column_letter
 
             worksheet = excel_writer.book[sheet_name]
+            startrow = int(kwargs.get("startrow", 0) or 0)
             startcol = int(kwargs.get("startcol", 0) or 0)
             for column_offset, _ in enumerate(self.columns, start=1):
                 worksheet.column_dimensions[get_column_letter(startcol + column_offset)].width = (
                     _COMPONENT_CM_COLUMN_WIDTH
                 )
+            _apply_component_cm_component_relay_color_formatting(
+                worksheet,
+                startrow=startrow,
+                startcol=startcol,
+                data_row_count=len(self),
+            )
         return result
 
 
@@ -321,6 +356,44 @@ def _stringify_cell(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _apply_component_cm_component_relay_color_formatting(
+    worksheet: Any,
+    *,
+    startrow: int,
+    startcol: int,
+    data_row_count: int,
+) -> None:
+    """Color CM Component relay marking cells by the active CM-only relay section."""
+    if data_row_count <= 0:
+        return
+
+    from openpyxl.styles import PatternFill
+
+    component_column_index = startcol + _COMPONENT_CM_COLUMNS.index("Component") + 1
+    data_start_row = startrow + 2
+    data_end_row = data_start_row + data_row_count - 1
+    active_fill_color = ""
+    for row_index in range(data_start_row, data_end_row + 1):
+        cell = worksheet.cell(row=row_index, column=component_column_index)
+        text_value = _stringify_cell(cell.value)
+        if text_value == "":
+            active_fill_color = ""
+            continue
+        if text_value in _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL:
+            active_fill_color = _COMPONENT_CM_DISPLAY_RELAY_COLOR_BY_LABEL[text_value]
+            continue
+        if text_value in _COMPONENT_CM_SECTION_LABELS:
+            active_fill_color = ""
+            continue
+        if active_fill_color == "":
+            continue
+        cell.fill = PatternFill(
+            fill_type="solid",
+            start_color=active_fill_color,
+            end_color=active_fill_color,
+        )
 
 
 def _is_filtered_component_name(value: Any) -> bool:
@@ -739,6 +812,11 @@ def _is_component_cm_p92_name(name_value: Any) -> bool:
     return bool(_COMPONENT_CM_P92_NAME_PATTERN.match(_stringify_cell(name_value)))
 
 
+def _classify_component_cm_relay_group(type_value: Any) -> str:
+    """Classify one relay TYPE into the CM-only Component-column relay display groups."""
+    return _COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE.get(_normalize_component_type(type_value), "")
+
+
 def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, type_value: Any) -> int:
     """Resolve the allowed CM multiplicity for one Name/TYPE pair."""
     rule_set = _COMPONENT_CM_MARKING_MULTIPLICITY_RULES[column_key]
@@ -911,31 +989,24 @@ def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[st
 
 
 def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
-    """Build CM relay groups in the same deduplicated group order used by the strip layout."""
+    """Build CM-only relay display groups without changing the strip relay logic."""
     relay_df = cm_source_df.copy()
-    relay_df["_relay_group"] = relay_df.apply(
-        lambda row: _classify_component_strip_relay_group(row.get("Name"), row.get("TYPE")),
-        axis=1,
-    )
-    relay_df = relay_df.loc[relay_df["_relay_group"].ne("")].copy()
+    relay_df["_cm_relay_group"] = relay_df["TYPE"].map(_classify_component_cm_relay_group)
+    relay_df = relay_df.loc[relay_df["_cm_relay_group"].ne("")].copy()
     if relay_df.empty:
         return []
 
-    relay_df, _ = _deduplicate_component_relay_strip_source(relay_df)
-    relay_group_dfs = [
-        ("2_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("2_pole")].copy())),
-        ("4_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("4_pole")].copy())),
-        ("timed", _sort_component_timed_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("timed")].copy())),
-        ("1_pole", _sort_component_relay_group_df(relay_df.loc[relay_df["_relay_group"].eq("1_pole")].copy())),
-    ]
-    return [
-        (
-            _COMPONENT_CM_RELAY_GROUP_LABELS[group_label],
-            group_df.reset_index(drop=True),
-        )
-        for group_label, group_df in relay_group_dfs
-        if not group_df.empty
-    ]
+    relay_groups: list[tuple[str, pd.DataFrame]] = []
+    for group_label in _COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER:
+        group_df = relay_df.loc[relay_df["_cm_relay_group"].eq(group_label)].copy()
+        if group_df.empty:
+            continue
+        if group_label == "Timed relays":
+            group_df = _sort_component_timed_relay_group_df(group_df)
+        else:
+            group_df = _sort_component_relay_group_df(group_df)
+        relay_groups.append((group_label, group_df.reset_index(drop=True)))
+    return relay_groups
 
 
 def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
