@@ -752,16 +752,18 @@ def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, 
 
 
 def _build_component_cm_door_entries(component_df: pd.DataFrame) -> list[str]:
-    """Build the Door-column source list from local component Names, excluding P92*."""
+    """Build the Door-column list as one deduplicated non-P92 block repeated twice."""
     if component_df.empty or "Name" not in component_df.columns:
         return []
 
     local_names = component_df["Name"].map(_normalize_component_local_name)
-    return [
+    door_names = [
         local_name
         for local_name in local_names.tolist()
         if (local_name.startswith("-P") or local_name.startswith("-S")) and not _is_component_cm_p92_name(local_name)
     ]
+    deduplicated_door_names = list(dict.fromkeys(door_names))
+    return deduplicated_door_names + deduplicated_door_names
 
 
 def _deduplicate_component_cm_marking_rows(
