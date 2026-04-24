@@ -69,6 +69,18 @@ _COMPONENT_CM_RELAY_GROUP_LABELS = {
     "1_pole": "Relays 1_Pole",
 }
 _COMPONENT_CM_BUTTONS_LABEL = "Buttons"
+_COMPONENT_CM_MARKING_MULTIPLICITY_RULES = {
+    "mounting_plate": {
+        "default_max_occurrences": 1,
+        "name_overrides": {"Q81": 1},
+        "type_overrides": {},
+    },
+    "component": {
+        "default_max_occurrences": 1,
+        "name_overrides": {"Q81": 1},
+        "type_overrides": {"LA1KN40": 2},
+    },
+}
 _COMPONENT_STRIP_SIDE_COLUMNS = ["Space", "Text"]
 _COMPONENT_STRIP_GROUP_ORDER = ("24VDC", "230VAC")
 _COMPONENT_CABINET_NAME_PATTERN = re.compile(
@@ -76,6 +88,7 @@ _COMPONENT_CABINET_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN = re.compile(r"^-S.*\.S$")
+_COMPONENT_CM_P92_NAME_PATTERN = re.compile(r"^-P92", re.IGNORECASE)
 _COMPONENT_INVALID_EXCEL_SHEET_CHAR_PATTERN = re.compile(r"[\\/\?\*\[\]:]")
 _FUSE_TYPE_TO_VOLTAGE_GROUP = {
     "2002-1611/1000-541": "24VDC",
@@ -713,13 +726,142 @@ def _build_component_cm_source_df(component_df: pd.DataFrame) -> pd.DataFrame:
     return cm_source_df
 
 
-def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
+def _component_cm_marking_rule_key(name_value: Any) -> str:
+    """Return the centralized multiplicity-rule key for one CM marking Name."""
+    marking_name = _stringify_cell(name_value).upper()
+    if marking_name in {"Q81", "-Q81"}:
+        return "Q81"
+    return marking_name
+
+
+def _is_component_cm_p92_name(name_value: Any) -> bool:
+    """Return whether one local CM Name belongs to the P92* exception family."""
+    return bool(_COMPONENT_CM_P92_NAME_PATTERN.match(_stringify_cell(name_value)))
+
+
+def _get_component_cm_marking_max_occurrences(column_key: str, name_value: Any, type_value: Any) -> int:
+    """Resolve the allowed CM multiplicity for one Name/TYPE pair."""
+    rule_set = _COMPONENT_CM_MARKING_MULTIPLICITY_RULES[column_key]
+    normalized_type = _normalize_component_type(type_value)
+    rule_key = _component_cm_marking_rule_key(name_value)
+    if rule_key in rule_set["name_overrides"]:
+        return int(rule_set["name_overrides"][rule_key])
+    if normalized_type in rule_set["type_overrides"]:
+        return int(rule_set["type_overrides"][normalized_type])
+    return int(rule_set["default_max_occurrences"])
+
+
+def _build_component_cm_door_entries(component_df: pd.DataFrame) -> list[str]:
+    """Build the Door-column source list from local component Names, excluding P92*."""
+    if component_df.empty or "Name" not in component_df.columns:
+        return []
+
+    local_names = component_df["Name"].map(_normalize_component_local_name)
+    return [
+        local_name
+        for local_name in local_names.tolist()
+        if (local_name.startswith("-P") or local_name.startswith("-S")) and not _is_component_cm_p92_name(local_name)
+    ]
+
+
+def _deduplicate_component_cm_marking_rows(
+    marking_df: pd.DataFrame,
+    *,
+    column_key: str,
+    seen_counts: dict[str, int] | None = None,
+) -> tuple[list[str], dict[str, int]]:
+    """Deduplicate CM marking rows with centralized rules while preserving order."""
+    if marking_df.empty:
+        return [], dict(seen_counts or {})
+
+    working_df = marking_df.copy()
+    if "Name" not in working_df.columns:
+        working_df["Name"] = ""
+    if "TYPE" not in working_df.columns:
+        working_df["TYPE"] = ""
+
+    occurrence_counts = dict(seen_counts or {})
+    grouped_rule_entries: dict[str, dict[str, Any]] = {}
+    ordered_rule_keys: list[str] = []
+    for row in working_df.loc[:, ["Name", "TYPE"]].itertuples(index=False):
+        display_name = _stringify_cell(row.Name)
+        if display_name == "":
+            continue
+        rule_key = _component_cm_marking_rule_key(display_name)
+        max_occurrences = _get_component_cm_marking_max_occurrences(column_key, display_name, row.TYPE)
+        if rule_key not in grouped_rule_entries:
+            grouped_rule_entries[rule_key] = {
+                "display_name": display_name,
+                "max_occurrences": max_occurrences,
+            }
+            ordered_rule_keys.append(rule_key)
+            continue
+        grouped_rule_entries[rule_key]["max_occurrences"] = max(
+            int(grouped_rule_entries[rule_key]["max_occurrences"]),
+            max_occurrences,
+        )
+
+    deduplicated_names: list[str] = []
+    for rule_key in ordered_rule_keys:
+        display_name = _stringify_cell(grouped_rule_entries[rule_key]["display_name"])
+        max_occurrences = int(grouped_rule_entries[rule_key]["max_occurrences"])
+        remaining_occurrences = max(0, max_occurrences - occurrence_counts.get(rule_key, 0))
+        if remaining_occurrences == 0:
+            continue
+        deduplicated_names.extend([display_name] * remaining_occurrences)
+        occurrence_counts[rule_key] = occurrence_counts.get(rule_key, 0) + remaining_occurrences
+    return deduplicated_names, occurrence_counts
+
+
+def _deduplicate_marking_names_default(marking_names: list[Any], *, column_key: str) -> list[str]:
+    """Apply the centralized default x1 CM rule to one flat marking Name list."""
+    if not marking_names:
+        return []
+    marking_df = pd.DataFrame({"Name": marking_names, "TYPE": [""] * len(marking_names)})
+    deduplicated_names, _ = _deduplicate_component_cm_marking_rows(marking_df, column_key=column_key)
+    return deduplicated_names
+
+
+def _deduplicate_component_cm_entries(
+    ordered_groups: list[tuple[str, pd.DataFrame]],
+    *,
+    blocked_rule_keys: set[str] | None = None,
+) -> list[str]:
+    """Build grouped Component CM entries while keeping group labels outside name deduplication."""
+    if not ordered_groups:
+        return []
+
+    component_entries: list[str] = []
+    seen_counts: dict[str, int] = {}
+    blocked_rule_keys = blocked_rule_keys or set()
+    for group_label, group_df in ordered_groups:
+        filtered_group_df = group_df.loc[
+            group_df["Name"].map(
+                lambda name_value: _component_cm_marking_rule_key(name_value) not in blocked_rule_keys
+                or _is_component_cm_p92_name(name_value)
+            )
+        ].copy()
+        group_names, seen_counts = _deduplicate_component_cm_marking_rows(
+            filtered_group_df,
+            column_key="component",
+            seen_counts=seen_counts,
+        )
+        if not group_names:
+            continue
+        if component_entries:
+            component_entries.append("")
+        component_entries.append(group_label)
+        component_entries.extend(group_names)
+    return component_entries
+
+
+def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     """Build CM fuse groups in the same voltage-group and natural-name order as the strip layout."""
     fuse_df = cm_source_df.loc[cm_source_df["Category"].eq("FUSE")].copy()
     if fuse_df.empty:
         return []
 
-    fuse_groups: list[tuple[str, list[str]]] = []
+    fuse_groups: list[tuple[str, pd.DataFrame]] = []
     for voltage_group in _COMPONENT_STRIP_GROUP_ORDER:
         voltage_df = fuse_df.loc[
             fuse_df["TYPE"].map(_detect_fuse_voltage_group).eq(voltage_group)
@@ -760,13 +902,13 @@ def _build_component_cm_fuse_groups(cm_source_df: pd.DataFrame) -> list[tuple[st
         fuse_groups.append(
             (
                 _COMPONENT_CM_FUSE_GROUP_LABELS[voltage_group],
-                voltage_df["Name"].map(_stringify_cell).tolist(),
+                voltage_df.reset_index(drop=True),
             )
         )
     return fuse_groups
 
 
-def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
+def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     """Build CM relay groups in the same deduplicated group order used by the strip layout."""
     relay_df = cm_source_df.copy()
     relay_df["_relay_group"] = relay_df.apply(
@@ -787,29 +929,22 @@ def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[s
     return [
         (
             _COMPONENT_CM_RELAY_GROUP_LABELS[group_label],
-            group_df["Name"].map(_stringify_cell).tolist(),
+            group_df.reset_index(drop=True),
         )
         for group_label, group_df in relay_group_dfs
         if not group_df.empty
     ]
 
 
-def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, list[str]]]:
-    """Build CM button/other groups with stable local-name ordering."""
-    button_df = _sort_grouped_component_rows(
-        cm_source_df.loc[cm_source_df["Category"].eq("BUTTON")].copy()
-    )
+def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Build CM other groups with stable local-name ordering while leaving Buttons out of Component."""
     other_df = _sort_grouped_component_rows(
         cm_source_df.loc[cm_source_df["Category"].eq("OTHER")].copy()
     )
 
-    button_other_groups: list[tuple[str, list[str]]] = []
-    if not button_df.empty:
-        button_other_groups.append(
-            (_COMPONENT_CM_BUTTONS_LABEL, button_df["Name"].map(_stringify_cell).tolist())
-        )
+    button_other_groups: list[tuple[str, pd.DataFrame]] = []
     if not other_df.empty:
-        button_other_groups.append((_OTHER_SECTION_LABEL, other_df["Name"].map(_stringify_cell).tolist()))
+        button_other_groups.append((_OTHER_SECTION_LABEL, other_df.reset_index(drop=True)))
     return button_other_groups
 
 
@@ -827,7 +962,10 @@ def _build_component_cm_mounting_plate_entries(component_df: pd.DataFrame) -> li
             axis=1,
         )
     ].copy()
-    return mounting_plate_df["Name"].map(_stringify_cell).tolist()
+    return _deduplicate_marking_names_default(
+        mounting_plate_df["Name"].map(_stringify_cell).tolist(),
+        column_key="mounting_plate",
+    )
 
 
 def _build_component_cm_component_entries(component_df: pd.DataFrame) -> list[str]:
@@ -841,16 +979,12 @@ def _build_component_cm_component_entries(component_df: pd.DataFrame) -> list[st
         *_build_component_cm_relay_groups(cm_source_df),
         *_build_component_cm_button_other_groups(cm_source_df),
     ]
-
-    component_entries: list[str] = []
-    for group_index, (group_label, group_names) in enumerate(ordered_groups):
-        if not group_names:
-            continue
-        component_entries.append(group_label)
-        component_entries.extend(group_names)
-        if group_index < len(ordered_groups) - 1:
-            component_entries.append("")
-    return component_entries
+    blocked_rule_keys = {
+        _component_cm_marking_rule_key(door_name)
+        for door_name in _build_component_cm_door_entries(component_df)
+        if not _is_component_cm_p92_name(door_name)
+    }
+    return _deduplicate_component_cm_entries(ordered_groups, blocked_rule_keys=blocked_rule_keys)
 
 
 def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -859,12 +993,7 @@ def _build_component_cm_sheet_df(component_df: pd.DataFrame | None = None) -> pd
         return _ComponentCmSheetDataFrame(columns=_COMPONENT_CM_COLUMNS)
 
     mounting_plate_entries = _build_component_cm_mounting_plate_entries(component_df)
-    local_names = component_df["Name"].map(_normalize_component_local_name)
-    door_names = [
-        local_name
-        for local_name in local_names.tolist()
-        if local_name.startswith("-P") or local_name.startswith("-S")
-    ]
+    door_names = _build_component_cm_door_entries(component_df)
     component_entries = _build_component_cm_component_entries(component_df)
     row_count = max(len(mounting_plate_entries), len(component_entries), len(door_names))
     return _ComponentCmSheetDataFrame(
@@ -1299,6 +1428,29 @@ def _drop_production_only_component_columns(component_df: pd.DataFrame) -> pd.Da
     return component_df.drop(columns=list(_PRODUCTION_ONLY_COMPONENT_COLUMNS), errors="ignore").copy()
 
 
+def _filter_component_production_fuse_rows(component_df: pd.DataFrame) -> pd.DataFrame:
+    """Remove fuse rows from the production-only flow without changing row shape."""
+    if component_df.empty:
+        return component_df.copy().reset_index(drop=True)
+
+    group_values = component_df.get("Group", pd.Series("", index=component_df.index, dtype=object)).map(
+        _stringify_cell
+    )
+    category_values = component_df.get(
+        "Category", pd.Series("", index=component_df.index, dtype=object)
+    ).map(_stringify_cell)
+    type_values = component_df.get("TYPE", pd.Series("", index=component_df.index, dtype=object)).map(
+        _normalize_component_type
+    )
+
+    include_mask = ~(
+        group_values.str.upper().eq("FUSES")
+        | category_values.str.upper().eq("FUSE")
+        | type_values.isin(_FUSE_TYPES)
+    )
+    return component_df.loc[include_mask].copy().reset_index(drop=True)
+
+
 def _split_component_groups(
     component_marking_df: pd.DataFrame,
 ) -> tuple[list[tuple[str, pd.DataFrame, str]], pd.DataFrame, dict[str, int]]:
@@ -1453,7 +1605,9 @@ def _build_component_production_ordered_sections(
 ) -> tuple[list[tuple[str, pd.DataFrame]], dict[str, int]]:
     """Build production workbook sections in the same visible order as Marking."""
     group_counts = {"relay_rows": 0, "fuse_rows": 0, "button_rows": 0}
-    working_df = _build_component_production_source_df(component_marking_df)
+    working_df = _filter_component_production_fuse_rows(
+        _build_component_production_source_df(component_marking_df)
+    )
     if working_df.empty:
         return [], group_counts
 
@@ -1499,13 +1653,14 @@ def _build_production_separator_row() -> dict[str, Any]:
 
 def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert actual component rows into production-sheet records."""
-    if component_df.empty:
+    filtered_component_df = _filter_component_production_fuse_rows(component_df)
+    if filtered_component_df.empty:
         return []
 
-    production_rows = pd.DataFrame(index=component_df.index)
+    production_rows = pd.DataFrame(index=filtered_component_df.index)
     for column_name in ("Name", "Article No.", "TYPE", "Quantity", "Description"):
-        if column_name in component_df.columns:
-            production_rows[column_name] = component_df[column_name]
+        if column_name in filtered_component_df.columns:
+            production_rows[column_name] = filtered_component_df[column_name]
         else:
             production_rows[column_name] = ""
     production_rows["Marked"] = ""
@@ -1848,8 +2003,11 @@ def _build_component_production_df(
     ordered_sections, group_counts = _build_component_production_ordered_sections(component_marking_df)
     ordered_records: list[dict[str, Any]] = []
     for section_label, section_df in ordered_sections:
+        section_records = _component_rows_to_production_records(section_df)
+        if not section_records:
+            continue
         ordered_records.append(_build_production_section_row(section_label))
-        ordered_records.extend(_component_rows_to_production_records(section_df))
+        ordered_records.extend(section_records)
         ordered_records.append(_build_production_separator_row())
 
     production_df = pd.DataFrame(
@@ -1994,9 +2152,12 @@ def _list_component_calculation_types(production_df: pd.DataFrame) -> list[str]:
         errors="coerce",
     ).fillna(0).astype(int) == 1
     actual_rows_df = production_df.loc[include_mask].copy()
-    return list(
-        dict.fromkeys(actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist())
-    )
+    type_values = [
+        type_value
+        for type_value in actual_rows_df.get("TYPE", pd.Series(dtype=object)).map(_stringify_cell).tolist()
+        if type_value != ""
+    ]
+    return list(dict.fromkeys(type_values))
 
 
 def _count_component_production_actual_rows(production_df: pd.DataFrame) -> int:
