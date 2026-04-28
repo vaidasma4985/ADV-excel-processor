@@ -413,12 +413,20 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     term_df = _drop_unnamed_cols(term_df)
     term_df.columns = term_df.columns.astype(str).str.strip()
 
-    if "Conns." not in term_df.columns or "GROUP SORTING" not in term_df.columns or "Name" not in term_df.columns:
+    normalized_cols = {
+        re.sub(r"\s+", " ", str(col).strip()).casefold(): col
+        for col in term_df.columns
+    }
+    name_col = normalized_cols.get("name")
+    conns_col = normalized_cols.get("conns.")
+    gs_col = normalized_cols.get("group sorting")
+
+    if conns_col is None or gs_col is None or name_col is None:
         return {}
 
-    conns = term_df["Conns."].astype(str).str.strip()
-    names = term_df["Name"].astype(str).str.strip()
-    gs_numeric = pd.to_numeric(term_df["GROUP SORTING"], errors="coerce")
+    conns = term_df[conns_col].astype(str).str.strip()
+    names = term_df[name_col].astype(str).str.strip()
+    gs_numeric = pd.to_numeric(term_df[gs_col], errors="coerce")
     gs_ok = gs_numeric.notna()
     pe_gs_ok = (gs_numeric % 10) == 5
     name_ok = names.str.match(r"^-X\d+\b")

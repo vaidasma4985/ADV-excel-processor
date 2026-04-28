@@ -59,10 +59,10 @@ def _load_from_uploader_if_new(
     active_sig_key: str,
     uploader_sig_key: str,
     name_key: str | None = None,
-) -> None:
+) -> bool:
     changed, sig = _uploader_changed(upl, uploader_sig_key)
     if not changed or sig is None:
-        return
+        return False
 
     b = upl.getvalue()
     st.session_state[bytes_key] = b
@@ -90,6 +90,7 @@ def _load_from_uploader_if_new(
         st.session_state.pop(k, None)
 
     st.session_state["workflow_state"] = "idle"
+    return True
 
 
 def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
@@ -335,6 +336,18 @@ def _run_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> dic
 
 
 def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | None) -> None:
+    if terminal_bytes is None:
+        st.warning("Terminal list not uploaded. Upload Terminal list before continuing.")
+        st.session_state["workflow_state"] = "idle"
+        return
+
+    _, conflicts_df = _detect_conflicting_duplicates(component_bytes)
+    if not conflicts_df.empty:
+        st.session_state["dup_conflicts_df"] = conflicts_df.copy()
+        st.session_state["workflow_state"] = "debug"
+        st.session_state.pop("results", None)
+        st.rerun()
+
     missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
     _, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
 
@@ -362,16 +375,28 @@ def _run_precheck_or_process(component_bytes: bytes, terminal_bytes: bytes | Non
         st.session_state.pop("type_fix_editor", None)
         st.rerun()
 
-    if terminal_bytes is None:
-        st.warning("⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus.")
-
-    st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
     st.session_state.pop("gs_fix_df", None)
     st.session_state.pop("gs_fix_draft", None)
     st.session_state.pop("type_fix_df", None)
     st.session_state.pop("type_fix_draft", None)
     st.session_state.pop("gs_fix_editor", None)
     st.session_state.pop("type_fix_editor", None)
+    st.session_state.pop("dup_conflicts_df", None)
+    st.session_state.pop("dup_conflicts_draft", None)
+    st.session_state["workflow_state"] = "ready"
+    st.session_state["terminal_layout_mode"] = None
+    st.rerun()
+
+
+def _run_final_processing(component_bytes: bytes, terminal_bytes: bytes | None) -> None:
+    if terminal_bytes is None:
+        st.warning("Terminal list not uploaded. Upload Terminal list before processing.")
+        return
+    if st.session_state.get("terminal_layout_mode") is None:
+        st.warning("Select DIN layout before processing.")
+        return
+
+    st.session_state["results"] = _run_processing(component_bytes, terminal_bytes)
     st.session_state["workflow_state"] = "processed"
     st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
     st.rerun()
@@ -383,7 +408,7 @@ def render_component_correction() -> None:
         st.session_state["workflow_state"] = "idle"
 
     pre_component_bytes = st.session_state.get("component_bytes")
-    if pre_component_bytes is not None:
+    if pre_component_bytes is not None and st.session_state.get("workflow_state") == "debug":
         try:
             conflict_raw_df, conflicts_df = _detect_conflicting_duplicates(pre_component_bytes)
         except Exception as conflict_exc:
@@ -473,20 +498,22 @@ def render_component_correction() -> None:
         else None
     )
 
-    _load_from_uploader_if_new(
+    component_loaded = _load_from_uploader_if_new(
         component_file,
         "component_bytes",
         "component_active_sig",
         "component_uploader_sig",
         name_key="component_name",
     )
-    _load_from_uploader_if_new(
+    terminal_loaded = _load_from_uploader_if_new(
         terminal_file,
         "terminal_bytes",
         "terminal_active_sig",
         "terminal_uploader_sig",
         name_key="terminal_name",
     )
+    if component_loaded or terminal_loaded:
+        st.rerun()
 
     if st.session_state.get("fix_applied_flash"):
         st.success("Pakeitimai pritaikyti. Duomenys perapdoroti.")
@@ -495,30 +522,6 @@ def render_component_correction() -> None:
     component_bytes = st.session_state.get("component_bytes")
     terminal_bytes = st.session_state.get("terminal_bytes")
     workflow_state = st.session_state.get("workflow_state", "idle")
-    if workflow_state == "idle" and component_bytes is not None and st.session_state.get("results") is None:
-        missing_gs_raw_df, missing_gs_errors_df, missing_gs_cols = _build_missing_gs_terminals_df(component_bytes)
-        _, type_fix_errors_df, type_fix_cols = _build_unrecognized_terminal_types_df(component_bytes)
-        if missing_gs_cols and missing_gs_cols != ["read_error"]:
-            st.warning("Missing GS tikrinimui trūksta stulpelių: " + ", ".join(missing_gs_cols))
-        elif type_fix_cols and type_fix_cols != ["read_error"]:
-            st.warning("Type tikrinimui trūksta stulpelių: " + ", ".join(type_fix_cols))
-        elif missing_gs_cols == ["read_error"] or missing_gs_raw_df is None:
-            st.warning("Missing GS tikrinimui nepavyko nuskaityti Component failo.")
-        elif type_fix_cols == ["read_error"]:
-            st.warning("Type tikrinimui nepavyko nuskaityti Component failo.")
-        elif (not missing_gs_errors_df.empty) or (not type_fix_errors_df.empty):
-            st.session_state["gs_fix_df"] = missing_gs_errors_df.copy()
-            st.session_state["gs_fix_draft"] = missing_gs_errors_df.copy()
-            st.session_state["type_fix_df"] = type_fix_errors_df.copy()
-            st.session_state["type_fix_draft"] = type_fix_errors_df.copy()
-            st.session_state.pop("results", None)
-            st.session_state.pop("gs_fix_editor", None)
-            st.session_state.pop("type_fix_editor", None)
-            st.session_state["workflow_state"] = "debug"
-            st.rerun()
-        else:
-            st.session_state["workflow_state"] = "ready"
-            workflow_state = "ready"
     st.session_state.setdefault("terminal_missing", False)
     if "terminal_layout_mode" not in st.session_state:
         st.session_state["terminal_layout_mode"] = None
@@ -536,7 +539,7 @@ def render_component_correction() -> None:
         st.info("Įkelk Excel (.xlsx) failą, tada spausk „Apdoroti failą“.")
         return
     if st.session_state.get("terminal_missing"):
-        st.warning("⚠️ Terminal list neįkeltas. PE terminalų (WAGO.2002-3207_ADV) kiekis gali būti netikslus.")
+        st.warning("Terminal list not uploaded. Upload Terminal list before continuing.")
 
     transformer_needed = False
     missing_transformer_columns = False
@@ -584,7 +587,18 @@ def render_component_correction() -> None:
     elif missing_transformer_columns:
         st.warning("Missing columns for transformer check.")
 
-    show_process_button = workflow_state == "ready"
+    if workflow_state == "idle" and component_bytes is not None and terminal_bytes is not None:
+        if st.button("Continue / check", key="comp_continue_check"):
+            try:
+                _run_precheck_or_process(component_bytes, terminal_bytes)
+            except Exception as e:
+                st.error(f"Unexpected error checking files: {e}")
+
+    show_process_button = (
+        workflow_state == "ready"
+        and component_bytes is not None
+        and terminal_bytes is not None
+    )
 
     if show_process_button and component_bytes is not None:
         selected_mode = st.session_state.get("terminal_layout_mode")
@@ -661,10 +675,14 @@ def render_component_correction() -> None:
     if show_process_button and st.button(
         "Apdoroti failą",
         key="comp_run",
-        disabled=(component_bytes is None or st.session_state.get("terminal_layout_mode") is None),
+        disabled=(
+            component_bytes is None
+            or terminal_bytes is None
+            or st.session_state.get("terminal_layout_mode") is None
+        ),
     ):
         try:
-            _run_precheck_or_process(component_bytes, terminal_bytes)
+            _run_final_processing(component_bytes, terminal_bytes)
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
 
@@ -857,7 +875,6 @@ def render_component_correction() -> None:
                         if isinstance(existing_sig, tuple) and len(existing_sig) > 0 and existing_sig[0]:
                             existing_name = existing_sig[0]
                         st.session_state["component_active_sig"] = _bytes_sig(existing_name, corrected_bytes)
-                        st.session_state["workflow_state"] = "ready"
                         st.session_state["results"] = None
                         st.session_state["terminal_layout_mode"] = None
                         st.session_state["needs_layout_choice"] = True
@@ -868,7 +885,7 @@ def render_component_correction() -> None:
                         st.session_state.pop("gs_fix_editor", None)
                         st.session_state.pop("type_fix_editor", None)
                         st.session_state["fix_applied_flash"] = True
-                        st.rerun()
+                        _run_precheck_or_process(corrected_bytes, terminal_bytes)
                 except Exception as e:
                     st.error(f"Įvyko klaida taikant pataisymus: {e}")
 
