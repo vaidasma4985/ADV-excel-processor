@@ -332,6 +332,14 @@ def _terminal_base_name(name: str) -> str:
     return s
 
 
+def _is_pe_terminal_row(df: pd.DataFrame) -> pd.Series:
+    pe_type = df["Type"].astype(str).eq("WAGO.2002-3207_ADV")
+    pe_name = df["Name"].astype(str).str.contains(
+        r"^(?:=[^+]+)?\+\d+-PE\d+\b", regex=True, case=False, na=False
+    )
+    return pe_type | pe_name
+
+
 def _excel_safe(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -339,6 +347,10 @@ def _excel_safe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_terminal_uniqueness(df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+
+    df = df[~_is_pe_terminal_row(df)].copy()
     if df.empty:
         return
 
@@ -636,6 +648,11 @@ def process_excel(
 
     required_pe_qty_by_gs = _load_terminal_list_pe_requirements(terminal_list_bytes)
 
+    terminal_like = df["Name"].astype(str).str.match(r"^-X\d+\b", na=False)
+    unsupported_terminal_type = terminal_like & ~df["Type"].astype(str).isin(_TERMINAL_TYPES)
+    _append_removed(removed_parts, df[unsupported_terminal_type], "Removed: unsupported terminal type")
+    df = df[~unsupported_terminal_type].copy()
+
     # -------------------------------------------------------------------------
     # STEP 4b – relay merge by Name (2POLE/4POLE)
     # -------------------------------------------------------------------------
@@ -676,13 +693,23 @@ def process_excel(
     # -------------------------------------------------------------------------
     # Category pipelines
     # -------------------------------------------------------------------------
-    terminal_types = {"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L", "WAGO.2002-3207_ADV"}
+    terminal_types = _TERMINAL_TYPES
     fuse_types = {"WAGO.2002-1611/1000-541_ADV", "WAGO.2002-1611/1000-836_ADV", "SE.A9F04604_ADV"}
     relay_types = set(df["Type"].unique()) - terminal_types - fuse_types
 
     terminal_df = df[df["Type"].isin(terminal_types)].copy()
     fuse_df = df[df["Type"].isin(fuse_types)].copy()
     relay_df = df[df["Type"].isin(relay_types)].copy()
+
+    real_pe_gs = set(
+        pd.to_numeric(
+            terminal_df.loc[terminal_df["Type"].astype(str).eq("WAGO.2002-3207_ADV"), "_gs_orig"],
+            errors="coerce",
+        )
+        .dropna()
+        .astype(int)
+    )
+    required_pe_qty_by_gs = {gs: qty for gs, qty in required_pe_qty_by_gs.items() if gs in real_pe_gs}
 
     def process_relays(relay_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if relay_data.empty:
@@ -1222,7 +1249,8 @@ def process_excel(
         term_data["_terminal_base"] = term_data["Name"].astype(str).apply(_terminal_base_name)
         term_data["_gs_num_final"] = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
         duplicate_idxs: List[int] = []
-        for (_, _type), grp in term_data.groupby(["_terminal_base", "Type"], sort=False):
+        duplicate_candidates = term_data[~_is_pe_terminal_row(term_data)]
+        for (_, _type), grp in duplicate_candidates.groupby(["_terminal_base", "Type"], sort=False):
             if grp["_gs_num_final"].nunique() <= 1:
                 continue
             keep_idx = grp.sort_values(["_gs_num_final", "_terminal_sort", "Name"], kind="stable").index[0]
