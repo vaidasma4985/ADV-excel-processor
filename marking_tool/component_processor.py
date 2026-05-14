@@ -146,11 +146,17 @@ _FUSE_A_SUFFIX_SORT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FUSE_NAME_SORT_PATTERN = re.compile(r"^-F(?P<number>\d+)(?P<suffix>.*)$", re.IGNORECASE)
+_COMPONENT_NAME_A_SUFFIX_SORT_PATTERN = re.compile(
+    r"^(?P<prefix>.*?)(?P<base>\d+)A(?P<order>\d*)(?P<suffix>.*)$",
+    re.IGNORECASE,
+)
+_COMPONENT_NAME_SORT_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<number>\d+)(?P<suffix>.*)$")
+_COMPONENT_NAME_SUFFIX_SORT_PART_PATTERN = re.compile(r"\d+|\D+")
 _F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
 _FUSE_STRIP_WIDTH = 6.2
 _FUSE_STRIP_COVERED_WIDTH = 8.3
 _FUSE_STRIP_SEPARATE_COVER_WIDTH = 2.1
-_FUSE_STRIP_230VAC_SEPARATOR_SPACE = 13.45
+_FUSE_STRIP_230VAC_SEPARATOR_SPACE = 5.15
 _RELAY_STRIP_START_STOP_SPACE = 6.2
 _RELAY_STRIP_1POLE_WIDTH = 6.2
 _RELAY_STRIP_2POLE_WIDTH = 15.8
@@ -563,7 +569,7 @@ def _apply_component_cm_relay_color_formatting_for_column(
 
 
 def _is_filtered_component_name(value: Any) -> bool:
-    """Remove global -S*.S component rows before they enter downstream processing."""
+    """Return whether one component Name is a contact marking-only -S*.S row."""
     text = _stringify_cell(value)
     evaluation_text = text
     if text.startswith("+A"):
@@ -572,6 +578,30 @@ def _is_filtered_component_name(value: Any) -> bool:
             evaluation_text = text[cabinet_split_index:]
 
     return bool(_COMPONENT_FILTERED_S_SUFFIX_NAME_PATTERN.fullmatch(evaluation_text.upper()))
+
+
+def _is_zbe_auxiliary_contact_type(type_value: Any) -> bool:
+    """Return whether one TYPE belongs to the ZBE auxiliary contact family."""
+    return _normalize_component_type(type_value).startswith("ZBE")
+
+
+def _is_component_contact_marking_row(row: Any) -> bool:
+    """Return whether one source row should be excluded from marking labels only."""
+    name_value = row.get("Name") if hasattr(row, "get") else ""
+    type_value = row.get("TYPE") if hasattr(row, "get") else ""
+    return _is_filtered_component_name(name_value) or _is_zbe_auxiliary_contact_type(type_value)
+
+
+def _build_component_marking_label_source_df(component_df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Keep production rows intact while excluding contact-only rows from label builders."""
+    if component_df.empty:
+        return component_df.copy().reset_index(drop=True), 0
+    if "Name" not in component_df.columns and "TYPE" not in component_df.columns:
+        return component_df.copy().reset_index(drop=True), 0
+
+    contact_marking_mask = component_df.apply(_is_component_contact_marking_row, axis=1)
+    filtered_count = int(contact_marking_mask.sum())
+    return component_df.loc[~contact_marking_mask].copy().reset_index(drop=True), filtered_count
 
 
 def _extract_component_cabinet_number(cabinet_id_value: Any) -> int | None:
@@ -678,13 +708,9 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
                 lambda value: _stringify_cell(value) if pd.notna(value) else value
             )
 
-    filtered_s_suffix_rows = 0
-    if "Name" in component_df.columns:
-        filtered_s_suffix_mask = component_df["Name"].map(_is_filtered_component_name)
-        filtered_s_suffix_rows = int(filtered_s_suffix_mask.sum())
-        component_df = component_df.loc[~filtered_s_suffix_mask].reset_index(drop=True)
     developer_debug_messages.append(
-        f"component filter: removed {filtered_s_suffix_rows} rows matching -S*.S pattern"
+        "component filter: retained contact rows in source data; "
+        "-S*.S/ZBE filtering is applied only to marking-label builders"
     )
 
     return component_df, found_columns, developer_debug_messages
@@ -1483,39 +1509,90 @@ def _classify_component_category(name_value: Any, type_value: Any) -> str:
     return "OTHER"
 
 
-def _component_name_sort_key(value: Any) -> str:
-    """Build a stable, case-insensitive Name sort key for grouped sections."""
-    return _stringify_cell(value).casefold()
+def _component_name_suffix_sort_key(value: Any) -> tuple[tuple[int, int | str], ...]:
+    """Build a natural suffix key for component Name ordering."""
+    suffix_text = _stringify_cell(value).casefold()
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in _COMPONENT_NAME_SUFFIX_SORT_PART_PATTERN.findall(suffix_text)
+    )
 
 
-def _component_fuse_name_sort_key(name: Any) -> tuple[int, int, int, int, str, str]:
+def _component_name_sort_key(value: Any) -> tuple[int, str, int, int, int, tuple[tuple[int, int | str], ...], str]:
+    """Build an A-suffix-aware Name sort key for grouped component sections."""
+    component_name = _stringify_cell(value)
+    normalized_name = component_name.casefold()
+
+    a_suffix_match = _COMPONENT_NAME_A_SUFFIX_SORT_PATTERN.match(component_name)
+    if a_suffix_match:
+        order_text = _stringify_cell(a_suffix_match.group("order"))
+        order_number = int(order_text) if order_text else 0
+        suffix_text = _stringify_cell(a_suffix_match.group("suffix"))
+        return (
+            0,
+            _stringify_cell(a_suffix_match.group("prefix")).casefold(),
+            int(a_suffix_match.group("base")),
+            10,
+            1,
+            ((0, order_number), *_component_name_suffix_sort_key(suffix_text)),
+            normalized_name,
+        )
+
+    match = _COMPONENT_NAME_SORT_PATTERN.match(component_name)
+    if not match:
+        return (1, normalized_name, 0, 0, 0, (), normalized_name)
+
+    numeric_text = _stringify_cell(match.group("number"))
+    numeric_value = int(numeric_text)
+    base_number = numeric_value // 10 if len(numeric_text) > 1 else numeric_value
+    order_number = numeric_value % 10 if len(numeric_text) > 1 else 0
+    suffix_text = _stringify_cell(match.group("suffix"))
+    return (
+        0,
+        _stringify_cell(match.group("prefix")).casefold(),
+        base_number,
+        order_number,
+        0 if suffix_text == "" else 1,
+        _component_name_suffix_sort_key(suffix_text),
+        normalized_name,
+    )
+
+
+def _component_fuse_name_sort_key(name: Any) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...], str]:
     """Build a natural sort key where A-suffix fuses follow normal rows of the same base."""
     fuse_name = _stringify_cell(name)
     normalized_name = fuse_name.casefold()
     a_suffix_match = _FUSE_A_SUFFIX_SORT_PATTERN.match(fuse_name)
     if a_suffix_match:
         suffix_number_text = _stringify_cell(a_suffix_match.group("suffix_number"))
+        suffix_number = int(suffix_number_text) if suffix_number_text else 0
+        suffix_text = _stringify_cell(a_suffix_match.group("suffix_text")).casefold()
         return (
             0,
             int(a_suffix_match.group("family")),
+            10,
             1,
-            int(suffix_number_text) if suffix_number_text else 0,
-            _stringify_cell(a_suffix_match.group("suffix_text")).casefold(),
+            ((0, suffix_number), (1, suffix_text)),
             normalized_name,
         )
 
     match = _FUSE_NAME_SORT_PATTERN.match(fuse_name)
     if not match:
-        return (1, 0, 0, 0, "", normalized_name)
+        return (1, 0, 0, 0, (), normalized_name)
 
     numeric_value = int(match.group("number"))
     suffix_text = _stringify_cell(match.group("suffix")).casefold()
+    family_number = numeric_value // 10
+    terminal_number = numeric_value % 10
+    suffix_number_match = re.match(r"^[\.\-_]?(?P<number>\d+)(?P<text>.*)$", suffix_text)
+    suffix_number = int(suffix_number_match.group("number")) if suffix_number_match else 0
+    suffix_remainder = _stringify_cell(suffix_number_match.group("text")).casefold() if suffix_number_match else suffix_text
     return (
         0,
-        numeric_value // 10,
-        0 if not suffix_text else 2,
-        numeric_value % 10 if not suffix_text else 0,
-        suffix_text,
+        family_number,
+        terminal_number,
+        0 if not suffix_text else 1,
+        ((0, suffix_number), (1, suffix_remainder)),
         normalized_name,
     )
 
@@ -2862,6 +2939,9 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         lambda row: _classify_component_category(row.get("Name"), row.get("TYPE")),
         axis=1,
     )
+    component_label_source_df, contact_marking_label_rows_removed = _build_component_marking_label_source_df(
+        component_marking_df
+    )
     cabinet_map, cabinet_stats = _build_component_cabinet_map(component_marking_df)
     sorted_cabinet_ids = sorted(cabinet_map, key=_component_cabinet_sort_key)
     has_detected_cabinet_ids = bool(sorted_cabinet_ids)
@@ -2887,7 +2967,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         cabinet_production_dfs[cabinet_id] = cabinet_production_df
 
     production_df, grouped_row_counts = _build_component_production_df(component_marking_df)
-    component_marking_sheet_df = _build_component_marking_sheet_df(component_marking_df)
+    component_marking_sheet_df = _build_component_marking_sheet_df(component_label_source_df)
     component_strip_sheet, component_strip_stats = _build_component_strip_df(component_marking_sheet_df)
     unused_export_df = _drop_production_only_component_columns(unused_df)
     production_workbook_bytes = _export_component_production_workbook(production_df, cabinet_production_dfs)
@@ -2955,6 +3035,10 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(f"component parser: OTHER rows -> {int(category_counts.get('OTHER', 0))}")
     developer_debug_messages.append(f"component parser: final component rows -> {len(component_marking_df)}")
     developer_debug_messages.append(f"component parser: final unused rows -> {len(unused_df)}")
+    developer_debug_messages.append(
+        "component marking labels: excluded contact-only rows -> "
+        f"{contact_marking_label_rows_removed}"
+    )
     developer_debug_messages.append("relay TYPE merge removed from component production workbook")
     developer_debug_messages.append(f"grouped relay rows count: {grouped_row_counts['relay_rows']}")
     developer_debug_messages.append(f"grouped fuse rows count: {grouped_row_counts['fuse_rows']}")
@@ -2963,7 +3047,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append("Component Marking sheet uses Group classification column")
     if use_single_cabinet_local_dataset:
         developer_debug_messages.append(
-            f"component single cabinet: CM source rows -> {len(component_marking_df)}"
+            f"component single cabinet: CM source rows -> {len(component_label_source_df)}"
         )
         developer_debug_messages.append(
             f"component single cabinet: production source rows -> {len(component_marking_df)}"
@@ -3018,7 +3102,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     )
     developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
     developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
-    developer_debug_messages.append("fuse strip: replaced 230VAC label with 13.45 spacing")
+    developer_debug_messages.append("fuse strip: replaced 230VAC label with 5.15 spacing")
     developer_debug_messages.append(
         "component strip supported widths -> "
         f"fuse={_FUSE_STRIP_WIDTH}, "
@@ -3104,12 +3188,15 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
         )
         for cabinet_id in sorted_cabinet_ids:
             cabinet_component_df = cabinet_map[cabinet_id].copy().reset_index(drop=True)
+            cabinet_label_source_df, cabinet_contact_rows_removed = _build_component_marking_label_source_df(
+                cabinet_component_df
+            )
             cabinet_final_sheet_name = _build_component_markings_workbook_sheet_name(
                 cabinet_id, "Component Marking"
             )
-            cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_component_df)
+            cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_label_source_df)
             cabinet_strip_sheet, cabinet_strip_sheet_stats = _build_component_strip_df(cabinet_marking_sheet_df)
-            cabinet_cm_sheet_df = _build_component_cm_sheet_df(cabinet_component_df)
+            cabinet_cm_sheet_df = _build_component_cm_sheet_df(cabinet_label_source_df)
             cabinet_final_component_sheets[cabinet_final_sheet_name] = _build_component_final_marking_sheet(
                 cabinet_strip_sheet,
                 cabinet_cm_sheet_df,
@@ -3124,11 +3211,15 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
             developer_debug_messages.append(
                 f"component workbook routing: removed standalone intermediate sheets for {cabinet_final_sheet_name}"
             )
+            developer_debug_messages.append(
+                f"component markings workbook: {cabinet_final_sheet_name} contact-only rows excluded -> "
+                f"{cabinet_contact_rows_removed}"
+            )
 
-    localized_component_source_df = _build_component_local_name_source_df(component_marking_df)
+    localized_component_source_df = _build_component_local_name_source_df(component_label_source_df)
     localized_component_marking_sheet_df = _build_component_marking_sheet_df(localized_component_source_df)
     localized_component_strip_sheet, _ = _build_component_strip_df(localized_component_marking_sheet_df)
-    component_cm_sheet = _build_component_cm_sheet_df(component_marking_df)
+    component_cm_sheet = _build_component_cm_sheet_df(component_label_source_df)
     single_final_component_sheet = _build_component_final_marking_sheet(
         localized_component_strip_sheet,
         component_cm_sheet,
