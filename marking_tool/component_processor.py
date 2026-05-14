@@ -109,6 +109,13 @@ _COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES = {
     "230VAC_4_pole": "230VAC_4A_pole",
     "230VAC_4A_pole": "230VAC_4A_pole",
 }
+_COMPONENT_RELAY_XMLIL_GROUP_ORDER = (
+    "24VDC_2_pole",
+    "230VAC_2_pole",
+    "24VDC_4_pole",
+    "230VAC_4A_pole",
+    "1_pole",
+)
 _COMPONENT_CM_SECTION_LABELS = {
     *_COMPONENT_CM_FUSE_GROUP_LABELS.values(),
     *_COMPONENT_CM_DISPLAY_RELAY_GROUP_ORDER,
@@ -1052,6 +1059,19 @@ def _classify_component_cm_relay_group(type_value: Any) -> str:
     return _COMPONENT_CM_DISPLAY_RELAY_GROUP_BY_TYPE.get(_normalize_component_type(type_value), "")
 
 
+def _classify_component_relay_xmlil_group(type_value: Any) -> str:
+    """Classify one relay TYPE for the future Relay XMLIL source list."""
+    normalized_type = _normalize_component_type(type_value)
+    cm_relay_group = _classify_component_cm_relay_group(normalized_type)
+    if cm_relay_group == "Timed relays":
+        return ""
+    if cm_relay_group:
+        return _COMPONENT_FINAL_MOVED_CM_RELAY_GROUP_LABEL_ALIASES.get(cm_relay_group, cm_relay_group)
+    if normalized_type in _RELAY_1P_TYPES:
+        return "1_pole"
+    return ""
+
+
 def _infer_component_production_relay_group(name_group_df: pd.DataFrame) -> str:
     """Infer one production relay display group from the coil/timed TYPE rows within one Name group."""
     if name_group_df.empty:
@@ -1261,6 +1281,54 @@ def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[s
             group_df = _sort_component_relay_group_df(group_df)
         relay_groups.append((group_label, group_df.reset_index(drop=True)))
     return relay_groups
+
+
+def _build_component_relay_xmlil_marking_groups(
+    component_df_by_cabinet: dict[str, pd.DataFrame],
+) -> dict[str, dict[str, list[str]]]:
+    """Build grouped relay marking names for future XMLIL export without generating XML."""
+    relay_xmlil_groups: dict[str, dict[str, list[str]]] = {}
+
+    for cabinet_id, component_df in component_df_by_cabinet.items():
+        cabinet_group_map = {
+            group_label: []
+            for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER
+        }
+        if component_df.empty or "Name" not in component_df.columns:
+            relay_xmlil_groups[cabinet_id] = cabinet_group_map
+            continue
+
+        relay_source_df = component_df.copy().reset_index(drop=True)
+        relay_source_df["Name"] = relay_source_df["Name"].map(_normalize_component_local_name)
+        if "TYPE" not in relay_source_df.columns:
+            relay_source_df["TYPE"] = ""
+        relay_source_df["_original_order"] = range(len(relay_source_df))
+        relay_source_df["_relay_xmlil_group"] = relay_source_df["TYPE"].map(
+            _classify_component_relay_xmlil_group
+        )
+        relay_source_df = relay_source_df.loc[
+            relay_source_df["_relay_xmlil_group"].isin(_COMPONENT_RELAY_XMLIL_GROUP_ORDER)
+            & relay_source_df["Name"].map(_normalize_component_name).str.startswith("-K")
+        ].copy()
+
+        seen_names: set[str] = set()
+        for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
+            group_df = relay_source_df.loc[
+                relay_source_df["_relay_xmlil_group"].eq(group_label)
+            ].copy()
+            if group_df.empty:
+                continue
+
+            group_df = _sort_component_relay_group_df(group_df)
+            for relay_name in group_df["Name"].map(_stringify_cell).tolist():
+                if relay_name == "" or relay_name in seen_names:
+                    continue
+                cabinet_group_map[group_label].append(relay_name)
+                seen_names.add(relay_name)
+
+        relay_xmlil_groups[cabinet_id] = cabinet_group_map
+
+    return relay_xmlil_groups
 
 
 def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
@@ -2946,6 +3014,12 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     sorted_cabinet_ids = sorted(cabinet_map, key=_component_cabinet_sort_key)
     has_detected_cabinet_ids = bool(sorted_cabinet_ids)
     use_single_cabinet_local_dataset = (not has_detected_cabinet_ids) and not component_marking_df.empty
+    relay_xmlil_source_dfs = (
+        {cabinet_id: cabinet_map[cabinet_id] for cabinet_id in sorted_cabinet_ids}
+        if sorted_cabinet_ids
+        else {"single": component_marking_df.copy().reset_index(drop=True)}
+    )
+    relay_xmlil_marking_groups = _build_component_relay_xmlil_marking_groups(relay_xmlil_source_dfs)
     cabinet_production_dfs: dict[str, pd.DataFrame] = {}
     cabinet_source_row_counts: dict[str, int] = {}
     cabinet_production_row_counts: dict[str, int] = {}
@@ -3035,6 +3109,29 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     developer_debug_messages.append(f"component parser: OTHER rows -> {int(category_counts.get('OTHER', 0))}")
     developer_debug_messages.append(f"component parser: final component rows -> {len(component_marking_df)}")
     developer_debug_messages.append(f"component parser: final unused rows -> {len(unused_df)}")
+    developer_debug_messages.append(
+        "component relay XMLIL source: group order -> "
+        + " -> ".join(_COMPONENT_RELAY_XMLIL_GROUP_ORDER)
+    )
+    developer_debug_messages.append(
+        "component relay XMLIL source: cabinets -> "
+        + (", ".join(relay_xmlil_marking_groups) if relay_xmlil_marking_groups else "none")
+    )
+    for cabinet_id, cabinet_relay_groups in relay_xmlil_marking_groups.items():
+        group_summaries = [
+            f"{group_label}={len(cabinet_relay_groups.get(group_label, []))}"
+            for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER
+        ]
+        developer_debug_messages.append(
+            f"component relay XMLIL source: {cabinet_id} counts -> "
+            + ", ".join(group_summaries)
+        )
+        for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
+            preview_names = cabinet_relay_groups.get(group_label, [])[:5]
+            developer_debug_messages.append(
+                f"component relay XMLIL source: {cabinet_id} {group_label} preview -> "
+                + (", ".join(preview_names) if preview_names else "none")
+            )
     developer_debug_messages.append(
         "component marking labels: excluded contact-only rows -> "
         f"{contact_marking_label_rows_removed}"
@@ -3403,6 +3500,7 @@ def process_component_result(file_bytes: bytes, file_name: str) -> dict[str, Any
     return {
         "sheets": component_sheets,
         "cabinet_map": cabinet_map,
+        "relay_xmlil_marking_groups": relay_xmlil_marking_groups,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": ui_component_debug_messages,
         "debug_workbook": component_debug_workbook,
