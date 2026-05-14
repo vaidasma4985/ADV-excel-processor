@@ -1091,6 +1091,7 @@ def _render_terminal_strip_blocks(strip_blocks: list[dict[str, Any]]) -> pd.Data
         }
         for block in rendered_blocks
     ]
+    rendered_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": ""})
     return pd.DataFrame(rendered_rows, columns=strip_columns)
 
 
