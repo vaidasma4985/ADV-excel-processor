@@ -551,6 +551,64 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
 
 
+def _is_repeated_gs5020_terminal_group(group_sorting_value: Any, group_rows: pd.DataFrame) -> bool:
+    """Return whether one grouped Name should use the GS 5020 De-Superheater TMB layout."""
+    return _stringify_cell(group_sorting_value) == "5020" and len(group_rows) >= 2
+
+
+def _build_gs5020_de_superheater_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build the special repeated GS 5020 TMB rows with numbers above 230V signals."""
+    terminal_numbers = [
+        conns_value
+        for conns_value in conns_values
+        if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
+    ]
+    voltage_signals = [
+        conns_value
+        for conns_value in conns_values
+        if conns_value in {"230VL", "230VN"}
+    ]
+    other_values = [
+        conns_value
+        for conns_value in conns_values
+        if not _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
+        and conns_value not in {"230VL", "230VN"}
+    ]
+
+    top_chunk = terminal_numbers[:3]
+    bottom_chunk = ["", *voltage_signals[:2]]
+    if other_values:
+        bottom_chunk.extend(other_values)
+    remaining_values = [*bottom_chunk[3:], *terminal_numbers[3:], *voltage_signals[2:]]
+
+    blocks: list[dict[str, Any]] = []
+    special_chunks = [top_chunk, bottom_chunk[:3]]
+    special_chunks.extend(
+        remaining_values[start_index:start_index + 3]
+        for start_index in range(0, len(remaining_values), 3)
+    )
+    for chunk_index, chunk in enumerate(special_chunks):
+        if not any(_stringify_cell(value) for value in chunk):
+            continue
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk[:3],
+                "end_row_index": source_indices[min(len(source_indices) - 1, chunk_index)],
+            }
+        )
+    return blocks
+
+
 def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
     if terminal_df.empty or "Name" not in terminal_df.columns:
@@ -580,6 +638,18 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
             else [""] * len(group_rows)
         )
         source_indices = name_group_df.index.tolist()
+
+        if _is_repeated_gs5020_terminal_group(group_sorting_value, group_rows):
+            tmb_rows.extend(
+                _build_gs5020_de_superheater_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
 
         for start_index in range(0, len(conns_values), 3):
             chunk = conns_values[start_index:start_index + 3]
