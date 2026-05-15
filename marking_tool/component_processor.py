@@ -117,6 +117,14 @@ _COMPONENT_RELAY_XMLIL_GROUP_ORDER = (
     "230VAC_4A_pole",
     "1_pole",
 )
+_COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS = {
+    "24VDC_2_pole": "24V2P",
+    "230VAC_2_pole": "230V2P",
+    "24VDC_4_pole": "24V4P",
+    "230VAC_4_pole": "230V4P",
+    "230VAC_4A_pole": "230V4P",
+    "1_pole": "1_Pole",
+}
 _COMPONENT_RELAY_XMLIL_PROJECT_NUMBER_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})(?:\D|$)")
 _COMPONENT_RELAY_XMLIL_TEMPLATE_HEADER = """<?xml version="1.0" encoding="utf-8"?>
 <ILProject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -137,8 +145,8 @@ _COMPONENT_RELAY_XMLIL_TEMPLATE_RECORD = """    <ILRecord>
       <Copies>1</Copies>
       <TextAttributes>
         <AcsFont>
-          <FontFamily>Arial Narrow</FontFamily>
-          <Style>Regular</Style>
+          <FontFamily>Arial</FontFamily>
+          <Style>Bold</Style>
           <Size>{font_size}</Size>
         </AcsFont>
         <Alignment>Center</Alignment>
@@ -1368,18 +1376,30 @@ def _build_component_relay_xmlil_marking_groups(
 def _flatten_component_relay_xmlil_marking_groups(
     relay_xmlil_marking_groups: dict[str, dict[str, list[str]]],
 ) -> list[str]:
-    """Flatten relay XMLIL names in cabinet order and then the fixed relay group order."""
-    relay_names: list[str] = []
+    """Flatten XMLIL LabelText values in VBA-style RELAYS order with blank separators."""
+    relay_sections: list[tuple[str, list[str]]] = []
     for cabinet_relay_groups in relay_xmlil_marking_groups.values():
         for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
-            relay_names.extend(
-                [
-                    _stringify_cell(relay_name)
-                    for relay_name in cabinet_relay_groups.get(group_label, [])
-                    if _stringify_cell(relay_name)
-                ]
+            relay_names = [
+                _stringify_cell(relay_name)
+                for relay_name in cabinet_relay_groups.get(group_label, [])
+                if _stringify_cell(relay_name)
+            ]
+            if not relay_names:
+                continue
+            short_group_label = _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.get(
+                group_label,
+                group_label,
             )
-    return relay_names
+            relay_sections.append((short_group_label, relay_names))
+
+    label_text_values: list[str] = []
+    for section_index, (short_group_label, relay_names) in enumerate(relay_sections):
+        if section_index > 0:
+            label_text_values.append("")
+        label_text_values.append(short_group_label)
+        label_text_values.extend(relay_names)
+    return label_text_values
 
 
 def _build_component_relay_xmlil_group_value(project_number: str | None) -> str:
@@ -1394,13 +1414,15 @@ def _build_component_relay_xmlil_group_value(project_number: str | None) -> str:
 
 
 def _component_relay_xmlil_font_size(label_text: str) -> str:
-    """Choose relay XMLIL font size from the visible label length."""
-    label_length = len(label_text)
-    if label_length <= 6:
-        return "3.2"
-    if label_length == 7:
-        return "2.6"
-    return "2.4"
+    """Choose XMLIL font size: fixed for group labels, length-based for relay markings."""
+    if label_text in _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.values():
+        return "1.8"
+    if _normalize_component_name(label_text).startswith("-K"):
+        label_length = len(label_text)
+        if label_length <= 6:
+            return "2.5"
+        return "2.1"
+    return "2.5"
 
 
 def _build_component_relay_xmlil_bytes(
@@ -1408,24 +1430,24 @@ def _build_component_relay_xmlil_bytes(
     project_number: str | None = None,
 ) -> tuple[bytes | None, int, list[str]]:
     """Build the combined relay XMLIL export from prepared non-timed relay groups."""
-    relay_names = _flatten_component_relay_xmlil_marking_groups(relay_xmlil_marking_groups)
-    if not relay_names:
+    label_text_values = _flatten_component_relay_xmlil_marking_groups(relay_xmlil_marking_groups)
+    if not label_text_values:
         return None, 0, []
 
     group_value = _build_component_relay_xmlil_group_value(project_number)
     record_xml = [
         _COMPONENT_RELAY_XMLIL_TEMPLATE_RECORD.format(
-            label_text=escape(relay_name),
-            font_size=_component_relay_xmlil_font_size(relay_name),
+            label_text=escape(label_text),
+            font_size=_component_relay_xmlil_font_size(label_text),
         )
-        for relay_name in relay_names
+        for label_text in label_text_values
     ]
     xmlil_text = (
         _COMPONENT_RELAY_XMLIL_TEMPLATE_HEADER.format(project_name=escape(group_value))
         + "".join(record_xml)
         + _COMPONENT_RELAY_XMLIL_TEMPLATE_FOOTER
     )
-    return xmlil_text.encode("utf-8"), len(relay_names), relay_names[:5]
+    return xmlil_text.encode("utf-8"), len(label_text_values), label_text_values[:5]
 
 
 def _build_component_cm_button_other_groups(cm_source_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
@@ -3215,37 +3237,30 @@ def process_component_result(
     developer_debug_messages.append(f"component parser: final component rows -> {len(component_marking_df)}")
     developer_debug_messages.append(f"component parser: final unused rows -> {len(unused_df)}")
     developer_debug_messages.append(
-        "component relay XMLIL source: group order -> "
-        + " -> ".join(_COMPONENT_RELAY_XMLIL_GROUP_ORDER)
+        "component relay XMLIL output: generated -> "
+        + ("yes" if relay_xmlil_bytes else "no")
     )
     developer_debug_messages.append(
-        "component relay XMLIL source: cabinets -> "
+        f"component relay XMLIL output: total ILRecord count -> {relay_xmlil_record_count}"
+    )
+    developer_debug_messages.append(
+        "component relay XMLIL output: cabinet order used -> "
         + (", ".join(relay_xmlil_marking_groups) if relay_xmlil_marking_groups else "none")
     )
-    for cabinet_id, cabinet_relay_groups in relay_xmlil_marking_groups.items():
-        group_summaries = [
-            f"{group_label}={len(cabinet_relay_groups.get(group_label, []))}"
-            for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER
-        ]
-        developer_debug_messages.append(
-            f"component relay XMLIL source: {cabinet_id} counts -> "
-            + ", ".join(group_summaries)
-        )
-        for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
-            preview_names = cabinet_relay_groups.get(group_label, [])[:5]
-            developer_debug_messages.append(
-                f"component relay XMLIL source: {cabinet_id} {group_label} preview -> "
-                + (", ".join(preview_names) if preview_names else "none")
-            )
-    if relay_xmlil_bytes:
-        developer_debug_messages.append("component relay XMLIL generated")
-    else:
-        developer_debug_messages.append("component relay XMLIL generated -> no eligible relay records")
     developer_debug_messages.append(
-        f"component relay XMLIL total records count -> {relay_xmlil_record_count}"
+        "component relay XMLIL output: relay group order used -> "
+        + " -> ".join(_COMPONENT_RELAY_XMLIL_GROUP_ORDER)
     )
+    for cabinet_id, cabinet_relay_groups in relay_xmlil_marking_groups.items():
+        for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
+            relay_name_count = len(cabinet_relay_groups.get(group_label, []))
+            ilrecord_count = relay_name_count + 1 if relay_name_count else 0
+            developer_debug_messages.append(
+                f"component relay XMLIL output: {cabinet_id} {group_label} ILRecord count -> "
+                f"{ilrecord_count}"
+            )
     developer_debug_messages.append(
-        "component relay XMLIL first LabelText values -> "
+        "component relay XMLIL output: first 5 LabelText values -> "
         + (", ".join(relay_xmlil_preview_names) if relay_xmlil_preview_names else "none")
     )
     developer_debug_messages.append(
