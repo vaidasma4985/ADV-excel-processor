@@ -934,7 +934,8 @@ def _validate_component_routing_sheet_sets(
                 + "; ".join(details)
             )
 
-        unexpected_debug_sheets = debug_sheet_set - {"Developer Debug"}
+        expected_debug_sheet_set = {"Developer Debug", "Relay XMLIL Source"}
+        unexpected_debug_sheets = debug_sheet_set - expected_debug_sheet_set
         if unexpected_debug_sheets:
             raise ValueError(
                 "component workbook routing: no_cabinet debug workbook unexpectedly includes "
@@ -973,6 +974,7 @@ def _validate_component_routing_sheet_sets(
             "General information",
             "Component Marking",
             "Unused",
+            "Relay XMLIL Source",
             "Developer Debug",
         }
         missing_debug_sheets = expected_debug_sheet_set - debug_sheet_set
@@ -1022,6 +1024,7 @@ def _validate_component_routing_sheet_sets(
             "Component Marking",
             "Component Marking Raw",
             "Unused",
+            "Relay XMLIL Source",
             "Developer Debug",
         }
         missing_debug_sheets = required_debug_sheet_set - debug_sheet_set
@@ -1400,6 +1403,79 @@ def _flatten_component_relay_xmlil_marking_groups(
         label_text_values.append(short_group_label)
         label_text_values.extend(relay_names)
     return label_text_values
+
+
+def _build_component_relay_xmlil_source_sheet(
+    relay_xmlil_marking_groups: dict[str, dict[str, list[str]]],
+) -> pd.DataFrame:
+    """Build a debug sheet showing the exact relay LabelText sequence used for XMLIL."""
+    source_rows: list[dict[str, Any]] = []
+    xmlil_sequence = 1
+    section_sequence = 1
+
+    for cabinet_id, cabinet_relay_groups in relay_xmlil_marking_groups.items():
+        for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
+            relay_names = [
+                _stringify_cell(relay_name)
+                for relay_name in cabinet_relay_groups.get(group_label, [])
+                if _stringify_cell(relay_name)
+            ]
+            if not relay_names:
+                continue
+
+            short_group_label = _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.get(
+                group_label,
+                group_label,
+            )
+            if source_rows:
+                source_rows.append(
+                    {
+                        "XMLIL sequence": xmlil_sequence,
+                        "Cabinet": cabinet_id,
+                        "Relay group": group_label,
+                        "Section": section_sequence,
+                        "LabelText": "",
+                        "Source row type": "blank separator",
+                    }
+                )
+                xmlil_sequence += 1
+
+            source_rows.append(
+                {
+                    "XMLIL sequence": xmlil_sequence,
+                    "Cabinet": cabinet_id,
+                    "Relay group": group_label,
+                    "Section": section_sequence,
+                    "LabelText": short_group_label,
+                    "Source row type": "group label",
+                }
+            )
+            xmlil_sequence += 1
+            for relay_name in relay_names:
+                source_rows.append(
+                    {
+                        "XMLIL sequence": xmlil_sequence,
+                        "Cabinet": cabinet_id,
+                        "Relay group": group_label,
+                        "Section": section_sequence,
+                        "LabelText": relay_name,
+                        "Source row type": "relay marking",
+                    }
+                )
+                xmlil_sequence += 1
+            section_sequence += 1
+
+    return pd.DataFrame(
+        source_rows,
+        columns=[
+            "XMLIL sequence",
+            "Cabinet",
+            "Relay group",
+            "Section",
+            "LabelText",
+            "Source row type",
+        ],
+    )
 
 
 def _build_component_relay_xmlil_group_value(project_number: str | None) -> str:
@@ -3143,6 +3219,7 @@ def process_component_result(
         else {"single": component_marking_df.copy().reset_index(drop=True)}
     )
     relay_xmlil_marking_groups = _build_component_relay_xmlil_marking_groups(relay_xmlil_source_dfs)
+    relay_xmlil_source_sheet_df = _build_component_relay_xmlil_source_sheet(relay_xmlil_marking_groups)
     relay_xmlil_bytes, relay_xmlil_record_count, relay_xmlil_preview_names = _build_component_relay_xmlil_bytes(
         relay_xmlil_marking_groups,
         project_number=project_number,
@@ -3483,8 +3560,10 @@ def process_component_result(
             "Unused": unused_export_df,
             "CM": component_cm_sheet,
         }
-        debug_component_sheets = {}
-        final_debug_sheet_names = ["Developer Debug"]
+        debug_component_sheets = {
+            "Relay XMLIL Source": relay_xmlil_source_sheet_df,
+        }
+        final_debug_sheet_names = ["Relay XMLIL Source", "Developer Debug"]
         developer_debug_messages.append("component workbook routing: no_cabinet fallback active")
     elif routing_mode == "single_cabinet":
         main_component_sheets = {
@@ -3495,6 +3574,7 @@ def process_component_result(
         final_debug_sheet_names = [
             "General information",
             "Component Marking",
+            "Relay XMLIL Source",
             "Unused",
             "Developer Debug",
         ]
@@ -3510,6 +3590,7 @@ def process_component_result(
                 final_debug_sheet_names=final_debug_sheet_names,
             ),
             "Component Marking": localized_component_marking_sheet_df,
+            "Relay XMLIL Source": relay_xmlil_source_sheet_df,
             "Unused": unused_export_df,
         }
         if use_single_cabinet_local_dataset:
@@ -3545,6 +3626,7 @@ def process_component_result(
             "General information",
             "Component Marking",
             "Component Marking Raw",
+            "Relay XMLIL Source",
             "Unused",
             "Developer Debug",
         ]
@@ -3561,6 +3643,7 @@ def process_component_result(
             ),
             "Component Marking": localized_component_marking_sheet_df,
             "Component Marking Raw": component_marking_sheet_df,
+            "Relay XMLIL Source": relay_xmlil_source_sheet_df,
             "Unused": unused_export_df,
         }
         developer_debug_messages.append(
@@ -3588,6 +3671,8 @@ def process_component_result(
         developer_debug_messages.append("component debug workbook: added Component Marking sheet")
     if "Component Marking Raw" in debug_component_sheets:
         developer_debug_messages.append("component debug workbook: added Component Marking Raw sheet")
+    if "Relay XMLIL Source" in debug_component_sheets:
+        developer_debug_messages.append("component debug workbook: added Relay XMLIL Source sheet")
     if "Unused" in debug_component_sheets:
         developer_debug_messages.append("component debug workbook: added Unused sheet")
 
