@@ -9,6 +9,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from component_correction.processor import _normalize_component_input_columns
+
 
 TERMINAL_TYPE_OPTIONS = ["2002-3201", "2002-3207"]
 TERMINAL_TYPE_MAP = {"2002-3201": "WAGO.2002-3201_ADV", "2002-3207": "WAGO.2002-3207_ADV"}
@@ -99,7 +101,7 @@ def _build_unrecognized_df(component_bytes: bytes) -> pd.DataFrame:
         sheet_name=0,
         engine="openpyxl",
     )
-    raw_df.columns = raw_df.columns.astype(str).str.strip()
+    raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
 
     required_debug_cols = ["Name", "Type", "Quantity", "Group Sorting"]
     missing_debug_cols = [c for c in required_debug_cols if c not in raw_df.columns]
@@ -166,7 +168,7 @@ def _build_missing_gs_terminals_df(component_bytes: bytes) -> tuple[pd.DataFrame
             sheet_name=0,
             engine="openpyxl",
         )
-        raw_df.columns = raw_df.columns.astype(str).str.strip()
+        raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
     except Exception:
         return None, pd.DataFrame(), ["read_error"]
 
@@ -199,7 +201,7 @@ def _build_unrecognized_terminal_types_df(component_bytes: bytes) -> tuple[pd.Da
             sheet_name=0,
             engine="openpyxl",
         )
-        raw_df.columns = raw_df.columns.astype(str).str.strip()
+        raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
     except Exception:
         return None, pd.DataFrame(), ["read_error"]
 
@@ -260,7 +262,7 @@ def _detect_conflicting_duplicates(component_bytes: bytes) -> tuple[pd.DataFrame
         sheet_name=0,
         engine="openpyxl",
     )
-    raw_df.columns = raw_df.columns.astype(str).str.strip()
+    raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
     raw_df["_idx"] = raw_df.index
 
     if "Name" not in raw_df.columns or "Type" not in raw_df.columns:
@@ -545,24 +547,12 @@ def render_component_correction() -> None:
     missing_transformer_columns = False
     try:
         raw_df = pd.read_excel(BytesIO(component_bytes), sheet_name=0)
-        normalized_columns = {col: str(col).strip() for col in raw_df.columns}
-        name_col = next(
-            (original for original, normalized in normalized_columns.items() if normalized == "Name"),
-            None,
-        )
-        gs_col = next(
-            (
-                original
-                for original, normalized in normalized_columns.items()
-                if normalized.lower() in {"group sorting", "group sortin"}
-            ),
-            None,
-        )
-        if name_col is None or gs_col is None:
+        raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
+        if "Name" not in raw_df.columns or "Group Sorting" not in raw_df.columns:
             missing_transformer_columns = True
         else:
-            name_series = raw_df[name_col].astype(str)
-            gs_series = raw_df[gs_col].astype(str)
+            name_series = raw_df["Name"].astype(str)
+            gs_series = raw_df["Group Sorting"].astype(str)
             cond_name = name_series.str.contains(
                 r"(^|[^A-Z0-9])\-X102([^A-Z0-9]|$)",
                 regex=True,
@@ -846,7 +836,7 @@ def render_component_correction() -> None:
                 try:
                     # --- CRITICAL FIX: load raw_df directly from bytes (single source of truth) ---
                     raw_df = pd.read_excel(BytesIO(component_bytes), sheet_name=0, engine="openpyxl")
-                    raw_df.columns = raw_df.columns.astype(str).str.strip()
+                    raw_df = _normalize_component_input_columns(raw_df, drop_ignored_template_columns=False)
 
                     required_apply_cols = ["Name", "Type", "Group Sorting"]
                     missing_apply_cols = [c for c in required_apply_cols if c not in raw_df.columns]
@@ -939,7 +929,10 @@ def render_component_correction() -> None:
                         sheet_name=0,
                         engine="openpyxl",
                     )
-                    raw_preview_df.columns = raw_preview_df.columns.astype(str).str.strip()
+                    raw_preview_df = _normalize_component_input_columns(
+                        raw_preview_df,
+                        drop_ignored_template_columns=False,
+                    )
                     if raw_preview_df.empty:
                         st.info("Raw preview tuščias.")
                     else:
