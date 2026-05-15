@@ -19,15 +19,14 @@ _COMPONENT_EXPECTED_COLUMNS = {
 _COMPONENT_OPTIONAL_COLUMNS = {
     "description": "Description",
     "article no": "Article No.",
+    "set value": "Set Value",
 }
 
 _COMPONENT_INPUT_COLUMN_ALIASES = {
     "type": "TYPE",
     "group sorting": "Group Sorting",
 }
-_COMPONENT_IGNORED_INPUT_COLUMNS = {
-    "set value",
-}
+_COMPONENT_IGNORED_INPUT_COLUMNS: set[str] = set()
 
 _FUSE_TYPES = {
     "2002-1611/1000-541",
@@ -254,13 +253,13 @@ _RELAY_NAME_SORT_PATTERN = re.compile(r"^-K(?P<number>\d+)(?P<suffix>.*)$", re.I
 _TIMED_RELAY_PATTERN = re.compile(r"^-K192(?!A)(?P<suffix_number>\d+)\b", re.IGNORECASE)
 _TIMED_RELAY_A_PATTERN = re.compile(r"^-K192A(?P<suffix_number>\d+)\b", re.IGNORECASE)
 
-_PRODUCTION_COLUMNS = ["Name", "Article No.", "TYPE", "Quantity", "Marked", "Description", "Comments"]
+_PRODUCTION_COLUMNS = ["Name", "Article No.", "TYPE", "Set Value", "Quantity", "Marked", "Description", "Comments"]
 _RELAY_SECTION_LABEL = "Relays"
 _FUSE_SECTION_LABEL = "Fuses"
 _BUTTON_SECTION_LABEL = "Buttons"
 _OTHER_SECTION_LABEL = "Other"
 _PRODUCTION_TECHNICAL_FLAG_COLUMN = "_IncludeInCalculation"
-_PRODUCTION_ONLY_COMPONENT_COLUMNS = ("Article No.",)
+_PRODUCTION_ONLY_COMPONENT_COLUMNS = ("Article No.", "Set Value")
 _GROUPED_COMPONENT_SECTIONS = (
     (_RELAY_SECTION_LABEL, {"RELAY_1P", "RELAY_4P", "RELAY_2P"}, "relay_rows"),
     (_FUSE_SECTION_LABEL, {"FUSE"}, "fuse_rows"),
@@ -2257,11 +2256,11 @@ def _build_component_production_source_df(component_marking_df: pd.DataFrame) ->
     """Prepare one production-order source frame without changing any row-level content."""
     if component_marking_df.empty:
         return pd.DataFrame(
-            columns=["Name", "Article No.", "TYPE", "Quantity", "Description", "Category", "_original_order"]
+            columns=["Name", "Article No.", "TYPE", "Set Value", "Quantity", "Description", "Category", "_original_order"]
         )
 
     working_df = component_marking_df.copy().reset_index(drop=True)
-    for column_name in ("Name", "Article No.", "TYPE", "Quantity", "Description", "Category"):
+    for column_name in ("Name", "Article No.", "TYPE", "Set Value", "Quantity", "Description", "Category"):
         if column_name not in working_df.columns:
             working_df[column_name] = ""
     category_is_blank = working_df["Category"].map(_stringify_cell).eq("")
@@ -2387,9 +2386,7 @@ def _build_component_production_ordered_sections(
 ) -> tuple[list[tuple[str, pd.DataFrame]], dict[str, int]]:
     """Build production workbook sections in the same visible order as Marking."""
     group_counts = {"relay_rows": 0, "fuse_rows": 0, "button_rows": 0}
-    working_df = _filter_component_production_fuse_rows(
-        _build_component_production_source_df(component_marking_df)
-    )
+    working_df = _build_component_production_source_df(component_marking_df)
     if working_df.empty:
         return [], group_counts
 
@@ -2407,6 +2404,7 @@ def _build_production_section_row(label: str) -> dict[str, Any]:
         "Name": label,
         "Article No.": "",
         "TYPE": "",
+        "Set Value": "",
         "Quantity": "",
         "Marked": "",
         "Description": "",
@@ -2423,6 +2421,7 @@ def _build_production_separator_row() -> dict[str, Any]:
         "Name": "",
         "Article No.": "",
         "TYPE": "",
+        "Set Value": "",
         "Quantity": "",
         "Marked": "",
         "Description": "",
@@ -2435,14 +2434,13 @@ def _build_production_separator_row() -> dict[str, Any]:
 
 def _component_rows_to_production_records(component_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert actual component rows into production-sheet records."""
-    filtered_component_df = _filter_component_production_fuse_rows(component_df)
-    if filtered_component_df.empty:
+    if component_df.empty:
         return []
 
-    production_rows = pd.DataFrame(index=filtered_component_df.index)
-    for column_name in ("Name", "Article No.", "TYPE", "Quantity", "Description"):
-        if column_name in filtered_component_df.columns:
-            production_rows[column_name] = filtered_component_df[column_name]
+    production_rows = pd.DataFrame(index=component_df.index)
+    for column_name in ("Name", "Article No.", "TYPE", "Set Value", "Quantity", "Description"):
+        if column_name in component_df.columns:
+            production_rows[column_name] = component_df[column_name]
         else:
             production_rows[column_name] = ""
     production_rows["Marked"] = ""
@@ -2867,7 +2865,7 @@ def _write_component_production_sheet(
         if is_separator_row:
             continue
 
-        for text_column in ("Name", "Article No.", "TYPE", "Description", "Comments"):
+        for text_column in ("Name", "Article No.", "TYPE", "Set Value", "Description", "Comments"):
             value = _stringify_cell(row_data.get(text_column))
             column_index = column_indexes[text_column]
             if value:
@@ -3127,6 +3125,7 @@ def _export_component_production_workbook(
         "Name": 13.5,
         "Article No.": 20,
         "TYPE": 24,
+        "Set Value": 14,
         "Quantity": 12,
         "Marked": 10,
         "Description": 85,
