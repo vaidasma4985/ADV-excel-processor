@@ -21,6 +21,14 @@ _COMPONENT_OPTIONAL_COLUMNS = {
     "article no": "Article No.",
 }
 
+_COMPONENT_INPUT_COLUMN_ALIASES = {
+    "type": "TYPE",
+    "group sorting": "Group Sorting",
+}
+_COMPONENT_IGNORED_INPUT_COLUMNS = {
+    "set value",
+}
+
 _FUSE_TYPES = {
     "2002-1611/1000-541",
     "2002-1611/1000-836",
@@ -506,6 +514,58 @@ def _normalize_column_name(value: Any) -> str:
     return normalized.replace(".", "")
 
 
+def _normalize_component_input_columns(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Normalize supported shared component export column aliases before parsing."""
+    normalized_df = raw_df.copy()
+    normalized_columns: list[str] = []
+    keep_positions: list[int] = []
+    seen_columns: set[str] = set()
+    debug_messages: list[str] = []
+    normalized_aliases: list[str] = []
+    ignored_columns: list[str] = []
+    duplicate_columns: list[str] = []
+
+    for position, column_name in enumerate(normalized_df.columns):
+        stripped_name = _stringify_cell(column_name)
+        normalized_name = _normalize_column_name(stripped_name)
+        if normalized_name in _COMPONENT_IGNORED_INPUT_COLUMNS:
+            ignored_columns.append(stripped_name)
+            continue
+
+        canonical_name = _COMPONENT_INPUT_COLUMN_ALIASES.get(normalized_name, stripped_name)
+        if canonical_name != stripped_name:
+            normalized_aliases.append(f"{stripped_name} -> {canonical_name}")
+
+        if canonical_name in seen_columns:
+            duplicate_columns.append(stripped_name)
+            continue
+
+        keep_positions.append(position)
+        normalized_columns.append(canonical_name)
+        seen_columns.add(canonical_name)
+
+    normalized_df = normalized_df.iloc[:, keep_positions].copy()
+    normalized_df.columns = normalized_columns
+
+    if normalized_aliases:
+        debug_messages.append(
+            "component parser: shared template column aliases normalized -> "
+            + ", ".join(normalized_aliases)
+        )
+    if ignored_columns:
+        debug_messages.append(
+            "component parser: ignored shared template columns -> "
+            + ", ".join(ignored_columns)
+        )
+    if duplicate_columns:
+        debug_messages.append(
+            "component parser: duplicate input columns ignored after normalization -> "
+            + ", ".join(duplicate_columns)
+        )
+
+    return normalized_df, debug_messages
+
+
 def _stringify_cell(value: Any) -> str:
     """Convert a cell value to a simple trimmed string."""
     if pd.isna(value):
@@ -683,6 +743,8 @@ def _load_component_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], l
     """Read the first sheet, drop fully empty rows, and retain expected columns if present."""
     developer_debug_messages: list[str] = []
     raw_df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, dtype=object)
+    raw_df, normalization_debug_messages = _normalize_component_input_columns(raw_df)
+    developer_debug_messages.extend(normalization_debug_messages)
     raw_df = raw_df.dropna(axis=0, how="all").reset_index(drop=True)
     developer_debug_messages.append(f"component parser: loaded {len(raw_df)} non-empty rows from first sheet")
 
