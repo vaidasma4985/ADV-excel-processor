@@ -158,6 +158,49 @@ def _sanity_check_type_helpers() -> None:
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+_COMPONENT_INPUT_COLUMN_ALIASES = {
+    "group sorting": "Group Sorting",
+    "type": "Type",
+}
+_IGNORED_SHARED_TEMPLATE_COLUMNS = {
+    "article no.",
+    "description",
+    "total quantity",
+    "set value",
+}
+
+
+def _normalize_component_input_columns(
+    df: pd.DataFrame,
+    *,
+    drop_ignored_template_columns: bool = True,
+) -> pd.DataFrame:
+    """Normalize shared component export column aliases to the correction schema."""
+    normalized_df = df.copy()
+    output_columns: list[str] = []
+    keep_positions: list[int] = []
+    seen_columns: set[str] = set()
+
+    for position, column_name in enumerate(normalized_df.columns):
+        stripped_name = str(column_name).strip()
+        normalized_key = " ".join(stripped_name.split()).casefold()
+        canonical_name = _COMPONENT_INPUT_COLUMN_ALIASES.get(normalized_key, stripped_name)
+        ignored_template_column = normalized_key in _IGNORED_SHARED_TEMPLATE_COLUMNS
+
+        if drop_ignored_template_columns and ignored_template_column:
+            continue
+        if canonical_name in seen_columns and canonical_name in {"Group Sorting", "Type"}:
+            continue
+
+        keep_positions.append(position)
+        output_columns.append(canonical_name)
+        seen_columns.add(canonical_name)
+
+    normalized_df = normalized_df.iloc[:, keep_positions].copy()
+    normalized_df.columns = output_columns
+    return normalized_df
+
+
 def _drop_unnamed_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")].copy()
 
@@ -525,6 +568,7 @@ def process_excel(
     file_bytes: bytes, terminal_list_bytes: bytes | None = None, terminal_layout_mode: str | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
+    df = _normalize_component_input_columns(df)
     df = _drop_unnamed_cols(df)
     input_rows = len(df)
 
