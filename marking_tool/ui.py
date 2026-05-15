@@ -106,7 +106,15 @@ def _process_marking_inputs() -> None:
         return
 
     resolved_project_number = resolve_project_number(inputs)
-    sheets, warnings, user_info_messages, debug_info, debug_workbooks, production_workbooks = build_placeholder_results(
+    (
+        sheets,
+        warnings,
+        user_info_messages,
+        debug_info,
+        debug_workbooks,
+        production_workbooks,
+        xmlil_outputs,
+    ) = build_placeholder_results(
         inputs,
         resolved_project_number=resolved_project_number,
     )
@@ -121,6 +129,7 @@ def _process_marking_inputs() -> None:
         "developer_debug_messages": debug_info,
         "debug_workbooks": debug_workbooks,
         "production_workbooks": production_workbooks,
+        "xmlil_outputs": xmlil_outputs,
         "debug_status": {
             tool_name: {
                 "uploaded": bool(inputs.get(tool_name, {}).get("bytes")),
@@ -205,6 +214,17 @@ def render_marking_tool() -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="marking_component_production_download",
+            )
+        component_relay_xmlil = (results.get("xmlil_outputs") or {}).get("component_relays")
+        if component_relay_xmlil:
+            component_relay_xmlil_filename = str(component_relay_xmlil["filename"])
+            st.download_button(
+                f"Download {component_relay_xmlil_filename}",
+                data=component_relay_xmlil["bytes"],
+                file_name=component_relay_xmlil_filename,
+                mime="application/xml",
+                use_container_width=True,
+                key="marking_component_relay_xmlil_download",
             )
         st.caption("Generated sheets: " + ", ".join(results["sheet_names"]))
 

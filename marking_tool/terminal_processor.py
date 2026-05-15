@@ -2510,6 +2510,7 @@ def _apply_component_marking_header_polish(worksheet: Any) -> None:
     worksheet["R3"] = ""
     worksheet.column_dimensions["O"].width = 17
     worksheet.column_dimensions["R"].width = 17
+    worksheet.column_dimensions["R"].hidden = True
     _merge_worksheet_ranges_if_needed(worksheet, _COMPONENT_MARKING_HEADER_MERGE_RANGES)
     for cell_range in _COMPONENT_MARKING_HEADER_BLOCK_RANGES:
         _apply_center_alignment_to_range(worksheet, cell_range)

@@ -56,6 +56,13 @@ def build_component_production_filename(project_number: str | None) -> str:
     return f"{project_number}_component_production_check.xlsx"
 
 
+def build_component_relay_xmlil_filename(project_number: str | None) -> str:
+    """Build the component relay XMLIL filename from the resolved project number."""
+    if not project_number:
+        return "Markings.xmlil"
+    return f"{project_number}_Markings.xmlil"
+
+
 def derive_output_filename(terminal_file_name: str) -> str:
     """Backward-compatible single-file filename helper using the shared project pattern."""
     return build_marking_output_filename(extract_project_number(terminal_file_name))
@@ -70,6 +77,7 @@ def build_placeholder_results(
     list[str],
     list[str],
     dict[str, bytes | None],
+    dict[str, dict[str, bytes | str] | None],
     dict[str, dict[str, bytes | str] | None],
 ]:
     """Coordinate component, terminal, and wire processing without holding business logic."""
@@ -110,6 +118,9 @@ def build_placeholder_results(
         "terminal": None,
         "wire": None,
     }
+    xmlil_outputs: dict[str, dict[str, bytes | str] | None] = {
+        "component_relays": None,
+    }
 
     for source_key in ("component", "terminal", "wire"):
         file_info = inputs.get(source_key, {})
@@ -130,7 +141,11 @@ def build_placeholder_results(
             developer_debug_messages.extend(terminal_result["developer_debug_messages"])
             debug_workbooks["terminal"] = terminal_result["debug_workbook"]
         elif source_key == "component":
-            component_result = process_component_result(file_bytes, file_name)
+            component_result = process_component_result(
+                file_bytes,
+                file_name,
+                project_number=resolved_project_number,
+            )
             sheets.update(component_result["sheets"])
             user_info_messages.extend(component_result["user_info_messages"])
             developer_debug_messages.extend(component_result["developer_debug_messages"])
@@ -140,6 +155,11 @@ def build_placeholder_results(
                     "bytes": component_result["production_workbook"],
                     "filename": build_component_production_filename(resolved_project_number),
                 }
+            if component_result.get("relay_xmlil_bytes"):
+                xmlil_outputs["component_relays"] = {
+                    "bytes": component_result["relay_xmlil_bytes"],
+                    "filename": build_component_relay_xmlil_filename(resolved_project_number),
+                }
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
             sheets[sheet_name] = wire_sheet
@@ -147,4 +167,12 @@ def build_placeholder_results(
 
         developer_debug_messages.append(f"{source_key}: uploaded `{file_name or 'uploaded_file'}` -> sheet `{sheet_name}`")
 
-    return sheets, warnings, user_info_messages, developer_debug_messages, debug_workbooks, production_workbooks
+    return (
+        sheets,
+        warnings,
+        user_info_messages,
+        developer_debug_messages,
+        debug_workbooks,
+        production_workbooks,
+        xmlil_outputs,
+    )
