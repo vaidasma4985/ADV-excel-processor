@@ -57,10 +57,10 @@ def build_component_production_filename(project_number: str | None) -> str:
 
 
 def build_component_relay_xmlil_filename(project_number: str | None) -> str:
-    """Build the component relay XMLIL filename from the resolved project number only."""
+    """Build the component relay XMLIL filename from the resolved project number."""
     if not project_number:
         return "Markings.xmlil"
-    return f"{project_number}.xmlil"
+    return f"{project_number}_Markings.xmlil"
 
 
 def derive_output_filename(terminal_file_name: str) -> str:

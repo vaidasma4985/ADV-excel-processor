@@ -132,7 +132,7 @@ _COMPONENT_RELAY_XMLIL_TEMPLATE_HEADER = """<?xml version="1.0" encoding="utf-8"
 _COMPONENT_RELAY_XMLIL_TEMPLATE_RECORD = """    <ILRecord>
       <Typ>35 - KMR 5/10-5</Typ>
       <TreeText />
-      <Group>{group}</Group>
+      <Group />
       <LabelText>{label_text}</LabelText>
       <Copies>1</Copies>
       <TextAttributes>
@@ -1383,7 +1383,7 @@ def _flatten_component_relay_xmlil_marking_groups(
 
 
 def _build_component_relay_xmlil_group_value(project_number: str | None) -> str:
-    """Return only the project number for XMLIL Group, or '-' when unavailable."""
+    """Return only the project number for XMLIL project Name, or '-' when unavailable."""
     project_number_text = _stringify_cell(project_number)
     if project_number_text == "":
         return "-"
@@ -1416,7 +1416,6 @@ def _build_component_relay_xmlil_bytes(
     record_xml = [
         _COMPONENT_RELAY_XMLIL_TEMPLATE_RECORD.format(
             label_text=escape(relay_name),
-            group=escape(group_value),
             font_size=_component_relay_xmlil_font_size(relay_name),
         )
         for relay_name in relay_names
