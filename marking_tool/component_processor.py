@@ -2690,6 +2690,25 @@ def _build_component_strip_layout(
     }
 
 
+def _build_component_wago_strip_rows(strip_layout: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose final fuse strip Space/Text rows from an existing Component Strip layout."""
+    fuse_strip_df = strip_layout.get(
+        "fuse_strip_df",
+        pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+    )
+    wago_rows: list[dict[str, Any]] = []
+    for row in fuse_strip_df.loc[:, _COMPONENT_STRIP_SIDE_COLUMNS].to_dict(orient="records"):
+        text = _stringify_cell(row.get("Text"))
+        if text in _COMPONENT_STRIP_GROUP_ORDER:
+            row["kind"] = "group_label"
+        elif text == "":
+            row["kind"] = "blank_separator"
+        else:
+            row["kind"] = "normal"
+        wago_rows.append(row)
+    return wago_rows
+
+
 def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the Component Strip layout with fuse strip on the left and relay strip on the right."""
     empty_strip_layout = _build_component_strip_layout([], [])
@@ -3550,6 +3569,7 @@ def process_component_result(
         f"component strip rows exported -> {component_strip_stats['layout_rows']}"
     )
     cabinet_final_component_sheets: dict[str, Any] = {}
+    cabinet_wago_fuse_strip_rows: list[dict[str, Any]] = []
     multi_cabinet_cm_mode = len(sorted_cabinet_ids) > 1
     if multi_cabinet_cm_mode:
         developer_debug_messages.append(
@@ -3567,6 +3587,14 @@ def process_component_result(
             cabinet_marking_sheet_df = _build_component_marking_sheet_df(cabinet_label_source_df)
             cabinet_strip_sheet, cabinet_strip_sheet_stats = _build_component_strip_df(cabinet_marking_sheet_df)
             cabinet_cm_sheet_df = _build_component_cm_sheet_df(cabinet_label_source_df)
+            if cabinet_wago_fuse_strip_rows:
+                cabinet_wago_fuse_strip_rows.append(
+                    {"Space": 0.8, "Text": "", "kind": "blank_separator"}
+                )
+            cabinet_wago_fuse_strip_rows.append(
+                {"Space": _FUSE_STRIP_WIDTH, "Text": cabinet_id, "kind": "group_label"}
+            )
+            cabinet_wago_fuse_strip_rows.extend(_build_component_wago_strip_rows(cabinet_strip_sheet))
             cabinet_final_component_sheets[cabinet_final_sheet_name] = _build_component_final_marking_sheet(
                 cabinet_strip_sheet,
                 cabinet_cm_sheet_df,
@@ -3778,11 +3806,18 @@ def process_component_result(
         _validate_component_export_sheet(sheet_name, sheet_df)
     component_debug_workbook = _build_component_debug_workbook(debug_component_sheets)
 
+    wago_fuse_strip_rows = _build_component_wago_strip_rows(
+        component_strip_sheet if routing_mode == "no_cabinet" else localized_component_strip_sheet
+    )
+    if multi_cabinet_cm_mode:
+        wago_fuse_strip_rows = cabinet_wago_fuse_strip_rows
+
     return {
         "sheets": component_sheets,
         "cabinet_map": cabinet_map,
         "relay_xmlil_marking_groups": relay_xmlil_marking_groups,
         "relay_xmlil_bytes": relay_xmlil_bytes,
+        "wago_fuse_strip_rows": wago_fuse_strip_rows,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": ui_component_debug_messages,
         "debug_workbook": component_debug_workbook,

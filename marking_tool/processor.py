@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from io import BytesIO
 import re
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from .component_processor import process_component_result
 from .terminal_processor import (
     export_placeholder_workbook,
     process_terminal_result,
 )
+from .wago_processor import build_wago_wscx_bytes
 from .wire_processor import build_wire_placeholder_result
 
 
@@ -63,6 +66,27 @@ def build_component_relay_xmlil_filename(project_number: str | None) -> str:
     return f"{project_number}.xmlil"
 
 
+def build_wago_markings_filename(project_number: str | None, marking_type: str) -> str:
+    """Build one WAGO SmartScript filename from project and marking type."""
+    project_prefix = project_number or "1"
+    return f"{project_prefix}_{marking_type}.wscx"
+
+
+def build_wago_markings_zip_filename(project_number: str | None) -> str:
+    """Build the combined WAGO markings ZIP filename."""
+    project_prefix = project_number or "1"
+    return f"{project_prefix}_WAGO_markings.zip"
+
+
+def _build_wago_markings_zip(wago_files: list[dict[str, bytes | str]]) -> bytes:
+    """Package generated WAGO files into one download payload."""
+    output = BytesIO()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        for wago_file in wago_files:
+            archive.writestr(str(wago_file["filename"]), bytes(wago_file["bytes"]))
+    return output.getvalue()
+
+
 def derive_output_filename(terminal_file_name: str) -> str:
     """Backward-compatible single-file filename helper using the shared project pattern."""
     return build_marking_output_filename(extract_project_number(terminal_file_name))
@@ -77,6 +101,7 @@ def build_placeholder_results(
     list[str],
     list[str],
     dict[str, bytes | None],
+    dict[str, dict[str, bytes | str] | None],
     dict[str, dict[str, bytes | str] | None],
     dict[str, dict[str, bytes | str] | None],
 ]:
@@ -121,6 +146,11 @@ def build_placeholder_results(
     xmlil_outputs: dict[str, dict[str, bytes | str] | None] = {
         "component_relays": None,
     }
+    wago_outputs: dict[str, dict[str, bytes | str] | None] = {
+        "terminal_markings": None,
+        "fuse_markings": None,
+        "markings_zip": None,
+    }
 
     for source_key in ("component", "terminal", "wire"):
         file_info = inputs.get(source_key, {})
@@ -140,6 +170,20 @@ def build_placeholder_results(
             user_info_messages.extend(terminal_result["user_info_messages"])
             developer_debug_messages.extend(terminal_result["developer_debug_messages"])
             debug_workbooks["terminal"] = terminal_result["debug_workbook"]
+            wago_strip_rows = terminal_result.get("wago_strip_rows") or []
+            wago_outputs["terminal_markings"] = {
+                "bytes": build_wago_wscx_bytes(
+                    strip_rows=wago_strip_rows,
+                    marking_type="Terminal Strip",
+                    marking_material="2009-110",
+                ),
+                "filename": build_wago_markings_filename(resolved_project_number, "Terminal Strip"),
+            }
+            developer_debug_messages.append("WAGO WSCX generated")
+            if wago_strip_rows:
+                developer_debug_messages.append(f"WAGO WSCX terminal strip rows count = {len(wago_strip_rows)}")
+            else:
+                developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
         elif source_key == "component":
             component_result = process_component_result(
                 file_bytes,
@@ -160,12 +204,31 @@ def build_placeholder_results(
                     "bytes": component_result["relay_xmlil_bytes"],
                     "filename": build_component_relay_xmlil_filename(resolved_project_number),
                 }
+            wago_fuse_strip_rows = component_result.get("wago_fuse_strip_rows") or []
+            if wago_fuse_strip_rows:
+                wago_outputs["fuse_markings"] = {
+                    "bytes": build_wago_wscx_bytes(
+                        strip_rows=wago_fuse_strip_rows,
+                        marking_type="Fuse Strip",
+                        marking_material="210-872",
+                    ),
+                    "filename": build_wago_markings_filename(resolved_project_number, "Fuse Strip"),
+                }
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
             sheets[sheet_name] = wire_sheet
             user_info_messages.extend(wire_user_info)
 
         developer_debug_messages.append(f"{source_key}: uploaded `{file_name or 'uploaded_file'}` -> sheet `{sheet_name}`")
+
+    terminal_wago_file = wago_outputs.get("terminal_markings")
+    fuse_wago_file = wago_outputs.get("fuse_markings")
+    if terminal_wago_file and fuse_wago_file:
+        wago_outputs["markings_zip"] = {
+            "bytes": _build_wago_markings_zip([terminal_wago_file, fuse_wago_file]),
+            "filename": build_wago_markings_zip_filename(resolved_project_number),
+        }
+        developer_debug_messages.append("WAGO markings ZIP generated -> Terminal Strip, Fuse Strip")
 
     return (
         sheets,
@@ -175,4 +238,5 @@ def build_placeholder_results(
         debug_workbooks,
         production_workbooks,
         xmlil_outputs,
+        wago_outputs,
     )
