@@ -52,6 +52,7 @@ _TERMINAL_OUTPUT_COLUMNS = [*_TERMINAL_EXPECTED_COLUMNS.values(), "Terminal Type
 _PROJECT_CODE_PATTERN = re.compile(r"^\s*(\d{4}-\d{3})\b")
 _TERMINAL_NAME_A_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)A(?P<order>\d+)$")
 _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<order>\d)$")
+_TERMINAL_WAGO_CABINET_PREFIX_PATTERN = re.compile(r"^\+(?P<cabinet>A\d+)-", re.IGNORECASE)
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
 _TERMINAL_GROUP_SORTING_PATTERN = re.compile(r"^(?P<number>\d+)(?P<suffix>[A-Z])?$")
 _TERMINAL_SPECIAL_X6311_NAME = "-X6311"
@@ -113,6 +114,25 @@ def _normalize_terminal_conns_value(value: Any) -> str:
 def _normalize_terminal_group_sorting_value(value: Any) -> str:
     """Normalize terminal Group Sorting values before validation and sorting."""
     return _stringify_cell(value).upper()
+
+
+def _extract_terminal_wago_cabinet(name_value: Any) -> str:
+    """Return the WAGO cabinet id from a terminal Name prefix such as +A2-X."""
+    match = _TERMINAL_WAGO_CABINET_PREFIX_PATTERN.match(_stringify_cell(name_value))
+    return _stringify_cell(match.group("cabinet")).upper() if match else ""
+
+
+def _terminal_wago_cabinet_sort_key(cabinet_value: Any) -> tuple[str, int, str]:
+    """Sort WAGO cabinet ids naturally so A2 comes before A10."""
+    cabinet_id = _stringify_cell(cabinet_value).upper()
+    match = re.match(r"^(?P<prefix>[A-Z]+)(?P<number>\d+)(?P<suffix>.*)$", cabinet_id)
+    if not match:
+        return (cabinet_id, -1, "")
+    return (
+        _stringify_cell(match.group("prefix")),
+        int(match.group("number")),
+        _stringify_cell(match.group("suffix")),
+    )
 
 
 def derive_output_filename(terminal_file_name: str) -> str:
@@ -1515,6 +1535,63 @@ def _reintegrate_terminal_pe_rows(normal_terminal_df: pd.DataFrame, pe_terminal_
     return terminal_output_df
 
 
+def _build_terminal_wago_strip_rows(
+    terminal_df: pd.DataFrame,
+    terminal_strip_df: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    """Flatten final Terminal Strip groups into one WAGO row stream."""
+    def _as_wago_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "kind": "blank_separator" if _stringify_cell(row.get("Text")) == "" else "normal",
+        }
+
+    flat_strip_rows = [
+        _as_wago_row(row)
+        for row in terminal_strip_df.loc[:, ["Space", "Text"]].to_dict(orient="records")
+    ]
+    if terminal_df.empty or "_wago_cabinet" not in terminal_df.columns:
+        return flat_strip_rows
+
+    cabinet_ids = sorted(
+        {
+            _stringify_cell(cabinet_id).upper()
+            for cabinet_id in terminal_df["_wago_cabinet"].tolist()
+            if _stringify_cell(cabinet_id)
+        },
+        key=_terminal_wago_cabinet_sort_key,
+    )
+    if len(cabinet_ids) <= 1:
+        return flat_strip_rows
+
+    wago_strip_rows: list[dict[str, Any]] = []
+    for cabinet_id in cabinet_ids:
+        cabinet_terminal_df = terminal_df.loc[
+            terminal_df["_wago_cabinet"].map(_stringify_cell).str.upper().eq(cabinet_id)
+        ].copy().reset_index(drop=True)
+        cabinet_strip_df, _, _ = _build_terminal_strip_sheet_with_debug(cabinet_terminal_df)
+        if wago_strip_rows:
+            wago_strip_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": "", "kind": "blank_separator"})
+        wago_strip_rows.append({"Space": _TERMINAL_STRIP_TERMINAL_SPACE, "Text": cabinet_id, "kind": "group_label"})
+        wago_strip_rows.extend(
+            _as_wago_row(row)
+            for row in cabinet_strip_df.loc[:, ["Space", "Text"]].to_dict(orient="records")
+        )
+
+    uncabinet_terminal_df = terminal_df.loc[
+        terminal_df["_wago_cabinet"].map(_stringify_cell).eq("")
+    ].copy().reset_index(drop=True)
+    if not uncabinet_terminal_df.empty:
+        uncabinet_strip_df, _, _ = _build_terminal_strip_sheet_with_debug(uncabinet_terminal_df)
+        if wago_strip_rows:
+            wago_strip_rows.append({"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": "", "kind": "blank_separator"})
+        wago_strip_rows.extend(
+            _as_wago_row(row)
+            for row in uncabinet_strip_df.loc[:, ["Space", "Text"]].to_dict(orient="records")
+        )
+    return wago_strip_rows
+
+
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Parse terminal Excel input into a clean DataFrame with minimal filtering only."""
     user_info_messages: list[str] = []
@@ -1585,6 +1662,8 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     for column_name in ("Name", "Conns.", "Group Sorting", "TYPE", "Visible"):
         if column_name in terminal_df.columns:
             terminal_df[column_name] = terminal_df[column_name].apply(_stringify_cell)
+    if "Name" in terminal_df.columns:
+        terminal_df["_wago_cabinet"] = terminal_df["Name"].apply(_extract_terminal_wago_cabinet)
 
     zero_to_blank_conversions = 0
     if "Conns." in terminal_df.columns:
@@ -1859,7 +1938,7 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
         developer_debug_messages.extend(terminal_strip_debug)
         terminal_debug_messages.extend(terminal_strip_debug)
         terminal_debug_sheets: dict[str, pd.DataFrame] = {
-            "Terminal Marking": terminal_df,
+            "Terminal Marking": terminal_df.drop(columns=["_wago_cabinet"], errors="ignore"),
             "General": _build_debug_messages_sheet(terminal_debug_messages),
         }
         if terminal_strip_debug_df is not None and not terminal_strip_debug_df.empty:
@@ -1870,6 +1949,7 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
                 "terminal_tmb_df": terminal_tmb_df,
                 "terminal_strip_df": terminal_strip_df,
             },
+            "wago_strip_rows": _build_terminal_wago_strip_rows(terminal_df, terminal_strip_df),
             "user_info_messages": user_info_messages,
             "developer_debug_messages": developer_debug_messages,
             "debug_workbook": export_placeholder_workbook(terminal_debug_sheets),
@@ -1887,6 +1967,7 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
                 }
             ]
         ),
+        "wago_strip_rows": [],
         "user_info_messages": user_info_messages,
         "developer_debug_messages": developer_debug_messages,
         "debug_workbook": None,

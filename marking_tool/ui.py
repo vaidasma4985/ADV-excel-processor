@@ -114,6 +114,7 @@ def _process_marking_inputs() -> None:
         debug_workbooks,
         production_workbooks,
         xmlil_outputs,
+        wago_outputs,
     ) = build_placeholder_results(
         inputs,
         resolved_project_number=resolved_project_number,
@@ -130,6 +131,7 @@ def _process_marking_inputs() -> None:
         "debug_workbooks": debug_workbooks,
         "production_workbooks": production_workbooks,
         "xmlil_outputs": xmlil_outputs,
+        "wago_outputs": wago_outputs,
         "debug_status": {
             tool_name: {
                 "uploaded": bool(inputs.get(tool_name, {}).get("bytes")),
@@ -225,6 +227,18 @@ def render_marking_tool() -> None:
                 mime="application/xml",
                 use_container_width=True,
                 key="marking_component_relay_xmlil_download",
+            )
+        wago_outputs = results.get("wago_outputs") or {}
+        wago_markings_download = wago_outputs.get("markings_zip") or wago_outputs.get("terminal_markings")
+        if wago_markings_download:
+            wago_filename = str(wago_markings_download["filename"])
+            st.download_button(
+                "Download WAGO markings",
+                data=wago_markings_download["bytes"],
+                file_name=wago_filename,
+                mime="application/zip" if wago_filename.lower().endswith(".zip") else "application/xml",
+                use_container_width=True,
+                key="marking_terminal_wago_download",
             )
         st.caption("Generated sheets: " + ", ".join(results["sheet_names"]))
 
