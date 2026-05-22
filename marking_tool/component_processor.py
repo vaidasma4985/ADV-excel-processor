@@ -1557,8 +1557,8 @@ def _component_relay_xmlil_font_size(label_text: str) -> str:
     if _normalize_component_name(label_text).startswith("-K"):
         label_length = len(label_text)
         if label_length <= 6:
-            return "2.5"
-        return "2.1"
+            return "2.3"
+        return "1.9"
     return "2.5"
 
 
