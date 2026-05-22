@@ -2253,7 +2253,7 @@ def _split_component_groups(
 
 
 def _build_component_production_source_df(component_marking_df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare one production-order source frame without changing any row-level content."""
+    """Prepare one production-order source frame from production-eligible component rows."""
     if component_marking_df.empty:
         return pd.DataFrame(
             columns=["Name", "Article No.", "TYPE", "Set Value", "Quantity", "Description", "Category", "_original_order"]
@@ -2263,6 +2263,10 @@ def _build_component_production_source_df(component_marking_df: pd.DataFrame) ->
     for column_name in ("Name", "Article No.", "TYPE", "Set Value", "Quantity", "Description", "Category"):
         if column_name not in working_df.columns:
             working_df[column_name] = ""
+    production_local_names = working_df["Name"].map(_normalize_component_local_name).map(
+        _normalize_component_name
+    )
+    working_df = working_df.loc[~production_local_names.str.startswith("-R")].copy().reset_index(drop=True)
     category_is_blank = working_df["Category"].map(_stringify_cell).eq("")
     if bool(category_is_blank.any()):
         working_df.loc[category_is_blank, "Category"] = working_df.loc[category_is_blank].apply(
