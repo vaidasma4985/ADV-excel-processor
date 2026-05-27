@@ -148,6 +148,7 @@ def build_placeholder_results(
     }
     wago_outputs: dict[str, dict[str, bytes | str] | None] = {
         "terminal_markings": None,
+        "terminal_tmb": None,
         "fuse_markings": None,
         "markings_zip": None,
     }
@@ -184,6 +185,18 @@ def build_placeholder_results(
                 developer_debug_messages.append(f"WAGO WSCX terminal strip rows count = {len(wago_strip_rows)}")
             else:
                 developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
+            wago_tmb_rows = terminal_result.get("wago_tmb_rows") or []
+            if wago_tmb_rows:
+                wago_outputs["terminal_tmb"] = {
+                    "bytes": build_wago_wscx_bytes(
+                        strip_rows=wago_tmb_rows,
+                        marking_type="Terminal TMB",
+                        marking_material="2009-115",
+                        append_stop=False,
+                    ),
+                    "filename": build_wago_markings_filename(resolved_project_number, "Terminal TMB"),
+                }
+                developer_debug_messages.append(f"WAGO WSCX terminal TMB rows count = {len(wago_tmb_rows)}")
         elif source_key == "component":
             component_result = process_component_result(
                 file_bytes,
@@ -221,14 +234,21 @@ def build_placeholder_results(
 
         developer_debug_messages.append(f"{source_key}: uploaded `{file_name or 'uploaded_file'}` -> sheet `{sheet_name}`")
 
-    terminal_wago_file = wago_outputs.get("terminal_markings")
-    fuse_wago_file = wago_outputs.get("fuse_markings")
-    if terminal_wago_file and fuse_wago_file:
+    wago_files = [
+        wago_file
+        for output_key in ("terminal_markings", "terminal_tmb", "fuse_markings")
+        for wago_file in [wago_outputs.get(output_key)]
+        if wago_file
+    ]
+    if len(wago_files) > 1:
         wago_outputs["markings_zip"] = {
-            "bytes": _build_wago_markings_zip([terminal_wago_file, fuse_wago_file]),
+            "bytes": _build_wago_markings_zip(wago_files),
             "filename": build_wago_markings_zip_filename(resolved_project_number),
         }
-        developer_debug_messages.append("WAGO markings ZIP generated -> Terminal Strip, Fuse Strip")
+        developer_debug_messages.append(
+            "WAGO markings ZIP generated -> "
+            + ", ".join(str(wago_file["filename"]) for wago_file in wago_files)
+        )
 
     return (
         sheets,

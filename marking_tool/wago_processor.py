@@ -9,8 +9,9 @@ _WAGO_TEST_STRIP_ROWS = (
     {"Space": 5.2, "Text": "TEST"},
     {"Space": 5.2, "Text": "WAGO"},
 )
-_WAGO_GROUP_SEPARATOR_WIDTH = 5200
+_WAGO_EMPTY_CELL_WIDTH = 800
 _WAGO_STOP_ROW = {"Space": 6.2, "Text": "STOP", "kind": "normal"}
+_WAGO_TERMINAL_MARKING_TYPES = {"Terminal Strip", "Terminal TMB"}
 
 
 def _xml_escape(value: Any) -> str:
@@ -89,6 +90,8 @@ def _build_wago_strip_block(strip_rows: list[dict[str, Any]]) -> str:
 def _wago_strip_row_font_id(strip_row: Mapping[str, Any], marking_type: str) -> str:
     """Choose the WAGO text attribute for one generated strip row."""
     row_kind = strip_row.get("kind")
+    if row_kind == "section_label" and marking_type == "Terminal TMB":
+        return "3"
     if row_kind == "group_label" and marking_type == "Fuse Strip":
         return "2"
     if row_kind in {"group_label", "blank_separator"}:
@@ -96,10 +99,10 @@ def _wago_strip_row_font_id(strip_row: Mapping[str, Any], marking_type: str) -> 
     return "0"
 
 
-def _wago_strip_row_width(strip_row: Mapping[str, Any]) -> int:
-    """Use a wider WAGO gap for generated logical-group separators."""
-    if strip_row.get("kind") == "blank_separator":
-        return _WAGO_GROUP_SEPARATOR_WIDTH
+def _wago_strip_row_width(strip_row: Mapping[str, Any], marking_type: str) -> int:
+    """Choose the WAGO width for one generated strip row."""
+    if marking_type in _WAGO_TERMINAL_MARKING_TYPES and _xml_escape(strip_row.get("Text", "")) == "":
+        return _WAGO_EMPTY_CELL_WIDTH
     return _space_to_wago_width(strip_row.get("Space"))
 
 
@@ -116,7 +119,7 @@ def _with_final_wago_stop_row(strip_rows: Iterable[Mapping[str, Any]]) -> list[M
 def _normalize_wago_strip_row(strip_row: Mapping[str, Any], marking_type: str) -> dict[str, Any]:
     """Prepare one final Terminal Strip Space/Text row for WSCX output."""
     return {
-        "Width": _wago_strip_row_width(strip_row),
+        "Width": _wago_strip_row_width(strip_row, marking_type),
         "Text": strip_row.get("Text", ""),
         "FontID": _wago_strip_row_font_id(strip_row, marking_type),
     }
@@ -162,6 +165,18 @@ def _build_wago_text_attributes() -> str:
                 <CharSet>1</CharSet>
                 <Plotter>False</Plotter>
             </Font>
+            <Font ID="3">
+                <FaceName>Arial</FaceName>
+                <Height>4000</Height>
+                <Width>800</Width>
+                <Italic>False</Italic>
+                <Bold>False</Bold>
+                <Underline>False</Underline>
+                <StrikeOut>False</StrikeOut>
+                <PitchAndFamily>0x00000002</PitchAndFamily>
+                <CharSet>1</CharSet>
+                <Plotter>False</Plotter>
+            </Font>
         </Fonts>
         <Colors>
             <Color Format="RGB" ID="0">0x000000</Color>
@@ -174,13 +189,15 @@ def build_wago_wscx_bytes(
     *,
     marking_type: str = "Terminal Strip",
     marking_material: str = "2009-110",
+    append_stop: bool = True,
 ) -> bytes:
     """Build UTF-8 WAGO SmartScript XML from one flat final strip row list."""
     provided_rows = list(strip_rows) if strip_rows is not None else []
     rows = provided_rows if provided_rows else list(_WAGO_TEST_STRIP_ROWS)
+    rows_for_output = _with_final_wago_stop_row(rows) if append_stop else rows
     normalized_rows = [
         _normalize_wago_strip_row(strip_row, marking_type)
-        for strip_row in _with_final_wago_stop_row(rows)
+        for strip_row in rows_for_output
     ]
     wscx_text = (
         '<?xml version="1.0" encoding="utf-8" ?>\n'
@@ -192,7 +209,7 @@ def build_wago_wscx_bytes(
         f"{_build_wago_strip_block(normalized_rows)}\n"
         "    </StripBlocks>\n"
         f"{_build_wago_text_attributes()}\n"
-        f"    <Device>{_xml_escape(marking_type)}</Device>\n"
+        f"    <Device>{_xml_escape(marking_material)}</Device>\n"
         "</ContinuousStrip>\n"
     )
     return wscx_text.encode("utf-8")
