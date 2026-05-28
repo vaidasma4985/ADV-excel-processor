@@ -23,6 +23,7 @@ class WagoTerminalTmbSettings:
     saved_with_app_version: str
     work_direction: str
     generated_label_font_size: int
+    section_label_font_size: float
     data_font_size: float
 
 
@@ -38,6 +39,7 @@ WAGO_TERMINAL_TMB_SETTINGS = WagoTerminalTmbSettings(
     saved_with_app_version="4.9.5.3",
     work_direction="HORIZONTAL",
     generated_label_font_size=7,
+    section_label_font_size=40.0,
     data_font_size=64.14141414141415,
 )
 
@@ -94,7 +96,7 @@ _TMB_STRIP_LAYOUT_CLOSE = """      </componentList>
 </Strip>
 """
 
-_TMB_TEXT_COMPONENT_TEMPLATE = """         <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="{x_pos}" xSize="{x_size}" yPos="14.544008255004883" ySize="145.44900608062744" bdrColor="#000000FF" bdrRadius="0.0" borderSize="4.0" contentRotation="0.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="SIMPLE_LOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="{identifier}" bold="{bold}" fgColor="#000000FF" font="{font}" fontSize="{font_size}" italic="false" lineSpacingStr="-9.621212121212121" nodeAligmentStr="CENTER" text="{text}" textAlignmentStr="CENTER" textSize="{text_size}" textStretchingFactorStr="{text_stretching_factor}"/>
+_TMB_TEXT_COMPONENT_TEMPLATE = """         <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="{x_pos}" xSize="{x_size}" yPos="14.544008255004883" ySize="145.44900608062744" bdrColor="#000000FF" bdrRadius="0.0" borderSize="4.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="SIMPLE_LOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="{identifier}" bold="{bold}" fgColor="#000000FF" font="{font}" fontSize="{font_size}" italic="false" lineSpacingStr="-9.621212121212121" nodeAligmentStr="CENTER" text="{text}" textAlignmentStr="CENTER" textSize="{text_size}" textStretchingFactorStr="{text_stretching_factor}"/>
 """
 
 
@@ -137,9 +139,9 @@ def _resolve_tmb_component_style(row: Mapping[str, Any], settings: WagoTerminalT
     if label_kind == "generated_label":
         return WagoTerminalTmbComponentStyle(
             bold=settings.section_label_bold,
-            font_size=settings.generated_label_font_size,
-            text_size=settings.generated_label_font_size,
-            text_stretching_factor=1.0,
+            font_size=settings.section_label_font_size,
+            text_size=settings.section_label_font_size,
+            text_stretching_factor=0.42,
         )
     if label_kind == "blank":
         return WagoTerminalTmbComponentStyle(
@@ -148,11 +150,15 @@ def _resolve_tmb_component_style(row: Mapping[str, Any], settings: WagoTerminalT
             text_size=settings.data_font_size,
             text_stretching_factor=1.0,
         )
-    text_stretching_factor = 1.0
-    if len(text) >= 8:
-        text_stretching_factor = 0.7
-    elif len(text) >= 6:
-        text_stretching_factor = 0.85
+    text_length = len(text)
+    if text_length <= 2:
+        text_stretching_factor = 1.0
+    elif text_length == 3:
+        text_stretching_factor = 0.84
+    elif text_length == 4:
+        text_stretching_factor = 0.70
+    else:
+        text_stretching_factor = 0.42
     return WagoTerminalTmbComponentStyle(
         bold=settings.data_bold,
         font_size=settings.data_font_size,
