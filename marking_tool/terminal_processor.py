@@ -1592,6 +1592,32 @@ def _build_terminal_wago_strip_rows(
     return wago_strip_rows
 
 
+def _build_terminal_wago_tmb_rows(terminal_tmb_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Flatten final Terminal TMB Top/Middle/Bottom values into one WAGO row stream."""
+    tmb_value_columns = ("Top", "Middle", "Bottom")
+    if terminal_tmb_df.empty:
+        return []
+
+    wago_tmb_rows: list[dict[str, Any]] = []
+    for column_name in tmb_value_columns:
+        if column_name not in terminal_tmb_df.columns:
+            continue
+        if wago_tmb_rows:
+            wago_tmb_rows.append(
+                {"Space": _TERMINAL_STRIP_COVER_SPACE, "Text": "", "kind": "blank_separator"}
+            )
+        wago_tmb_rows.append(
+            {"Space": _TERMINAL_STRIP_TERMINAL_SPACE, "Text": column_name, "kind": "section_label"}
+        )
+        for text_value in terminal_tmb_df[column_name].tolist():
+            text = _stringify_cell(text_value)
+            wago_tmb_rows.append(
+                {"Space": _TERMINAL_STRIP_TERMINAL_SPACE, "Text": text, "kind": "normal"}
+            )
+
+    return wago_tmb_rows
+
+
 def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Parse terminal Excel input into a clean DataFrame with minimal filtering only."""
     user_info_messages: list[str] = []
@@ -1950,6 +1976,7 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
                 "terminal_strip_df": terminal_strip_df,
             },
             "wago_strip_rows": _build_terminal_wago_strip_rows(terminal_df, terminal_strip_df),
+            "wago_tmb_rows": _build_terminal_wago_tmb_rows(terminal_tmb_df),
             "user_info_messages": user_info_messages,
             "developer_debug_messages": developer_debug_messages,
             "debug_workbook": export_placeholder_workbook(terminal_debug_sheets),
@@ -1968,6 +1995,7 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
             ]
         ),
         "wago_strip_rows": [],
+        "wago_tmb_rows": [],
         "user_info_messages": user_info_messages,
         "developer_debug_messages": developer_debug_messages,
         "debug_workbook": None,
