@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 import uuid
@@ -33,71 +32,1989 @@ class WsslComponent:
 
 
 _TERMINAL_STRIP_DEMO_VALUES = ("-X118", "-X1112", "-X192A5", "", "-X6311", "-X6312", "", "STOP")
+_TERMINAL_STRIP_PLACEHOLDER_TEMPLATE_ERROR = (
+    "Embedded Terminal Strip WSSL template is still placeholder/wrong. "
+    "Replace it with full real strip.layout from 2605-078 terminal strip template.wssl."
+)
 
-_TERMINAL_STRIP_TEMPLATE_VERSION = """<?xml version="1.0" encoding="UTF-8"?>
+_TERMINAL_STRIP_TEMPLATE_VERSION = r"""<?xml version="1.0" encoding="UTF-8"?>
+
 <Version version="4.9.5.2"/>
+
 """
 
-_TERMINAL_STRIP_TEMPLATE_METADATA = """<?xml version="1.0" encoding="UTF-8"?>
+_TERMINAL_STRIP_TEMPLATE_METADATA = r"""<?xml version="1.0" encoding="UTF-8"?>
+
 <MetaData>
+
    <metadata projectType="UserProject">
-      <description>Terminal Strip</description>
+
+      <description></description>
+
       <customerName></customerName>
+
       <OrderNumber></OrderNumber>
+
       <customerNumber></customerNumber>
+
       <plantNumber></plantNumber>
+
       <creator></creator>
+
       <auditor></auditor>
-      <auditTime></auditTime>
+
+      <auditTime>null</auditTime>
+
       <templateID>20090110</templateID>
+
       <savedWithAppVersion>4.9.5.2</savedWithAppVersion>
+
       <workDirection>HORIZONTAL</workDirection>
-      <creationTime></creationTime>
-      <ModificationTime></ModificationTime>
-      <printTime></printTime>
+
+      <creationTime>2026-05-25T10:51:24</creationTime>
+
+      <ModificationTime>2026-05-25T13:12:22</ModificationTime>
+
+      <printTime>null</printTime>
+
    </metadata>
+
 </MetaData>
+
 """
 
-_TERMINAL_STRIP_TEMPLATE_TABLE_CONFIG = """<?xml version="1.0" encoding="UTF-8"?>
-<TableConfig/>
+_TERMINAL_STRIP_TEMPLATE_TABLE_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<table-config>
+
+   <file-path>Y:\JE-ELKAS\21.0 Litauen\ADVANCOR\2605-078\2605-078_Markings.xlsx</file-path>
+
+   <sheetName>Terminal markings</sheetName>
+
+   <firstRowIsHeader>false</firstRowIsHeader>
+
+   <column-separator>COMMA</column-separator>
+
+   <row-separator>NEW_LINE</row-separator>
+
+</table-config>
+
 """
 
-_TERMINAL_STRIP_TEMPLATE_IMPORT_CONFIG = """<?xml version="1.0" encoding="UTF-8"?>
-<ImportConfig/>
+_TERMINAL_STRIP_TEMPLATE_IMPORT_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<grid-import-config ignore-empty-rows="false" ignore-empty-cells="false" cut-marker="NONE" default-cell-width="5.2" default-end-plate-width="0.8" text-rotation="270.0" header-count="0" terminal-row-count="1" header-position="TOP" grid-labeling-order="TOP_BOTTOM">
+
+   <data-mapping>
+
+      <mappings>
+
+         <mapping>
+
+            <meta-target identifier="Text"/>
+
+            <associated-data startRowIndex="2" endRowIndex="107" startColumnIndex="7" endColumnIndex="7" classifier="data-range-discriminator"/>
+
+         </mapping>
+
+         <mapping>
+
+            <meta-target identifier="Width"/>
+
+            <associated-data startRowIndex="2" endRowIndex="107" startColumnIndex="6" endColumnIndex="6" classifier="data-range-discriminator"/>
+
+         </mapping>
+
+      </mappings>
+
+      <sequences/>
+
+   </data-mapping>
+
+</grid-import-config>
+
 """
 
-_TERMINAL_STRIP_TEMPLATE_LAYOUT = """<?xml version="1.0" encoding="UTF-8"?>
+_TERMINAL_STRIP_TEMPLATE_LAYOUT = r"""<?xml version="1.0" encoding="UTF-8"?>
+
 <Strip>
+
    <strip appVersion="4.9.5.2" xMinChildlessWidth="54.54545454545455" xSize="9745.27" ySize="200.0" flowOn="true" stripMode="synchronized">
+
       <componentList>
-         <Grid contentRotation="270.0" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" identifier="00000000-0000-4000-8000-000000000100" openTerminalSide="NONE" endplateWidthStr="0.0" separatorThickness="1.0">
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
             <childList>
-               <GridEndPlate identifier="00000000-0000-4000-8000-000000000101" xPos="0.0" xSize="0.0" yPos="0.0" ySize="200.0"/>
-               <OuterGridRowCol identifier="00000000-0000-4000-8000-000000000102" orientation="COLUMN" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0"/>
-               <GridCell column="0" row="0" identifier="00000000-0000-4000-8000-000000000103" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0">
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
                   <childList>
-                     <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="00000000-0000-4000-8000-000000000001" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="TEMPLATE" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="632fdf00-c2eb-489e-9696-f8b2fdcd0d5c" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X118" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
                   </childList>
-               </GridCell>
-               <GridRowCol identifier="00000000-0000-4000-8000-000000000104" orientation="ROW" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0"/>
+
+               </OuterGridRowCol>
+
             </childList>
+
          </Grid>
-         <Grid contentRotation="270.0" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" xPos="287.45454545454544" xSize="287.45454545454544" yPos="0.0" ySize="200.0" identifier="00000000-0000-4000-8000-000000000200" openTerminalSide="NONE" endplateWidthStr="0.0" separatorThickness="1.0">
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="302.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
             <childList>
-               <GridEndPlate identifier="00000000-0000-4000-8000-000000000201" xPos="0.0" xSize="0.0" yPos="0.0" ySize="200.0"/>
-               <OuterGridRowCol identifier="00000000-0000-4000-8000-000000000202" orientation="COLUMN" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0"/>
-               <GridCell column="0" row="0" identifier="00000000-0000-4000-8000-000000000203" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0">
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
                   <childList>
-                     <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="00000000-0000-4000-8000-000000000002" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="TEMPLATE_2" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="c8a99856-1f55-4017-b1fd-a11179280d51" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X128" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
                   </childList>
-               </GridCell>
-               <GridRowCol identifier="00000000-0000-4000-8000-000000000204" orientation="ROW" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0"/>
+
+               </OuterGridRowCol>
+
             </childList>
+
          </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="604.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="3c9fc58d-fe15-482a-a88c-54b0239da024" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X138" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="906.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="a17d74cb-82d8-4510-a9fa-33652fc73adc" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X148" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="1208.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="8351c8dc-c716-4148-8c51-5a256c7445a7" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X158" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="1510.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="b206e57a-0433-4734-8afd-4a35c3d6628c" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X218" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="1812.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="24c81d44-0561-42d5-87a8-63bc428519f3" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X228" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="2114.0" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="670.7272727272727" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="670.7272727272727">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="4cf83270-e933-4136-adec-93dbc8324d60" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1112" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="2cef9ab2-9435-472e-9991-952951522641" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1212" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="58e4105e-9231-41a7-a158-fd42a6006493" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1312" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="efe1b1c7-0585-4039-b963-7a69474153dc" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1412" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="29dd90a6-8a42-4b79-b8ce-89f2311947a8" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1512" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="479.09090909090907" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="cf427c1e-22d9-488c-bcaa-536461d5c80a" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2112" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="574.9090909090909" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="a103b3e7-b90c-47f8-ab18-855a33858a13" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2212" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="2799.272727272727" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="cc5ba854-8b43-489c-8357-508f8136a85f" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="PE" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="3101.272727272727" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="9575d38a-9db6-4d51-9df9-a12135f2a3f5" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1113" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="4dba70cd-2aaa-416d-9137-53c6d3916818" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1114" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="3307.454545454545" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="7758a1fc-0962-4d85-981b-c4c6a3e7514d" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1213" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="f108e0cc-c755-4809-9ed4-2c8500a2ccaf" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1214" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="3513.636363636363" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="43cb5f2f-52c6-4b97-823c-8852292e4cfc" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1313" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="8305b914-692a-47b6-992b-9c88bea7d08c" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1314" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="3719.818181818181" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="147fea78-e44b-4c00-bc63-6ee940ae2ce1" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1413" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="6ecf8c45-934a-4fb4-a9a2-e389f4dc00ef" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1414" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="3925.999999999999" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="3bb27d83-4e08-4931-8633-609f766f58e2" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1513" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="33d5c8f3-b321-4d7f-b6e1-51a84faa4642" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1514" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="4132.181818181817" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="230fae17-03cb-4a35-90be-f1b6afa4346e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2113" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="55c7d7f7-0985-47ab-a9cf-f82da6d70176" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2114" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="4338.363636363635" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="b7dbcece-716f-41ae-8ade-4fa0e43c294e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2213" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="bfb02bab-44ba-428a-82fa-25d3d63ac797" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2214" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="4544.545454545453" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="35035078-344d-4a93-9f2e-dee16e38ddb9" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1126" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="4750.727272727271" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="b34d5bc6-89aa-49f0-b411-d2a136262819" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2126" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="4956.909090909089" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="574.9090909090909" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="574.9090909090909">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="5055e802-5ba2-40fe-b598-e849c6d2b9ea" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1912" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e4d0ec64-2615-4f03-a97a-2eaf0f073aa3" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1922" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="79f3982e-a8f2-4047-b7cb-02976b906ab6" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X192A5" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.7"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="55b65716-5576-4600-83c6-753a6a196471" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1953" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="dc41b8fd-534e-44ce-b205-cf5bc7334145" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1954" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="479.09090909090907" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="187b9944-370a-4edf-bfc0-af9e99499376" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1956" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="5546.363636363634" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="2f3910c2-4492-4b0f-abe5-0dba32863e36" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="PE" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="5752.545454545452" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="574.9090909090909" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="574.9090909090909">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="574.9090909090909" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="6b591223-236d-4612-9538-95e96c3c587e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1918" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="521aef25-1941-4d8c-b4d1-7aedb91ab6b8" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1921" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="6b2cfc7a-94e5-450b-b5e9-c1c19281d438" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1924" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="3abfc5e0-8a46-4e48-896e-bc514c474350" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X192A3" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.7"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="ef46f21e-d6c6-4efc-855f-b82e84e1d9b8" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2918" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="479.09090909090907" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="d2c99148-ab1e-442f-879e-924acfd253f0" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X3921" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="6341.999999999997" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="95.81818181818181" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="367cd141-309c-4e73-a04e-ebd7091b303c" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="PE" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="6452.363636363633" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="670.7272727272727" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="670.7272727272727">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="670.7272727272727" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="89ad0474-6cad-4f56-833b-6401123ecdbe" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1931" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="1625e31c-2477-4773-be6e-234b06f11873" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1932" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="a80f5a50-5897-40c7-986d-3bd7a7fa7478" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2931" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="8a9cb002-9566-40bf-b883-aeb9cd14c45a" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X2932" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e48df893-7e3c-4428-af70-440615996517" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6118" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="479.09090909090907" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="b1a0d3f7-9930-41a4-a46b-40364a52ff36" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6211" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="574.9090909090909" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="7266c951-3bcb-4821-b8c7-67f25b2b2568" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6316" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="7137.63636363636" xSize="479.09090909090907" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="479.09090909090907" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="479.09090909090907" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="479.09090909090907">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="479.09090909090907" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e50f1d53-f504-42b2-9ad7-15a7c79d259e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X192A7" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.7"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="444312ed-ed74-41e9-b25d-8504f1caf66e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1935" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="a14a5b5d-ef95-45e1-af60-16cd30b0652c" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X1937" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e14aacbc-9209-4869-8b7e-f483b534f975" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6215" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="22f55fb8-94ae-4805-a7c1-b7b7b8bcb244" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6217" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="7631.272727272724" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="0.0" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="false">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="0.0" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="dcad1566-d52d-4152-b58a-a29f3bae3454" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6221" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="7822.909090909088" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="0.0" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="false">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="95.81818181818181" xSize="0.0" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e2662525-060c-40ab-8c07-ecb9b1a4d456" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6223" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="7918.72727272727" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="a58a6a54-c994-4d73-977d-f5dd94d2c0e5" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6231" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8124.909090909088" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="191.63636363636363" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="191.63636363636363">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="191.63636363636363" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="0825e6c0-0ccb-4f79-881d-fb12c7b0d1cf" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6111" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="1b23664d-1793-45a1-ba78-c4b978161b41" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6112" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8331.090909090906" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="95.81818181818181" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="b8f3dcf2-06b7-4237-b739-b5d1951839ce" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X911" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8441.454545454542" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="95.81818181818181" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="5a975d6a-85ea-4394-b62b-093b19b8536e" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X922" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8551.818181818178" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="95.81818181818181" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="d12d1897-8691-403f-9832-9c6a8324fa59" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="PE" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8662.181818181814" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="287.45454545454544" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="287.45454545454544">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="287.45454545454544" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="cf170dc5-615b-451c-aeed-dd824826b0b2" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X6311" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.9"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
+         <Grid showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="8964.181818181814" xSize="766.5454545454545" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="true" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" endplateWidthStr="14.545454545454547" gridOrientation="VERTICAL" isShowEndLine="true" isShowHoriSeparators="true" isShowStartEndLine="true" isShowStartLine="true" isShowVertSeparators="true" openTerminalSide="RIGHT" separatorThickness="6.0" showEndplateStr="true">
+
+            <childList>
+
+               <GridEndPlate showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="766.5454545454545" xSize="14.545454545454547" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="2.0" contentRotation="0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="true" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0"/>
+
+               <OuterGridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="766.5454545454545" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="VERTICAL">
+
+                  <childList>
+
+                     <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="766.5454545454545">
+
+                        <childList>
+
+                           <GridRowCol showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="766.5454545454545" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" rowColOrientation="HORIZONTAL">
+
+                              <childList>
+
+                                 <GridCell goalHeight="200.0" goalPosX="0.0" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="729307d4-16b8-42e2-a5cf-0a37358ceda4" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X811" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="95.81818181818181" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="075fe402-a6ab-49c3-861f-57bfb6308293" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X812" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="191.63636363636363" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="d015c8d2-05ef-4405-a79a-25640ab18ba3" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X814" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="287.45454545454544" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="5d85422c-1545-4090-a82f-31e8ffc60f59" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X815" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="383.27272727272725" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="fd9fc024-be15-410f-ab3a-00b0b721e161" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X816" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="479.09090909090907" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="5b1e3f40-a77a-48b4-99ca-cae9b2ec9464" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X824" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="574.9090909090909" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="e0b52a9d-8350-4d62-8e31-52037d917e97" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X825" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                                 <GridCell goalHeight="200.0" goalPosX="670.7272727272727" goalPosY="0.0" goalWidth="95.81818181818181">
+
+                                    <childList>
+
+                                       <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="0.0" xSize="95.81818181818181" yPos="0.0" ySize="200.0" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="c482de1c-4346-42a7-a0d9-82794ccb4788" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="0.0" nodeAligmentStr="CENTER" text="-X826" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="1.0"/>
+
+                                    </childList>
+
+                                 </GridCell>
+
+                              </childList>
+
+                           </GridRowCol>
+
+                        </childList>
+
+                     </GridCell>
+
+                  </childList>
+
+               </OuterGridRowCol>
+
+            </childList>
+
+         </Grid>
+
       </componentList>
+
+      <cutMarkerList/>
+
+      <rangeMarkerList/>
+
    </strip>
+
 </Strip>
+
 """
 
 
@@ -128,54 +2045,51 @@ def _terminal_strip_component_style(text: str) -> WsslComponentStyle:
     )
 
 
-def _component_list_grids(component_list: ET.Element) -> list[ET.Element]:
-    """Return top-level Grid blocks used as Terminal Strip clone units."""
+def _validate_terminal_strip_component_list(component_list: ET.Element) -> None:
+    """Validate Terminal Strip componentList preserves real Grid structure."""
     grids = component_list.findall("Grid")
     if not grids:
-        raise ValueError("Terminal Strip WSSL template componentList missing Grid blocks")
-    return grids
-
-
-def _first_grid_wago_text_component(grid: ET.Element) -> ET.Element:
-    """Return the first WagoTextComponent inside the template Grid."""
-    template_component = grid.find(".//WagoTextComponent")
-    if template_component is None:
-        raise ValueError("Terminal Strip WSSL template Grid missing WagoTextComponent")
-    return template_component
-
-
-def _assign_new_identifiers(element: ET.Element) -> None:
-    """Give cloned template nodes fresh UUID identifiers."""
-    for node in element.iter():
-        if "identifier" in node.attrib:
-            node.set("identifier", str(uuid.uuid4()))
-
-
-def _build_terminal_strip_grid(component: WsslComponent, template_grid: ET.Element) -> ET.Element:
-    """Clone one complete top-level Grid and mutate its primary text component."""
-    cloned_grid = deepcopy(template_grid)
-    _assign_new_identifiers(cloned_grid)
-    text_components = cloned_grid.findall(".//WagoTextComponent")
-    if not text_components:
-        raise ValueError("Terminal Strip WSSL template Grid missing WagoTextComponent")
-
-    primary_component = text_components[0]
-    primary_component.set("text", component.text)
-    primary_component.set("textStretchingFactorStr", str(component.style.text_stretching_factor))
-    primary_component.set("bold", str(component.style.bold).lower())
-    for extra_component in text_components[1:]:
-        extra_component.set("text", "")
-    return cloned_grid
-
-
-def _validate_terminal_strip_component_list(component_list: ET.Element) -> None:
-    """Validate generated Terminal Strip componentList contains populated Grid blocks."""
-    generated_grids = component_list.findall("Grid")
-    if not generated_grids:
         raise ValueError("No Grid blocks generated")
-    for generated_grid in generated_grids:
-        if generated_grid.find(".//GridCell/childList/WagoTextComponent") is None:
+    if component_list.findall("WagoTextComponent"):
+        raise ValueError("Terminal Strip componentList contains flat WagoTextComponent nodes")
+    for grid in grids:
+        if grid.find(".//GridCell/childList/WagoTextComponent") is None:
             raise ValueError("Generated Grid missing WagoTextComponent")
+
+
+def _terminal_strip_template_diagnostics(root: ET.Element) -> dict[str, int]:
+    """Return counts used to detect placeholder Terminal Strip WSSL templates."""
+    return {
+        "grid_count": len(root.findall(".//Grid")),
+        "grid_cell_count": len(root.findall(".//GridCell")),
+        "wago_text_component_count": len(root.findall(".//WagoTextComponent")),
+    }
+
+
+def _validate_terminal_strip_template_counts(root: ET.Element) -> None:
+    """Reject placeholder Terminal Strip WSSL templates before generation."""
+    diagnostics = _terminal_strip_template_diagnostics(root)
+    minimum_text_components = len(_TERMINAL_STRIP_DEMO_VALUES)
+    if (
+        diagnostics["grid_count"] < minimum_text_components
+        or diagnostics["grid_cell_count"] < minimum_text_components
+        or diagnostics["wago_text_component_count"] < minimum_text_components
+    ):
+        raise ValueError(
+            _TERMINAL_STRIP_PLACEHOLDER_TEMPLATE_ERROR
+            + " "
+            + (
+                f"Found Grid={diagnostics['grid_count']}, "
+                f"GridCell={diagnostics['grid_cell_count']}, "
+                f"WagoTextComponent={diagnostics['wago_text_component_count']}; "
+                f"need at least {minimum_text_components} each."
+            )
+        )
+
+
+def _template_wago_text_components(component_list: ET.Element) -> list[ET.Element]:
+    """Return existing nested WagoTextComponent nodes from the template."""
+    return component_list.findall(".//GridCell/childList/WagoTextComponent")
 
 
 def _terminal_strip_demo_components() -> list[WsslComponent]:
@@ -187,36 +2101,24 @@ def _terminal_strip_demo_components() -> list[WsslComponent]:
 
 
 def _build_terminal_strip_layout() -> str:
-    """Clone full Grid blocks and replace the template componentList with generated grids."""
+    """Mutate the existing Terminal Strip template text nodes in place."""
     root = ET.fromstring(_TERMINAL_STRIP_TEMPLATE_LAYOUT)
-    strip = root.find("strip")
+    _validate_terminal_strip_template_counts(root)
     component_list = root.find(".//componentList")
-    if strip is None or component_list is None:
-        raise ValueError("Terminal Strip WSSL template missing strip/componentList")
+    if component_list is None:
+        raise ValueError("Terminal Strip WSSL template missing componentList")
 
-    template_grids = _component_list_grids(component_list)
-    template_grid = next(
-        (grid for grid in template_grids if len(grid.findall(".//WagoTextComponent")) == 1),
-        template_grids[0],
-    )
-    grid_x_size = float(template_grid.attrib["xSize"])
-    if len(template_grids) >= 2:
-        grid_step = float(template_grids[1].attrib["xPos"]) - float(template_grids[0].attrib["xPos"])
-    else:
-        grid_step = grid_x_size
-
-    generated_grids = [
-        _build_terminal_strip_grid(component, template_grid)
-        for component in _terminal_strip_demo_components()
-    ]
-    for index, grid in enumerate(generated_grids):
-        grid.set("xPos", str(index * grid_step))
-
-    component_list.clear()
-    for cloned_grid in generated_grids:
-        component_list.append(cloned_grid)
     _validate_terminal_strip_component_list(component_list)
-    strip.set("xSize", str((len(generated_grids) - 1) * grid_step + grid_x_size))
+    text_components = _template_wago_text_components(component_list)
+    demo_components = _terminal_strip_demo_components()
+    for text_component, demo_component in zip(text_components, demo_components):
+        text_component.set("text", demo_component.text)
+        text_component.set("identifier", str(uuid.uuid4()))
+        text_component.set("textStretchingFactorStr", str(demo_component.style.text_stretching_factor))
+        text_component.set("bold", str(demo_component.style.bold).lower())
+    for text_component in text_components[len(demo_components) :]:
+        text_component.set("text", "")
+        text_component.set("identifier", str(uuid.uuid4()))
 
     ET.indent(root, space="   ")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
