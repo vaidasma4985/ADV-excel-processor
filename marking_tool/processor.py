@@ -10,7 +10,12 @@ from .terminal_processor import (
     export_placeholder_workbook,
     process_terminal_result,
 )
-from .wago_processor import build_wago_wscx_bytes
+from .wago_processor import (
+    WAGO_FUSE_STRIP_SETTINGS,
+    WAGO_TERMINAL_STRIP_SETTINGS,
+    build_wago_wscx_bytes,
+)
+from .wago_tmb_processor import build_wago_tmb_wssl_bytes, build_wago_tmb_wssl_filename
 from .wire_processor import build_wire_placeholder_result
 
 
@@ -175,8 +180,7 @@ def build_placeholder_results(
             wago_outputs["terminal_markings"] = {
                 "bytes": build_wago_wscx_bytes(
                     strip_rows=wago_strip_rows,
-                    marking_type="Terminal Strip",
-                    marking_material="2009-110",
+                    settings=WAGO_TERMINAL_STRIP_SETTINGS,
                 ),
                 "filename": build_wago_markings_filename(resolved_project_number, "Terminal Strip"),
             }
@@ -186,17 +190,14 @@ def build_placeholder_results(
             else:
                 developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
             wago_tmb_rows = terminal_result.get("wago_tmb_rows") or []
-            if wago_tmb_rows:
-                wago_outputs["terminal_tmb"] = {
-                    "bytes": build_wago_wscx_bytes(
-                        strip_rows=wago_tmb_rows,
-                        marking_type="Terminal TMB",
-                        marking_material="2009-115",
-                        append_stop=False,
-                    ),
-                    "filename": build_wago_markings_filename(resolved_project_number, "Terminal TMB"),
-                }
-                developer_debug_messages.append(f"WAGO WSCX terminal TMB rows count = {len(wago_tmb_rows)}")
+            wago_outputs["terminal_tmb"] = {
+                "bytes": build_wago_tmb_wssl_bytes(),
+                "filename": build_wago_tmb_wssl_filename(resolved_project_number),
+            }
+            developer_debug_messages.append(
+                "WAGO Terminal TMB WSSL demo generated -> "
+                + f"demo values count = 10; current TMB rows count = {len(wago_tmb_rows)}"
+            )
         elif source_key == "component":
             component_result = process_component_result(
                 file_bytes,
@@ -222,8 +223,7 @@ def build_placeholder_results(
                 wago_outputs["fuse_markings"] = {
                     "bytes": build_wago_wscx_bytes(
                         strip_rows=wago_fuse_strip_rows,
-                        marking_type="Fuse Strip",
-                        marking_material="210-872",
+                        settings=WAGO_FUSE_STRIP_SETTINGS,
                     ),
                     "filename": build_wago_markings_filename(resolved_project_number, "Fuse Strip"),
                 }
