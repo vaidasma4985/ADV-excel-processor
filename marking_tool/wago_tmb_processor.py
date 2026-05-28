@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
+from typing import Any
 import uuid
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -50,6 +52,7 @@ class WagoTerminalTmbComponentStyle:
     text_stretching_factor: float
 
 _WAGO_TMB_DEMO_VALUES = ("1", "2", "3", "", "4", "5", "", "6", "7", "8")
+_GENERATED_TMB_LABELS = {"TOP", "MIDDLE", "BOTTOM"}
 _TMB_FIRST_X_POS = 10.622236114940005
 _TMB_X_POS_STEP = 94.54552815855232
 _TMB_COMPONENT_X_SIZE = 72.37651138670707
@@ -112,17 +115,33 @@ def _xml_attribute_escape(value: str) -> str:
     )
 
 
-def _resolve_tmb_component_style(text: str, settings: WagoTerminalTmbSettings) -> WagoTerminalTmbComponentStyle:
+def _resolve_tmb_label_kind(row: Mapping[str, Any]) -> str:
+    """Classify one TMB row using kind first, with text fallback only when kind is missing."""
+    row_kind = row.get("kind")
+    text = str(row.get("Text", "")).strip()
+    if row_kind in {"group_label", "section_label", "generated_label"}:
+        return "generated_label"
+    if text == "":
+        return "blank"
+    if row_kind is not None:
+        return "real_data"
+    if text.upper() in _GENERATED_TMB_LABELS:
+        return "generated_label"
+    return "real_data"
+
+
+def _resolve_tmb_component_style(row: Mapping[str, Any], settings: WagoTerminalTmbSettings) -> WagoTerminalTmbComponentStyle:
     """Resolve WSSL-only font and fit style for one Terminal TMB value."""
-    normalized_text = text.strip().upper()
-    if normalized_text in {"TOP", "MIDDLE", "BOTTOM"}:
+    label_kind = _resolve_tmb_label_kind(row)
+    text = str(row.get("Text", ""))
+    if label_kind == "generated_label":
         return WagoTerminalTmbComponentStyle(
             bold=settings.section_label_bold,
             font_size=settings.generated_label_font_size,
             text_size=settings.generated_label_font_size,
             text_stretching_factor=1.0,
         )
-    if not normalized_text:
+    if label_kind == "blank":
         return WagoTerminalTmbComponentStyle(
             bold=False,
             font_size=settings.data_font_size,
@@ -142,9 +161,10 @@ def _resolve_tmb_component_style(text: str, settings: WagoTerminalTmbSettings) -
     )
 
 
-def _build_wago_text_component(text: str, x_pos: float) -> str:
+def _build_wago_text_component(row: Mapping[str, Any], x_pos: float) -> str:
     """Build one flat Terminal TMB WagoTextComponent."""
-    style = _resolve_tmb_component_style(text, WAGO_TERMINAL_TMB_SETTINGS)
+    text = str(row.get("Text", ""))
+    style = _resolve_tmb_component_style(row, WAGO_TERMINAL_TMB_SETTINGS)
     return _TMB_TEXT_COMPONENT_TEMPLATE.format(
         identifier=str(uuid.uuid4()),
         text=_xml_attribute_escape(text),
@@ -158,28 +178,39 @@ def _build_wago_text_component(text: str, x_pos: float) -> str:
     )
 
 
-def _build_strip_layout() -> str:
+def _tmb_rows_for_output(tmb_rows: list[dict[str, Any]] | None) -> list[Mapping[str, Any]]:
+    """Use real TMB rows when present; keep demo rows as fallback only."""
+    if tmb_rows:
+        return tmb_rows
+    return [
+        {"Text": value, "kind": "blank" if value == "" else "normal"}
+        for value in _WAGO_TMB_DEMO_VALUES
+    ]
+
+
+def _build_strip_layout(tmb_rows: list[dict[str, Any]] | None = None) -> str:
     """Build the flat working Terminal TMB strip.layout shape."""
+    output_rows = _tmb_rows_for_output(tmb_rows)
     component_positions = [
         _TMB_FIRST_X_POS + ((index - 1) * _TMB_X_POS_STEP)
-        for index, _ in enumerate(_WAGO_TMB_DEMO_VALUES, start=1)
+        for index, _ in enumerate(output_rows, start=1)
     ]
     strip_x_size = max(
         x_pos + _TMB_COMPONENT_X_SIZE
         for x_pos in component_positions
     ) + _TMB_STRIP_RIGHT_MARGIN
     components = "".join(
-        _build_wago_text_component(text, x_pos)
-        for text, x_pos in zip(_WAGO_TMB_DEMO_VALUES, component_positions)
+        _build_wago_text_component(row, x_pos)
+        for row, x_pos in zip(output_rows, component_positions)
     )
     return _TMB_STRIP_LAYOUT_OPEN_TEMPLATE.format(x_size=str(strip_x_size)) + components + _TMB_STRIP_LAYOUT_CLOSE
 
 
-def build_wago_tmb_wssl_bytes() -> bytes:
+def build_wago_tmb_wssl_bytes(tmb_rows: list[dict[str, Any]] | None = None) -> bytes:
     """Build a demo Terminal TMB WSSL ZIP with the flat componentList template."""
     output = BytesIO()
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("version.info", _TMB_TEMPLATE_VERSION_INFO.encode("utf-8"))
-        archive.writestr("strip.layout", _build_strip_layout().encode("utf-8"))
+        archive.writestr("strip.layout", _build_strip_layout(tmb_rows).encode("utf-8"))
         archive.writestr("meta.data", _TMB_TEMPLATE_META_DATA.encode("utf-8"))
     return output.getvalue()

@@ -52,7 +52,7 @@ WAGO_FUSE_STRIP_SETTINGS = WagoWscxSettings(
     generated_label_font_size=7,
 )
 
-_WAGO_STOP_ROW = {"Space": 6.2, "Text": "STOP", "kind": "normal"}
+_WAGO_STOP_ROW = {"Space": 6.2, "Text": "STOP", "kind": "generated_label"}
 _GENERATED_LABEL_PATTERN = re.compile(r"^(?:A\d+|\d+V(?:AC|DC)|TOP|MIDDLE|BOTTOM|STOP)$", re.IGNORECASE)
 
 
@@ -145,11 +145,13 @@ def _build_wago_strip_block(strip_rows: list[dict[str, Any]], settings: WagoWscx
 def _resolve_wago_label_kind(strip_row: Mapping[str, Any]) -> str:
     """Classify one WAGO row as blank, generated label, or real marking data."""
     row_kind = strip_row.get("kind")
-    if row_kind in {"group_label", "blank_separator", "section_label", "generated_label"}:
+    if row_kind in {"group_label", "section_label", "generated_label"}:
         return "generated_label"
     text = str(strip_row.get("Text", "")).strip()
-    if not text:
+    if text == "":
         return "blank"
+    if row_kind is not None:
+        return "real_data"
     if _GENERATED_LABEL_PATTERN.match(text):
         return "generated_label"
     return "real_data"

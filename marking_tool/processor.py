@@ -191,12 +191,12 @@ def build_placeholder_results(
                 developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
             wago_tmb_rows = terminal_result.get("wago_tmb_rows") or []
             wago_outputs["terminal_tmb"] = {
-                "bytes": build_wago_tmb_wssl_bytes(),
+                "bytes": build_wago_tmb_wssl_bytes(wago_tmb_rows),
                 "filename": build_wago_tmb_wssl_filename(resolved_project_number),
             }
             developer_debug_messages.append(
-                "WAGO Terminal TMB WSSL demo generated -> "
-                + f"demo values count = 10; current TMB rows count = {len(wago_tmb_rows)}"
+                "WAGO Terminal TMB WSSL generated -> "
+                + f"terminal TMB rows count = {len(wago_tmb_rows)}"
             )
         elif source_key == "component":
             component_result = process_component_result(
