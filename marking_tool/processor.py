@@ -16,6 +16,7 @@ from .wago_processor import (
     build_wago_wscx_bytes,
 )
 from .wago_tmb_processor import build_wago_tmb_wssl_bytes, build_wago_tmb_wssl_filename
+from .wago_wssl_processor import build_terminal_strip_wssl_bytes, build_terminal_strip_wssl_filename
 from .wire_processor import build_wire_placeholder_result
 
 
@@ -153,6 +154,7 @@ def build_placeholder_results(
     }
     wago_outputs: dict[str, dict[str, bytes | str] | None] = {
         "terminal_markings": None,
+        "terminal_strip_wssl": None,
         "terminal_tmb": None,
         "fuse_markings": None,
         "markings_zip": None,
@@ -184,11 +186,16 @@ def build_placeholder_results(
                 ),
                 "filename": build_wago_markings_filename(resolved_project_number, "Terminal Strip"),
             }
+            wago_outputs["terminal_strip_wssl"] = {
+                "bytes": build_terminal_strip_wssl_bytes(),
+                "filename": build_terminal_strip_wssl_filename(resolved_project_number),
+            }
             developer_debug_messages.append("WAGO WSCX generated")
             if wago_strip_rows:
                 developer_debug_messages.append(f"WAGO WSCX terminal strip rows count = {len(wago_strip_rows)}")
             else:
                 developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
+            developer_debug_messages.append("WAGO Terminal Strip WSSL demo generated")
             wago_tmb_rows = terminal_result.get("wago_tmb_rows") or []
             wago_outputs["terminal_tmb"] = {
                 "bytes": build_wago_tmb_wssl_bytes(wago_tmb_rows),
@@ -236,7 +243,7 @@ def build_placeholder_results(
 
     wago_files = [
         wago_file
-        for output_key in ("terminal_markings", "terminal_tmb", "fuse_markings")
+        for output_key in ("terminal_markings", "terminal_strip_wssl", "terminal_tmb", "fuse_markings")
         for wago_file in [wago_outputs.get(output_key)]
         if wago_file
     ]
