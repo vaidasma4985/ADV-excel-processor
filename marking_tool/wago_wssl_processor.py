@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from io import BytesIO
+import pprint
+from typing import Any
 import uuid
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -19,6 +22,8 @@ class WsslTemplateFile:
 class WsslComponentStyle:
     """Visual overrides for one cloned WSSL text component."""
 
+    font: str
+    font_size: float
     bold: bool
     text_stretching_factor: float
 
@@ -31,11 +36,48 @@ class WsslComponent:
     style: WsslComponentStyle
 
 
-_TERMINAL_STRIP_DEMO_VALUES = ("-X118", "-X1112", "-X192A5", "", "-X6311", "-X6312", "", "STOP")
+_TERMINAL_STRIP_WSSL_SCALE = 18.18181818181818
+
+# SmartScript UI font size -> WSSL fontSize/textSize conversion
+# Verified from real WAGO template.
+WSSL_FONT_SIZE_MULTIPLIER = 6.414141414141415
+_VERIFIED_WSSL_UI_FONT_SIZES = {
+    5.0: 32.07070707070707,
+    6.0: 38.484848484848484,
+    7.0: 44.898989898989896,
+    8.0: 51.313131313131315,
+    9.0: 57.72727272727273,
+    10.0: 64.14141414141415,
+    11.0: 70.55555555555556,
+}
+TERMINAL_STRIP_DATA_UI_FONT_SIZE = 10
+TERMINAL_STRIP_LABEL_UI_FONT_SIZE = 7
+FUSE_STRIP_DATA_UI_FONT_SIZE = 10
+FUSE_STRIP_LABEL_UI_FONT_SIZE = 7
 _TERMINAL_STRIP_PLACEHOLDER_TEMPLATE_ERROR = (
     "Embedded Terminal Strip WSSL template is still placeholder/wrong. "
     "Replace it with full real strip.layout from 2605-078 terminal strip template.wssl."
 )
+_TERMINAL_STRIP_ALLOWED_TEXT_ATTR_CHANGES = {
+    "text",
+    "identifier",
+    "xSize",
+    "font",
+    "fontSize",
+    "textSize",
+    "textStretchingFactorStr",
+    "bold",
+}
+_TERMINAL_STRIP_ALIGNMENT_ATTRS = {
+    "xPos",
+    "yPos",
+    "tlbrPadding",
+    "textAlignmentStr",
+    "nodeAligmentStr",
+    "lineSpacingStr",
+    "contentRotation",
+    "contentRotationAnchor",
+}
 
 _TERMINAL_STRIP_TEMPLATE_VERSION = r"""<?xml version="1.0" encoding="UTF-8"?>
 
@@ -2018,6 +2060,14 @@ _TERMINAL_STRIP_TEMPLATE_LAYOUT = r"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def ui_font_to_wssl_size(ui_size: float) -> float:
+    """Convert SmartScript UI font size to WSSL fontSize/textSize units."""
+    verified_size = _VERIFIED_WSSL_UI_FONT_SIZES.get(float(ui_size))
+    if verified_size is not None:
+        return verified_size
+    return ui_size * WSSL_FONT_SIZE_MULTIPLIER
+
+
 def build_terminal_strip_wssl_filename(project_number: str | None) -> str:
     """Build the Terminal Strip WSSL filename."""
     project_prefix = project_number or "1"
@@ -2034,14 +2084,29 @@ def _resolve_terminal_strip_stretch(text: str) -> float:
     return 0.7
 
 
-def _terminal_strip_component_style(text: str) -> WsslComponentStyle:
-    """Resolve Terminal Strip demo style for data, blanks, and generated STOP."""
+def _terminal_strip_component_style(text: str, kind: str | None = None) -> WsslComponentStyle:
+    """Resolve Terminal Strip WSSL style for real data and generated labels."""
     normalized_text = text.strip().upper()
-    is_stop = normalized_text == "STOP"
-    is_blank = text == ""
+    is_generated = normalized_text in {"START", "STOP"} or kind in {
+        "cabinet_label",
+        "generated_label",
+        "group_header",
+        "group_label",
+        "header",
+        "section_label",
+    }
+    if is_generated:
+        return WsslComponentStyle(
+            font="Arial",
+            font_size=ui_font_to_wssl_size(TERMINAL_STRIP_LABEL_UI_FONT_SIZE),
+            bold=False,
+            text_stretching_factor=1.0,
+        )
     return WsslComponentStyle(
-        bold=not (is_stop or is_blank),
-        text_stretching_factor=1.0 if is_stop or is_blank else _resolve_terminal_strip_stretch(text),
+        font="Arial",
+        font_size=ui_font_to_wssl_size(TERMINAL_STRIP_DATA_UI_FONT_SIZE),
+        bold=True,
+        text_stretching_factor=_resolve_terminal_strip_stretch(text),
     )
 
 
@@ -2069,7 +2134,7 @@ def _terminal_strip_template_diagnostics(root: ET.Element) -> dict[str, int]:
 def _validate_terminal_strip_template_counts(root: ET.Element) -> None:
     """Reject placeholder Terminal Strip WSSL templates before generation."""
     diagnostics = _terminal_strip_template_diagnostics(root)
-    minimum_text_components = len(_TERMINAL_STRIP_DEMO_VALUES)
+    minimum_text_components = 1
     if (
         diagnostics["grid_count"] < minimum_text_components
         or diagnostics["grid_cell_count"] < minimum_text_components
@@ -2089,18 +2154,439 @@ def _validate_terminal_strip_template_counts(root: ET.Element) -> None:
 
 def _template_wago_text_components(component_list: ET.Element) -> list[ET.Element]:
     """Return existing nested WagoTextComponent nodes from the template."""
+    rendered_components = [
+        text_component
+        for text_component in component_list.findall(".//GridCell/childList/WagoTextComponent")
+        if text_component.get("text", "") != ""
+    ]
+    if rendered_components:
+        return rendered_components
     return component_list.findall(".//GridCell/childList/WagoTextComponent")
 
 
-def _terminal_strip_demo_components() -> list[WsslComponent]:
-    """Build demo Terminal Strip WSSL components."""
+def _grid_wago_text_components(grid: ET.Element) -> list[ET.Element]:
+    """Return nested WagoTextComponent nodes for one top-level Grid."""
+    return grid.findall(".//GridCell/childList/WagoTextComponent")
+
+
+def _reusable_terminal_strip_grids(component_list: ET.Element) -> list[ET.Element]:
+    """Return top-level Grid units that carry one rendered text component."""
+    reusable_grids: list[ET.Element] = []
+    for grid in component_list.findall("Grid"):
+        text_components = _grid_wago_text_components(grid)
+        if len(text_components) == 1 and text_components[0].get("text", "") != "":
+            reusable_grids.append(grid)
+    return reusable_grids
+
+
+def _float_attr(element: ET.Element, attr_name: str) -> float:
+    """Read a floating-point XML attribute."""
+    return float(element.get(attr_name, "0") or "0")
+
+
+def _format_wssl_float(value: float) -> str:
+    """Format generated WSSL float attrs compactly without changing template precision elsewhere."""
+    return str(value)
+
+
+def _refresh_identifiers(element: ET.Element) -> None:
+    """Assign new UUIDs to every identifier-bearing node in a cloned template subtree."""
+    for child in element.iter():
+        if "identifier" in child.attrib:
+            child.set("identifier", str(uuid.uuid4()))
+
+
+def _terminal_strip_grid_endplate_width(grid: ET.Element) -> float:
+    """Return the endplate width used as spacing between top-level WSSL Grid units."""
+    if grid.get("endplateWidthStr") is not None:
+        return _float_attr(grid, "endplateWidthStr")
+    grid_endplate = grid.find(".//GridEndPlate")
+    if grid_endplate is not None:
+        return _float_attr(grid_endplate, "xSize")
+    return 0.0
+
+
+def _terminal_strip_wssl_width(space: float) -> float:
+    """Convert one Markings Space value to WSSL layout units."""
+    return space * _TERMINAL_STRIP_WSSL_SCALE
+
+
+def _terminal_strip_grid_row_col(grid: ET.Element) -> ET.Element:
+    """Return the horizontal GridRowCol that owns the rendered terminal cells."""
+    grid_row_col = grid.find("./childList/OuterGridRowCol/childList/GridCell/childList/GridRowCol")
+    if grid_row_col is None:
+        raise ValueError("Terminal Strip WSSL template Grid missing nested GridRowCol")
+    return grid_row_col
+
+
+def _terminal_strip_grid_row_col_child_list(grid: ET.Element) -> ET.Element:
+    """Return the childList containing nested terminal GridCell nodes."""
+    grid_row_col_child_list = _terminal_strip_grid_row_col(grid).find("./childList")
+    if grid_row_col_child_list is None:
+        raise ValueError("Terminal Strip WSSL template GridRowCol missing childList")
+    return grid_row_col_child_list
+
+
+def _terminal_strip_outer_grid_row_col(grid: ET.Element) -> ET.Element:
+    """Return the top-level OuterGridRowCol for one terminal Grid block."""
+    outer_grid_row_col = grid.find("./childList/OuterGridRowCol")
+    if outer_grid_row_col is None:
+        raise ValueError("Terminal Strip WSSL template Grid missing OuterGridRowCol")
+    return outer_grid_row_col
+
+
+def _terminal_strip_outer_grid_cell(grid: ET.Element) -> ET.Element:
+    """Return the outer GridCell that wraps the horizontal terminal cells."""
+    outer_grid_cell = grid.find("./childList/OuterGridRowCol/childList/GridCell")
+    if outer_grid_cell is None:
+        raise ValueError("Terminal Strip WSSL template Grid missing outer GridCell")
+    return outer_grid_cell
+
+
+def _terminal_strip_grid_endplate(grid: ET.Element) -> ET.Element:
+    """Return the GridEndPlate for one terminal Grid block."""
+    grid_endplate = grid.find("./childList/GridEndPlate")
+    if grid_endplate is None:
+        raise ValueError("Terminal Strip WSSL template Grid missing GridEndPlate")
+    return grid_endplate
+
+
+def _first_terminal_strip_grid_template(component_list: ET.Element) -> ET.Element:
+    """Return a full reusable top-level Grid template."""
+    reusable_grids = _reusable_terminal_strip_grids(component_list)
+    if not reusable_grids:
+        raise ValueError("Terminal Strip WSSL template missing reusable nested Grid")
+    return reusable_grids[0]
+
+
+def _first_terminal_strip_cell_template(component_list: ET.Element) -> ET.Element:
+    """Return a reusable nested GridCell template; generated width comes from strip_rows."""
+    grid_template = _first_terminal_strip_grid_template(component_list)
+    for grid_cell in _terminal_strip_grid_row_col_child_list(grid_template).findall("GridCell"):
+        if grid_cell.find("./childList/WagoTextComponent") is not None:
+            return grid_cell
+    raise ValueError("Terminal Strip WSSL template missing reusable nested GridCell")
+
+
+def _first_populated_wago_text_component(component_list: ET.Element) -> ET.Element:
+    """Return the first template text component that is actually carrying label text."""
+    for text_component in component_list.findall(".//GridCell/childList/WagoTextComponent"):
+        if text_component.get("text", "") != "":
+            return text_component
+    raise ValueError("Terminal Strip WSSL template missing populated WagoTextComponent")
+
+
+def _format_terminal_strip_attr_diff(
+    original_attrs: dict[str, str],
+    generated_attrs: dict[str, str],
+) -> dict[str, tuple[str | None, str | None]]:
+    """Return all attribute differences between original and generated text nodes."""
+    attr_names = sorted(set(original_attrs) | set(generated_attrs))
+    return {
+        attr_name: (original_attrs.get(attr_name), generated_attrs.get(attr_name))
+        for attr_name in attr_names
+        if original_attrs.get(attr_name) != generated_attrs.get(attr_name)
+    }
+
+
+def _dump_terminal_strip_text_diagnostics(
+    original_attrs: dict[str, str],
+    generated_component: ET.Element,
+) -> None:
+    """Dump developer diagnostics for the first rendered WSSL text component."""
+    generated_attrs = dict(generated_component.attrib)
+    attr_diff = _format_terminal_strip_attr_diff(original_attrs, generated_attrs)
+    unexpected_diff = {
+        attr_name: values
+        for attr_name, values in attr_diff.items()
+        if attr_name not in _TERMINAL_STRIP_ALLOWED_TEXT_ATTR_CHANGES
+    }
+    alignment_diff = {
+        attr_name: values
+        for attr_name, values in attr_diff.items()
+        if attr_name in _TERMINAL_STRIP_ALIGNMENT_ATTRS
+        or attr_name.startswith("transform")
+        or attr_name.startswith("contentRotation")
+    }
+    diagnostics = {
+        "original_first_populated_template_label": original_attrs,
+        "generated_first_label": generated_attrs,
+        "all_attribute_differences": attr_diff,
+        "unexpected_attribute_differences": unexpected_diff,
+        "alignment_attribute_differences": alignment_diff,
+    }
+    print("terminal strip WSSL text diagnostics:")
+    pprint.pprint(diagnostics, sort_dicts=True)
+
+
+def _safe_terminal_strip_space(value: Any) -> float:
+    """Normalize one WAGO Space value for Terminal Strip WSSL diagnostics."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _derive_terminal_strip_row_kind(row: dict[str, Any], text: str) -> str:
+    """Resolve a normalized WSSL row kind without changing row order or content."""
+    row_kind = row.get("kind")
+    if row_kind:
+        return str(row_kind)
+    if text == "":
+        return "blank"
+    if text.strip().upper() in {"START", "STOP"}:
+        return "generated_label"
+    return "real_data"
+
+
+def _normalize_terminal_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Normalize real WAGO strip rows for Terminal Strip WSSL generation."""
+    normalized_rows: list[dict[str, Any]] = []
+    for row in strip_rows or []:
+        text = str(row.get("Text") or "")
+        space = _safe_terminal_strip_space(row.get("Space"))
+        normalized_rows.append(
+            {
+                "space": space,
+                "text": text,
+                "kind": _derive_terminal_strip_row_kind(row, text),
+            }
+        )
+    return normalized_rows
+
+
+def build_terminal_strip_wssl_debug_messages(strip_rows: list[dict[str, Any]] | None = None) -> list[str]:
+    """Build developer debug messages for Terminal Strip WSSL row plumbing."""
+    normalized_rows = _normalize_terminal_strip_wssl_rows(strip_rows)
+    if not normalized_rows:
+        return ["Terminal Strip WSSL received no strip_rows; generated layout will be empty"]
+
+    blank_row_count = sum(1 for row in normalized_rows if row["text"] == "")
+    non_empty_label_count = len(normalized_rows) - blank_row_count
+    preview_rows = [
+        {
+            "Space": row["space"],
+            "Text": row["text"],
+            "Generated width": _terminal_strip_wssl_width(float(row["space"])),
+            "Generated type": "ENDPLATE" if row["text"] == "" else "TEXT",
+        }
+        for row in normalized_rows[:20]
+    ]
+    messages = [
+        f"Terminal Strip WSSL total strip_rows count = {len(normalized_rows)}",
+        f"Terminal Strip WSSL total generated Grid count = {_count_terminal_strip_grid_groups(normalized_rows)}",
+        f"Terminal Strip WSSL total generated text cells = {non_empty_label_count}",
+        f"Terminal Strip WSSL total generated endplates = {blank_row_count}",
+        "Terminal Strip WSSL first 20 generated items -> " + repr(preview_rows),
+        "Terminal Strip WSSL geometry source: strip_rows Space/Text only; width = Space * 18.18181818181818",
+    ]
+    return messages
+
+
+def _terminal_strip_rows_for_layout(strip_rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Return normalized real rows only."""
+    return _normalize_terminal_strip_wssl_rows(strip_rows)
+
+
+def _apply_terminal_strip_row_to_text_component(
+    text_component: ET.Element,
+    row: dict[str, Any],
+) -> None:
+    """Apply one normalized Terminal Strip row to a nested WagoTextComponent."""
+    style = _terminal_strip_component_style(str(row["text"]), str(row["kind"]))
+    text_component.set("text", str(row["text"]))
+    text_component.set("identifier", str(uuid.uuid4()))
+    text_component.set("font", style.font)
+    text_component.set("fontSize", _format_wssl_float(style.font_size))
+    text_component.set("textSize", _format_wssl_float(style.font_size))
+    text_component.set("textStretchingFactorStr", str(style.text_stretching_factor))
+    text_component.set("bold", str(style.bold).lower())
+
+
+def _set_terminal_strip_cell_geometry(
+    grid_cell: ET.Element,
+    row: dict[str, Any],
+    goal_pos_x: float,
+) -> None:
+    """Update one nested terminal GridCell and its text component to row width."""
+    width = _terminal_strip_wssl_width(float(row["space"]))
+    grid_cell.set("goalPosX", _format_wssl_float(goal_pos_x))
+    grid_cell.set("goalWidth", _format_wssl_float(width))
+    text_component = grid_cell.find("./childList/WagoTextComponent")
+    if text_component is None:
+        raise ValueError("Terminal Strip WSSL nested GridCell missing WagoTextComponent")
+    text_component.set("xSize", _format_wssl_float(width))
+    _apply_terminal_strip_row_to_text_component(text_component, row)
+
+
+def _set_terminal_strip_grid_group_geometry(
+    grid: ET.Element,
+    x_pos: float,
+    content_width: float,
+    endplate_width: float,
+) -> None:
+    """Update the top-level Grid wrapper dimensions while preserving template nesting."""
+    grid.set("xPos", _format_wssl_float(x_pos))
+    grid.set("xSize", _format_wssl_float(content_width))
+    grid.set("endplateWidthStr", _format_wssl_float(endplate_width))
+    grid.set("showEndplateStr", "true" if endplate_width > 0 else "false")
+
+    grid_endplate = _terminal_strip_grid_endplate(grid)
+    grid_endplate.set("xPos", _format_wssl_float(content_width))
+    grid_endplate.set("xSize", _format_wssl_float(endplate_width))
+    grid_endplate.set("isShowBorder", "true" if endplate_width > 0 else "false")
+
+    outer_grid_row_col = _terminal_strip_outer_grid_row_col(grid)
+    outer_grid_row_col.set("xSize", _format_wssl_float(content_width))
+
+    outer_grid_cell = _terminal_strip_outer_grid_cell(grid)
+    outer_grid_cell.set("goalWidth", _format_wssl_float(content_width))
+
+    grid_row_col = _terminal_strip_grid_row_col(grid)
+    grid_row_col.set("xSize", _format_wssl_float(content_width))
+
+
+def _build_terminal_strip_group_grid(
+    grid_template: ET.Element,
+    cell_template: ET.Element,
+    group_rows: list[dict[str, Any]],
+    x_pos: float,
+    endplate_width: float,
+) -> ET.Element:
+    """Clone one full template Grid and fill it with the group's non-blank cells."""
+    if not group_rows:
+        raise ValueError("Terminal Strip WSSL cannot build an empty Grid group")
+
+    cloned_grid = copy.deepcopy(grid_template)
+    _refresh_identifiers(cloned_grid)
+    row_col_child_list = _terminal_strip_grid_row_col_child_list(cloned_grid)
+    for child in list(row_col_child_list):
+        row_col_child_list.remove(child)
+
+    next_cell_x_pos = 0.0
+    for row in group_rows:
+        cloned_cell = copy.deepcopy(cell_template)
+        _refresh_identifiers(cloned_cell)
+        _set_terminal_strip_cell_geometry(cloned_cell, row, next_cell_x_pos)
+        row_col_child_list.append(cloned_cell)
+        next_cell_x_pos += _terminal_strip_wssl_width(float(row["space"]))
+
+    _set_terminal_strip_grid_group_geometry(
+        cloned_grid,
+        x_pos=x_pos,
+        content_width=next_cell_x_pos,
+        endplate_width=endplate_width,
+    )
+    return cloned_grid
+
+
+def _replace_terminal_strip_grids_from_rows(
+    strip: ET.Element,
+    component_list: ET.Element,
+    normalized_rows: list[dict[str, Any]],
+) -> list[ET.Element]:
+    """Replace componentList with grouped Grid blocks; blank rows become endplates."""
+    grid_template = _first_terminal_strip_grid_template(component_list)
+    cell_template = _first_terminal_strip_cell_template(component_list)
+    for child in list(component_list):
+        component_list.remove(child)
+
+    generated_grids: list[ET.Element] = []
+    current_group_rows: list[dict[str, Any]] = []
+    current_group_x_pos = 0.0
+    next_x_pos = 0.0
+    for row in normalized_rows:
+        row_width = _terminal_strip_wssl_width(float(row["space"]))
+        if row["text"] == "":
+            if current_group_rows:
+                cloned_grid = _build_terminal_strip_group_grid(
+                    grid_template,
+                    cell_template,
+                    current_group_rows,
+                    current_group_x_pos,
+                    row_width,
+                )
+                component_list.append(cloned_grid)
+                generated_grids.append(cloned_grid)
+                current_group_rows = []
+            next_x_pos += row_width
+            current_group_x_pos = next_x_pos
+            continue
+
+        if not current_group_rows:
+            current_group_x_pos = next_x_pos
+        current_group_rows.append(row)
+        next_x_pos += row_width
+
+    if current_group_rows:
+        cloned_grid = _build_terminal_strip_group_grid(
+            grid_template,
+            cell_template,
+            current_group_rows,
+            current_group_x_pos,
+            0.0,
+        )
+        component_list.append(cloned_grid)
+        generated_grids.append(cloned_grid)
+
+    strip.set("xSize", _format_wssl_float(next_x_pos))
+    return generated_grids
+
+
+def _terminal_strip_generated_item_preview(normalized_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return developer preview rows showing generated item type and width."""
     return [
-        WsslComponent(text=text, style=_terminal_strip_component_style(text))
-        for text in _TERMINAL_STRIP_DEMO_VALUES
+        {
+            "Space": row["space"],
+            "Text": row["text"],
+            "Generated width": _terminal_strip_wssl_width(float(row["space"])),
+            "Generated type": "ENDPLATE" if row["text"] == "" else "TEXT",
+        }
+        for row in normalized_rows[:20]
     ]
 
 
-def _build_terminal_strip_layout() -> str:
+def _count_terminal_strip_grid_groups(normalized_rows: list[dict[str, Any]]) -> int:
+    """Count top-level Grid groups generated from normalized rows."""
+    group_count = 0
+    has_open_group = False
+    for row in normalized_rows:
+        if row["text"] == "":
+            if has_open_group:
+                group_count += 1
+                has_open_group = False
+            continue
+        has_open_group = True
+    if has_open_group:
+        group_count += 1
+    return group_count
+
+
+def _print_terminal_strip_generation_diagnostics(
+    normalized_rows: list[dict[str, Any]],
+    generated_grids: list[ET.Element],
+    text_components: list[ET.Element],
+) -> None:
+    """Print developer verification for generated Terminal Strip WSSL."""
+    generated_text_count = len([node for node in text_components if node.get("text")])
+    generated_endplate_count = sum(1 for row in normalized_rows if row["text"] == "")
+    print("Terminal Strip WSSL developer verification:")
+    print(f"  total strip_rows count = {len(normalized_rows)}")
+    print(f"  total generated Grid count = {len(generated_grids)}")
+    print(f"  total generated text cells = {generated_text_count}")
+    print(f"  total generated endplates = {generated_endplate_count}")
+    print("  first 20 generated items:")
+    pprint.pprint(_terminal_strip_generated_item_preview(normalized_rows), sort_dicts=False)
+    print("  no hardcoded texts: generated text values are copied from strip_rows Text")
+    print("  no hardcoded cell count: generated counts are derived from strip_rows")
+    print(
+        "  no hardcoded widths except conversion factor: "
+        + f"width = strip_rows Space * {_TERMINAL_STRIP_WSSL_SCALE}"
+    )
+    print("  all generated geometry comes from strip_rows Space values")
+
+
+def _build_terminal_strip_layout(strip_rows: list[dict[str, Any]] | None = None) -> str:
     """Mutate the existing Terminal Strip template text nodes in place."""
     root = ET.fromstring(_TERMINAL_STRIP_TEMPLATE_LAYOUT)
     _validate_terminal_strip_template_counts(root)
@@ -2109,16 +2595,20 @@ def _build_terminal_strip_layout() -> str:
         raise ValueError("Terminal Strip WSSL template missing componentList")
 
     _validate_terminal_strip_component_list(component_list)
-    text_components = _template_wago_text_components(component_list)
-    demo_components = _terminal_strip_demo_components()
-    for text_component, demo_component in zip(text_components, demo_components):
-        text_component.set("text", demo_component.text)
-        text_component.set("identifier", str(uuid.uuid4()))
-        text_component.set("textStretchingFactorStr", str(demo_component.style.text_stretching_factor))
-        text_component.set("bold", str(demo_component.style.bold).lower())
-    for text_component in text_components[len(demo_components) :]:
-        text_component.set("text", "")
-        text_component.set("identifier", str(uuid.uuid4()))
+    original_first_label_attrs = dict(_first_populated_wago_text_component(component_list).attrib)
+    strip = root.find(".//strip")
+    if strip is None:
+        raise ValueError("Terminal Strip WSSL template missing strip node")
+    normalized_rows = _terminal_strip_rows_for_layout(strip_rows)
+    generated_grids = _replace_terminal_strip_grids_from_rows(strip, component_list, normalized_rows)
+    text_components = [
+        text_component
+        for grid in generated_grids
+        for text_component in _grid_wago_text_components(grid)
+    ]
+    _print_terminal_strip_generation_diagnostics(normalized_rows, generated_grids, text_components)
+    if text_components:
+        _dump_terminal_strip_text_diagnostics(original_first_label_attrs, text_components[0])
 
     ET.indent(root, space="   ")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
@@ -2133,12 +2623,12 @@ def _build_wssl_zip_bytes(template_files: list[WsslTemplateFile]) -> bytes:
     return output.getvalue()
 
 
-def build_terminal_strip_wssl_bytes() -> bytes:
-    """Build a demo Terminal Strip WSSL archive using Grid-based template cloning."""
+def build_terminal_strip_wssl_bytes(strip_rows: list[dict[str, Any]] | None = None) -> bytes:
+    """Build a Terminal Strip WSSL archive using Grid-based template mutation."""
     return _build_wssl_zip_bytes(
         [
             WsslTemplateFile("version.info", _TERMINAL_STRIP_TEMPLATE_VERSION.encode("utf-8")),
-            WsslTemplateFile("strip.layout", _build_terminal_strip_layout().encode("utf-8")),
+            WsslTemplateFile("strip.layout", _build_terminal_strip_layout(strip_rows).encode("utf-8")),
             WsslTemplateFile("meta.data", _TERMINAL_STRIP_TEMPLATE_METADATA.encode("utf-8")),
             WsslTemplateFile("table.config", _TERMINAL_STRIP_TEMPLATE_TABLE_CONFIG.encode("utf-8")),
             WsslTemplateFile("import.config", _TERMINAL_STRIP_TEMPLATE_IMPORT_CONFIG.encode("utf-8")),
