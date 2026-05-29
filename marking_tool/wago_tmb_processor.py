@@ -7,40 +7,44 @@ from typing import Any
 import uuid
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from marking_tool.wago_wssl_processor import ui_font_to_wssl_size
+
+
+# SmartScript UI font size -> WSSL fontSize/textSize conversion
+# Verified from real WAGO template.
+TMB_DATA_UI_FONT_SIZE = 10
+TMB_LABEL_UI_FONT_SIZE = 7
+
 
 @dataclass(frozen=True)
 class WagoTerminalTmbSettings:
     """Immutable WSSL export settings for Terminal TMB."""
 
     marking_type: str
+    format_name: str
     material_number: str
     template_id: str
-    font_face: str
-    data_bold: bool
-    group_label_bold: bool
-    section_label_bold: bool
-    format_name: str
+    data_font_face: str
+    data_font_bold: bool
+    tmb_section_label_bold: bool
     saved_with_app_version: str
     work_direction: str
-    generated_label_font_size: int
-    section_label_font_size: float
-    data_font_size: float
+    tmb_section_label_ui_font_size: float
+    tmb_data_ui_font_size: float
 
 
-WAGO_TERMINAL_TMB_SETTINGS = WagoTerminalTmbSettings(
+TERMINAL_TMB_WSSL_SETTINGS = WagoTerminalTmbSettings(
     marking_type="Terminal TMB",
+    format_name="WSSL",
     material_number="2009-115",
     template_id="20090115",
-    font_face="Arial",
-    data_bold=True,
-    group_label_bold=False,
-    section_label_bold=False,
-    format_name="WSSL",
+    data_font_face="Arial",
+    data_font_bold=True,
+    tmb_section_label_bold=False,
     saved_with_app_version="4.9.5.3",
     work_direction="HORIZONTAL",
-    generated_label_font_size=7,
-    section_label_font_size=40.0,
-    data_font_size=64.14141414141415,
+    tmb_section_label_ui_font_size=TMB_LABEL_UI_FONT_SIZE,
+    tmb_data_ui_font_size=TMB_DATA_UI_FONT_SIZE,
 )
 
 
@@ -61,13 +65,13 @@ _TMB_COMPONENT_X_SIZE = 72.37651138670707
 _TMB_STRIP_RIGHT_MARGIN = 10.0
 
 _TMB_TEMPLATE_VERSION_INFO = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Version version="{WAGO_TERMINAL_TMB_SETTINGS.saved_with_app_version}"/>
+<Version version="{TERMINAL_TMB_WSSL_SETTINGS.saved_with_app_version}"/>
 """
 
 _TMB_TEMPLATE_META_DATA = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MetaData>
    <metadata projectType="UserProject">
-      <description>{WAGO_TERMINAL_TMB_SETTINGS.marking_type}</description>
+      <description>{TERMINAL_TMB_WSSL_SETTINGS.marking_type}</description>
       <customerName></customerName>
       <OrderNumber></OrderNumber>
       <customerNumber></customerNumber>
@@ -75,9 +79,9 @@ _TMB_TEMPLATE_META_DATA = f"""<?xml version="1.0" encoding="UTF-8"?>
       <creator></creator>
       <auditor></auditor>
       <auditTime></auditTime>
-      <templateID>{WAGO_TERMINAL_TMB_SETTINGS.template_id}</templateID>
-      <savedWithAppVersion>{WAGO_TERMINAL_TMB_SETTINGS.saved_with_app_version}</savedWithAppVersion>
-      <workDirection>{WAGO_TERMINAL_TMB_SETTINGS.work_direction}</workDirection>
+      <templateID>{TERMINAL_TMB_WSSL_SETTINGS.template_id}</templateID>
+      <savedWithAppVersion>{TERMINAL_TMB_WSSL_SETTINGS.saved_with_app_version}</savedWithAppVersion>
+      <workDirection>{TERMINAL_TMB_WSSL_SETTINGS.work_direction}</workDirection>
       <creationTime></creationTime>
       <ModificationTime></ModificationTime>
       <printTime></printTime>
@@ -136,18 +140,20 @@ def _resolve_tmb_component_style(row: Mapping[str, Any], settings: WagoTerminalT
     """Resolve WSSL-only font and fit style for one Terminal TMB value."""
     label_kind = _resolve_tmb_label_kind(row)
     text = str(row.get("Text", ""))
+    data_font_size = ui_font_to_wssl_size(settings.tmb_data_ui_font_size)
+    section_label_font_size = ui_font_to_wssl_size(settings.tmb_section_label_ui_font_size)
     if label_kind == "generated_label":
         return WagoTerminalTmbComponentStyle(
-            bold=settings.section_label_bold,
-            font_size=settings.section_label_font_size,
-            text_size=settings.section_label_font_size,
+            bold=settings.tmb_section_label_bold,
+            font_size=section_label_font_size,
+            text_size=section_label_font_size,
             text_stretching_factor=0.42,
         )
     if label_kind == "blank":
         return WagoTerminalTmbComponentStyle(
             bold=False,
-            font_size=settings.data_font_size,
-            text_size=settings.data_font_size,
+            font_size=data_font_size,
+            text_size=data_font_size,
             text_stretching_factor=1.0,
         )
     text_length = len(text)
@@ -160,24 +166,28 @@ def _resolve_tmb_component_style(row: Mapping[str, Any], settings: WagoTerminalT
     else:
         text_stretching_factor = 0.42
     return WagoTerminalTmbComponentStyle(
-        bold=settings.data_bold,
-        font_size=settings.data_font_size,
-        text_size=settings.data_font_size,
+        bold=settings.data_font_bold,
+        font_size=data_font_size,
+        text_size=data_font_size,
         text_stretching_factor=text_stretching_factor,
     )
 
 
-def _build_wago_text_component(row: Mapping[str, Any], x_pos: float) -> str:
+def _build_wago_text_component(
+    row: Mapping[str, Any],
+    x_pos: float,
+    settings: WagoTerminalTmbSettings,
+) -> str:
     """Build one flat Terminal TMB WagoTextComponent."""
     text = str(row.get("Text", ""))
-    style = _resolve_tmb_component_style(row, WAGO_TERMINAL_TMB_SETTINGS)
+    style = _resolve_tmb_component_style(row, settings)
     return _TMB_TEXT_COMPONENT_TEMPLATE.format(
         identifier=str(uuid.uuid4()),
         text=_xml_attribute_escape(text),
         x_pos=str(x_pos),
         x_size=str(_TMB_COMPONENT_X_SIZE),
         bold=str(style.bold).lower(),
-        font=_xml_attribute_escape(WAGO_TERMINAL_TMB_SETTINGS.font_face),
+        font=_xml_attribute_escape(settings.data_font_face),
         font_size=str(style.font_size),
         text_size=str(style.text_size),
         text_stretching_factor=str(style.text_stretching_factor),
@@ -194,7 +204,11 @@ def _tmb_rows_for_output(tmb_rows: list[dict[str, Any]] | None) -> list[Mapping[
     ]
 
 
-def _build_strip_layout(tmb_rows: list[dict[str, Any]] | None = None) -> str:
+def _build_strip_layout(
+    tmb_rows: list[dict[str, Any]] | None = None,
+    *,
+    settings: WagoTerminalTmbSettings,
+) -> str:
     """Build the flat working Terminal TMB strip.layout shape."""
     output_rows = _tmb_rows_for_output(tmb_rows)
     component_positions = [
@@ -206,17 +220,25 @@ def _build_strip_layout(tmb_rows: list[dict[str, Any]] | None = None) -> str:
         for x_pos in component_positions
     ) + _TMB_STRIP_RIGHT_MARGIN
     components = "".join(
-        _build_wago_text_component(row, x_pos)
+        _build_wago_text_component(row, x_pos, settings)
         for row, x_pos in zip(output_rows, component_positions)
     )
     return _TMB_STRIP_LAYOUT_OPEN_TEMPLATE.format(x_size=str(strip_x_size)) + components + _TMB_STRIP_LAYOUT_CLOSE
 
 
-def build_wago_tmb_wssl_bytes(tmb_rows: list[dict[str, Any]] | None = None) -> bytes:
-    """Build a demo Terminal TMB WSSL ZIP with the flat componentList template."""
+def build_terminal_tmb_wssl_bytes(tmb_rows: list[dict[str, Any]] | None = None) -> bytes:
+    """Build production Terminal TMB WSSL using its isolated profile."""
     output = BytesIO()
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("version.info", _TMB_TEMPLATE_VERSION_INFO.encode("utf-8"))
-        archive.writestr("strip.layout", _build_strip_layout(tmb_rows).encode("utf-8"))
+        archive.writestr(
+            "strip.layout",
+            _build_strip_layout(tmb_rows, settings=TERMINAL_TMB_WSSL_SETTINGS).encode("utf-8"),
+        )
         archive.writestr("meta.data", _TMB_TEMPLATE_META_DATA.encode("utf-8"))
     return output.getvalue()
+
+
+def build_wago_tmb_wssl_bytes(tmb_rows: list[dict[str, Any]] | None = None) -> bytes:
+    """Backward-compatible alias for Terminal TMB WSSL generation."""
+    return build_terminal_tmb_wssl_bytes(tmb_rows)

@@ -2709,6 +2709,25 @@ def _build_component_wago_strip_rows(strip_layout: dict[str, Any]) -> list[dict[
     return wago_rows
 
 
+def _build_component_wago_relay_strip_rows(strip_layout: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose final relay strip Space/Text rows from an existing Component Strip layout."""
+    relay_strip_df = strip_layout.get(
+        "relay_strip_df",
+        pd.DataFrame(columns=_COMPONENT_STRIP_SIDE_COLUMNS),
+    )
+    wago_rows: list[dict[str, Any]] = []
+    for row in relay_strip_df.loc[:, _COMPONENT_STRIP_SIDE_COLUMNS].to_dict(orient="records"):
+        text = _stringify_cell(row.get("Text"))
+        if text in {_RELAY_STRIP_START_TEXT, _RELAY_STRIP_STOP_TEXT}:
+            row["kind"] = "generated_label"
+        elif text == "":
+            row["kind"] = "blank_separator"
+        else:
+            row["kind"] = "normal"
+        wago_rows.append(row)
+    return wago_rows
+
+
 def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the Component Strip layout with fuse strip on the left and relay strip on the right."""
     empty_strip_layout = _build_component_strip_layout([], [])
@@ -3809,6 +3828,9 @@ def process_component_result(
     wago_fuse_strip_rows = _build_component_wago_strip_rows(
         component_strip_sheet if routing_mode == "no_cabinet" else localized_component_strip_sheet
     )
+    wago_relay_strip_rows = _build_component_wago_relay_strip_rows(
+        component_strip_sheet if routing_mode == "no_cabinet" else localized_component_strip_sheet
+    )
     if multi_cabinet_cm_mode:
         wago_fuse_strip_rows = cabinet_wago_fuse_strip_rows
 
@@ -3818,6 +3840,7 @@ def process_component_result(
         "relay_xmlil_marking_groups": relay_xmlil_marking_groups,
         "relay_xmlil_bytes": relay_xmlil_bytes,
         "wago_fuse_strip_rows": wago_fuse_strip_rows,
+        "wago_relay_strip_rows": wago_relay_strip_rows,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": ui_component_debug_messages,
         "debug_workbook": component_debug_workbook,
