@@ -16,6 +16,12 @@ from .wago_processor import (
 )
 from .wago_tmb_processor import build_terminal_tmb_wssl_bytes, build_wago_tmb_wssl_filename
 from .wago_wssl_processor import (
+    build_fuse_strip_wssl_bytes,
+    build_fuse_strip_wssl_debug_messages,
+    build_fuse_strip_wssl_filename,
+    build_relay_strip_wssl_bytes,
+    build_relay_strip_wssl_debug_messages,
+    build_relay_strip_wssl_filename,
     build_terminal_strip_wssl_bytes,
     build_terminal_strip_wssl_debug_messages,
     build_terminal_strip_wssl_filename,
@@ -160,6 +166,8 @@ def build_placeholder_results(
         "terminal_strip_wssl": None,
         "terminal_tmb": None,
         "fuse_markings": None,
+        "fuse_strip_wssl": None,
+        "relay_strip_wssl": None,
         "markings_zip": None,
     }
 
@@ -235,6 +243,18 @@ def build_placeholder_results(
                     "filename": build_wago_markings_filename(resolved_project_number, "Fuse Strip"),
                 }
                 developer_debug_messages.append("Fuse Strip WSCX profile used")
+                wago_outputs["fuse_strip_wssl"] = {
+                    "bytes": build_fuse_strip_wssl_bytes(wago_fuse_strip_rows),
+                    "filename": build_fuse_strip_wssl_filename(resolved_project_number),
+                }
+                developer_debug_messages.extend(build_fuse_strip_wssl_debug_messages(wago_fuse_strip_rows))
+            wago_relay_strip_rows = component_result.get("wago_relay_strip_rows") or []
+            if wago_relay_strip_rows:
+                wago_outputs["relay_strip_wssl"] = {
+                    "bytes": build_relay_strip_wssl_bytes(wago_relay_strip_rows),
+                    "filename": build_relay_strip_wssl_filename(resolved_project_number),
+                }
+                developer_debug_messages.extend(build_relay_strip_wssl_debug_messages(wago_relay_strip_rows))
         else:
             wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
             sheets[sheet_name] = wire_sheet
@@ -244,7 +264,12 @@ def build_placeholder_results(
 
     wago_files = [
         wago_file
-        for output_key in ("terminal_markings", "terminal_strip_wssl", "terminal_tmb", "fuse_markings")
+        for output_key in (
+            "terminal_strip_wssl",
+            "fuse_strip_wssl",
+            "relay_strip_wssl",
+            "terminal_tmb",
+        )
         for wago_file in [wago_outputs.get(output_key)]
         if wago_file
     ]
