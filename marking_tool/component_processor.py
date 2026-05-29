@@ -212,7 +212,7 @@ _F92_FUSE_PATTERN = re.compile(r"^-F92", re.IGNORECASE)
 _FUSE_STRIP_WIDTH = 6.2
 _FUSE_STRIP_COVERED_WIDTH = 8.3
 _FUSE_STRIP_SEPARATE_COVER_WIDTH = 2.1
-_FUSE_STRIP_230VAC_SEPARATOR_SPACE = 5.15
+_FUSE_STRIP_230VAC_SEPARATOR_SPACE = 5.8
 _RELAY_STRIP_START_STOP_SPACE = 6.2
 _RELAY_STRIP_1POLE_WIDTH = 6.2
 _RELAY_STRIP_2POLE_WIDTH = 15.8
@@ -2728,6 +2728,17 @@ def _build_component_wago_relay_strip_rows(strip_layout: dict[str, Any]) -> list
     return wago_rows
 
 
+def _build_component_wago_fuses_2009_rows(component_cm_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Expose the final Component Marking FUSES / Wago 2009-115 column values."""
+    _, fuse_block_df, _ = _split_final_component_cm_layout(component_cm_df)
+    if fuse_block_df.empty or _COMPONENT_FINAL_FUSES_BLOCK_TITLE not in fuse_block_df.columns:
+        return []
+    return [
+        {"Text": _stringify_cell(text_value)}
+        for text_value in fuse_block_df[_COMPONENT_FINAL_FUSES_BLOCK_TITLE].tolist()
+    ]
+
+
 def _build_component_strip_df(component_marking_sheet_df: pd.DataFrame) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the Component Strip layout with fuse strip on the left and relay strip on the right."""
     empty_strip_layout = _build_component_strip_layout([], [])
@@ -3510,7 +3521,9 @@ def process_component_result(
     )
     developer_debug_messages.append("component strip: fuse rows sorted by numeric Name key")
     developer_debug_messages.append("component strip: fuse A-suffix sort applied after normal fuse numbers")
-    developer_debug_messages.append("fuse strip: replaced 230VAC label with 5.15 spacing")
+    developer_debug_messages.append(
+        f"fuse strip: replaced 230VAC label with {_FUSE_STRIP_230VAC_SEPARATOR_SPACE} spacing"
+    )
     developer_debug_messages.append(
         "component strip supported widths -> "
         f"fuse={_FUSE_STRIP_WIDTH}, "
@@ -3831,6 +3844,7 @@ def process_component_result(
     wago_relay_strip_rows = _build_component_wago_relay_strip_rows(
         component_strip_sheet if routing_mode == "no_cabinet" else localized_component_strip_sheet
     )
+    wago_fuses_2009_rows = _build_component_wago_fuses_2009_rows(component_cm_sheet)
     if multi_cabinet_cm_mode:
         wago_fuse_strip_rows = cabinet_wago_fuse_strip_rows
 
@@ -3841,6 +3855,7 @@ def process_component_result(
         "relay_xmlil_bytes": relay_xmlil_bytes,
         "wago_fuse_strip_rows": wago_fuse_strip_rows,
         "wago_relay_strip_rows": wago_relay_strip_rows,
+        "wago_fuses_2009_rows": wago_fuses_2009_rows,
         "user_info_messages": user_info_messages,
         "developer_debug_messages": ui_component_debug_messages,
         "debug_workbook": component_debug_workbook,

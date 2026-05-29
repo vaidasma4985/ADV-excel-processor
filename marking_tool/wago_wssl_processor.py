@@ -44,8 +44,6 @@ _FUSE_STRIP_CONTENT_ROTATION = "270.0"
 _RELAY_STRIP_WSSL_SCALE = WSSL_WIDTH_SCALE
 _RELAY_STRIP_Y_SIZE = 363.6363636363636
 _RELAY_STRIP_CONTENT_ROTATION = "0.0"
-_STRIP_START_STOP_SPACE = 6.2
-_STRIP_START_STOP_CONTENT_ROTATION = "270.0"
 
 # SmartScript UI font size -> WSSL fontSize/textSize conversion
 # Verified from real WAGO template.
@@ -65,6 +63,17 @@ FUSE_STRIP_DATA_UI_FONT_SIZE = 10
 FUSE_STRIP_LABEL_UI_FONT_SIZE = 7
 RELAY_STRIP_DATA_UI_FONT_SIZE = 10
 RELAY_STRIP_LABEL_UI_FONT_SIZE = 7
+FUSES_2009_DATA_UI_FONT_SIZE = 10
+FUSES_2009_LABEL_UI_FONT_SIZE = 7
+FUSES_2009_FIRST_X_POS = 10.622236114940005
+FUSES_2009_X_STEP = 94.54545454545455
+FUSES_2009_COMPONENT_X_SIZE = 72.37651138670707
+FUSES_2009_RIGHT_MARGIN = 10.0
+_FUSES_2009_STRIP_Y_SIZE = 174.54545454545453
+_FUSES_2009_COMPONENT_Y_POS = 14.544026374816895
+_FUSES_2009_COMPONENT_Y_SIZE = 145.44900608062744
+_FUSES_2009_CONTENT_ROTATION = "270.0"
+_FUSES_2009_TEXT_STRETCH = 0.5
 _TERMINAL_STRIP_PLACEHOLDER_TEMPLATE_ERROR = (
     "Embedded Terminal Strip WSSL template is still placeholder/wrong. "
     "Replace it with full real strip.layout from 2605-078 terminal strip template.wssl."
@@ -234,7 +243,65 @@ _TERMINAL_STRIP_TEMPLATE_TABLE_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"
 
 """
 
+_FUSES_2009_TEMPLATE_METADATA = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<MetaData>
+
+   <metadata projectType="UserProject">
+
+      <description>FUSES</description>
+
+      <customerName></customerName>
+
+      <OrderNumber></OrderNumber>
+
+      <customerNumber></customerNumber>
+
+      <plantNumber></plantNumber>
+
+      <creator></creator>
+
+      <auditor></auditor>
+
+      <auditTime>null</auditTime>
+
+      <templateID>20090115</templateID>
+
+      <savedWithAppVersion>4.9.5.2</savedWithAppVersion>
+
+      <workDirection>HORIZONTAL</workDirection>
+
+      <creationTime>2026-05-25T10:51:24</creationTime>
+
+      <ModificationTime>2026-05-25T13:12:22</ModificationTime>
+
+      <printTime>null</printTime>
+
+   </metadata>
+
+</MetaData>
+
+"""
+
 _FUSE_STRIP_TEMPLATE_TABLE_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<table-config>
+
+   <file-path>Y:\JE-ELKAS\21.0 Litauen\ADVANCOR\2605-078\2605-078_Markings.xlsx</file-path>
+
+   <sheetName>Component markings</sheetName>
+
+   <firstRowIsHeader>false</firstRowIsHeader>
+
+   <column-separator>COMMA</column-separator>
+
+   <row-separator>NEW_LINE</row-separator>
+
+</table-config>
+
+"""
+
+_FUSES_2009_TEMPLATE_TABLE_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
 
 <table-config>
 
@@ -317,6 +384,30 @@ _FUSE_STRIP_TEMPLATE_IMPORT_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
    </data-mapping>
 
 </grid-import-config>
+
+"""
+
+_FUSES_2009_TEMPLATE_IMPORT_CONFIG = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<import-config/>
+
+"""
+
+_FUSES_2009_TEMPLATE_LAYOUT = r"""<?xml version="1.0" encoding="UTF-8"?>
+
+<Strip>
+
+   <strip appVersion="4.9.5.2" xMinChildlessWidth="54.54545454545455" xSize="92.99874750164707" ySize="174.54545454545453" flowOn="false" stripMode="synchronized">
+
+      <componentList>
+
+         <WagoTextComponent showLeftBorder="true" showTopBorder="true" showRightBorder="true" showBottomBorder="true" xPos="10.622236114940005" xSize="72.37651138670707" yPos="14.544026374816895" ySize="145.44900608062744" bdrColor="#000000FF" bdrRadius="0.0" borderSize="0.0" contentRotation="270.0" isDraggable="false" isInGroup="false" isMouseTransparent="false" isShowBorder="false" lockStatus="UNLOCKED" tlbrPadding="0.0:0.0:0.0:0.0" identifier="d9646d25-1620-45b3-bc8e-f355d8e91c49" bold="true" fgColor="#000000FF" font="smartFont" fontSize="64.14141414141415" italic="false" lineSpacingStr="-9.621212121212121" nodeAligmentStr="CENTER" text="" textAlignmentStr="CENTER" textSize="64.14141414141415" textStretchingFactorStr="0.5"/>
+
+      </componentList>
+
+   </strip>
+
+</Strip>
 
 """
 
@@ -2229,6 +2320,12 @@ def build_relay_strip_wssl_filename(project_number: str | None) -> str:
     return f"{project_prefix}_Relay Strip.wssl"
 
 
+def build_fuses_2009_wssl_filename(project_number: str | None) -> str:
+    """Build the Component Marking FUSES 2009-115 WSSL filename."""
+    project_prefix = project_number or "1"
+    return f"{project_prefix}_Fuses.wssl"
+
+
 def _resolve_terminal_strip_stretch(text: str) -> float:
     """Resolve demo Terminal Strip WSSL text stretching."""
     text_length = len(text)
@@ -2241,8 +2338,7 @@ def _resolve_terminal_strip_stretch(text: str) -> float:
 
 def _terminal_strip_component_style(text: str, kind: str | None = None) -> WsslComponentStyle:
     """Resolve Terminal Strip WSSL style for real data and generated labels."""
-    normalized_text = text.strip().upper()
-    is_generated = normalized_text in {"START", "STOP"} or kind in {
+    is_generated = kind in {
         "cabinet_label",
         "generated_label",
         "group_header",
@@ -2482,46 +2578,6 @@ def _safe_terminal_strip_space(value: Any) -> float:
         return 0.0
 
 
-def _is_strip_start_stop_text(text: str) -> bool:
-    """Return whether a text value is a generated strip boundary label."""
-    return text.strip().upper() in {"START", "STOP"}
-
-
-def _start_stop_row(label: str, space: float) -> dict[str, Any]:
-    """Build one normalized START/STOP row."""
-    return {
-        "space": space,
-        "text": label,
-        "kind": "generated_label",
-    }
-
-
-def _ensure_strip_start_stop_rows(
-    normalized_rows: list[dict[str, Any]],
-    default_space: float = _STRIP_START_STOP_SPACE,
-) -> list[dict[str, Any]]:
-    """Ensure START is the first text cell and STOP is the last, without duplicates."""
-    start_space = default_space
-    stop_space = default_space
-    body_rows: list[dict[str, Any]] = []
-
-    for row in normalized_rows:
-        normalized_text = str(row["text"]).strip().upper()
-        if normalized_text == "START":
-            start_space = float(row["space"])
-            continue
-        if normalized_text == "STOP":
-            stop_space = float(row["space"])
-            continue
-        body_rows.append(row)
-
-    return [
-        _start_stop_row("START", start_space),
-        *body_rows,
-        _start_stop_row("STOP", stop_space),
-    ]
-
-
 def _derive_terminal_strip_row_kind(row: dict[str, Any], text: str) -> str:
     """Resolve a normalized WSSL row kind without changing row order or content."""
     row_kind = row.get("kind")
@@ -2529,8 +2585,6 @@ def _derive_terminal_strip_row_kind(row: dict[str, Any], text: str) -> str:
         return str(row_kind)
     if text == "":
         return "blank"
-    if text.strip().upper() in {"START", "STOP"}:
-        return "generated_label"
     return "real_data"
 
 
@@ -2547,7 +2601,7 @@ def _normalize_terminal_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None)
                 "kind": _derive_terminal_strip_row_kind(row, text),
             }
         )
-    return _ensure_strip_start_stop_rows(normalized_rows)
+    return normalized_rows
 
 
 def build_terminal_strip_wssl_debug_messages(strip_rows: list[dict[str, Any]] | None = None) -> list[str]:
@@ -2596,8 +2650,6 @@ def _apply_terminal_strip_row_to_text_component(
     text_component.set("textSize", _format_wssl_float(style.font_size))
     text_component.set("textStretchingFactorStr", str(style.text_stretching_factor))
     text_component.set("bold", str(style.bold).lower())
-    if _is_strip_start_stop_text(str(row["text"])):
-        text_component.set("contentRotation", _STRIP_START_STOP_CONTENT_ROTATION)
 
 
 def _set_terminal_strip_cell_geometry(
@@ -2783,33 +2835,6 @@ def _print_terminal_strip_generation_diagnostics(
     print("  all generated geometry comes from strip_rows Space values")
 
 
-def _validate_strip_start_stop_text_components(
-    text_components: list[ET.Element],
-    strip_name: str,
-) -> None:
-    """Validate shared START/STOP placement and generated-label style."""
-    if len(text_components) < 2:
-        raise ValueError(f"{strip_name} WSSL generated fewer than two text components")
-    if text_components[0].get("text") != "START":
-        raise ValueError(f"{strip_name} WSSL START is not the first generated text cell")
-    if text_components[-1].get("text") != "STOP":
-        raise ValueError(f"{strip_name} WSSL STOP is not the last generated text cell")
-
-    expected_size = _format_wssl_float(ui_font_to_wssl_size(7))
-    for label_component in (text_components[0], text_components[-1]):
-        label_text = label_component.get("text", "")
-        if label_component.get("font") != "Arial":
-            raise ValueError(f"{strip_name} WSSL {label_text} does not use Arial")
-        if label_component.get("fontSize") != expected_size or label_component.get("textSize") != expected_size:
-            raise ValueError(f"{strip_name} WSSL {label_text} does not use UI size 7 WSSL scale")
-        if label_component.get("bold") != "false":
-            raise ValueError(f"{strip_name} WSSL {label_text} is bold")
-        if label_component.get("contentRotation") != _STRIP_START_STOP_CONTENT_ROTATION:
-            raise ValueError(f"{strip_name} WSSL {label_text} contentRotation is not 270.0")
-        if label_component.get("textStretchingFactorStr") != "1.0":
-            raise ValueError(f"{strip_name} WSSL {label_text} stretching is not 1.0")
-
-
 def _build_terminal_strip_layout(strip_rows: list[dict[str, Any]] | None = None) -> str:
     """Mutate the existing Terminal Strip template text nodes in place."""
     root = ET.fromstring(_TERMINAL_STRIP_TEMPLATE_LAYOUT)
@@ -2831,7 +2856,6 @@ def _build_terminal_strip_layout(strip_rows: list[dict[str, Any]] | None = None)
         for text_component in _grid_wago_text_components(grid)
     ]
     _print_terminal_strip_generation_diagnostics(normalized_rows, generated_grids, text_components)
-    _validate_strip_start_stop_text_components(text_components, "Terminal Strip")
     if text_components:
         _dump_terminal_strip_text_diagnostics(original_first_label_attrs, text_components[0])
 
@@ -2852,7 +2876,7 @@ def _derive_fuse_strip_row_kind(row: dict[str, Any], text: str) -> str:
     normalized_text = text.strip().upper()
     if text == "":
         return "blank"
-    if normalized_text in {"START", "STOP", "24VDC", "230VAC"}:
+    if normalized_text in {"24VDC", "230VAC"}:
         return "generated_label"
     return "real_data"
 
@@ -2870,13 +2894,13 @@ def _normalize_fuse_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None) -> 
                 "kind": _derive_fuse_strip_row_kind(row, text),
             }
         )
-    return _ensure_strip_start_stop_rows(normalized_rows)
+    return normalized_rows
 
 
 def _fuse_strip_component_style(text: str, kind: str | None = None) -> WsslComponentStyle:
     """Resolve Fuse Strip WSSL style for fuse data and generated labels."""
     normalized_text = text.strip().upper()
-    is_generated = normalized_text in {"START", "STOP", "24VDC", "230VAC"} or kind in {
+    is_generated = normalized_text in {"24VDC", "230VAC"} or kind in {
         "cabinet_label",
         "generated_label",
         "group_header",
@@ -3155,7 +3179,6 @@ def _build_fuse_strip_layout(strip_rows: list[dict[str, Any]] | None = None) -> 
         for text_component in _grid_wago_text_components(grid)
     ]
     _validate_fuse_strip_generated_layout(strip, component_list, normalized_rows, generated_grids)
-    _validate_strip_start_stop_text_components(text_components, "Fuse Strip")
     strip_x_size = sum(_fuse_strip_wssl_width(float(row["space"])) for row in normalized_rows)
     for message in _fuse_strip_generation_debug_messages(
         normalized_rows,
@@ -3180,11 +3203,8 @@ def _derive_relay_strip_row_kind(row: dict[str, Any], text: str) -> str:
     row_kind = row.get("kind")
     if row_kind:
         return str(row_kind)
-    normalized_text = text.strip().upper()
     if text == "":
         return "blank"
-    if normalized_text in {"START", "STOP"}:
-        return "generated_label"
     return "real_data"
 
 
@@ -3201,13 +3221,12 @@ def _normalize_relay_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None) ->
                 "kind": _derive_relay_strip_row_kind(row, text),
             }
         )
-    return _ensure_strip_start_stop_rows(normalized_rows)
+    return normalized_rows
 
 
-def _relay_strip_component_style(text: str, kind: str | None = None) -> WsslComponentStyle:
-    """Resolve Relay Strip WSSL style for relay data and generated labels."""
-    normalized_text = text.strip().upper()
-    is_generated = normalized_text in {"START", "STOP"} or kind in {
+def _is_generated_label_kind(kind: str | None) -> bool:
+    """Return whether a normalized row kind should use generated-label styling."""
+    return kind in {
         "cabinet_label",
         "generated_label",
         "group_header",
@@ -3215,7 +3234,11 @@ def _relay_strip_component_style(text: str, kind: str | None = None) -> WsslComp
         "header",
         "section_label",
     }
-    if is_generated:
+
+
+def _relay_strip_component_style(text: str, kind: str | None = None) -> WsslComponentStyle:
+    """Resolve Relay Strip WSSL style for relay data and generated labels."""
+    if _is_generated_label_kind(kind):
         return WsslComponentStyle(
             font="Arial",
             font_size=ui_font_to_wssl_size(RELAY_STRIP_LABEL_UI_FONT_SIZE),
@@ -3242,11 +3265,7 @@ def _apply_relay_strip_row_to_text_component(
     text_component.set("fontSize", _format_wssl_float(style.font_size))
     text_component.set("textSize", _format_wssl_float(style.font_size))
     text_component.set("bold", str(style.bold).lower())
-    content_rotation = (
-        _STRIP_START_STOP_CONTENT_ROTATION
-        if _is_strip_start_stop_text(str(row["text"]))
-        else _RELAY_STRIP_CONTENT_ROTATION
-    )
+    content_rotation = _FUSE_STRIP_CONTENT_ROTATION if _is_generated_label_kind(str(row["kind"])) else _RELAY_STRIP_CONTENT_ROTATION
     text_component.set("contentRotation", content_rotation)
     text_component.set("textStretchingFactorStr", str(style.text_stretching_factor))
 
@@ -3489,7 +3508,6 @@ def _build_relay_strip_layout(strip_rows: list[dict[str, Any]] | None = None) ->
         for text_component in _grid_wago_text_components(grid)
     ]
     _validate_relay_strip_generated_layout(strip, component_list, normalized_rows, generated_grids)
-    _validate_strip_start_stop_text_components(text_components, "Relay Strip")
     strip_x_size = sum(_relay_strip_wssl_width(float(row["space"])) for row in normalized_rows)
     for message in _relay_strip_generation_debug_messages(
         normalized_rows,
@@ -3500,9 +3518,179 @@ def _build_relay_strip_layout(strip_rows: list[dict[str, Any]] | None = None) ->
     if any(
         text_component.get("contentRotation") != _RELAY_STRIP_CONTENT_ROTATION
         for text_component in text_components
-        if not _is_strip_start_stop_text(text_component.get("text", ""))
+        if not _is_generated_label_kind(
+            next(
+                (
+                    str(row["kind"])
+                    for row in normalized_rows
+                    if row["text"] == text_component.get("text", "")
+                ),
+                None,
+            )
+        )
     ):
         raise ValueError("Relay Strip WSSL generated text component has wrong contentRotation")
+
+    ET.indent(root, space="   ")
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+
+def _normalize_fuses_2009_text(text: str) -> str:
+    """Normalize Component Marking FUSES block labels for Wago 2009-115."""
+    stripped_text = text.strip()
+    if stripped_text == "Fuses 24VDC":
+        return "24VDC"
+    if stripped_text == "Fuses 230VAC":
+        return "230VAC"
+    return stripped_text
+
+
+def _normalize_fuses_2009_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Normalize source Component Marking FUSES / Wago 2009-115 values."""
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows or []:
+        text = _normalize_fuses_2009_text(str(row.get("Text") or ""))
+        kind = "blank"
+        if text in {"24VDC", "230VAC"}:
+            kind = "group_label"
+        elif text != "":
+            kind = "real_data"
+        normalized_rows.append({"text": text, "kind": kind})
+    return normalized_rows
+
+
+def _fuses_2009_component_style(text: str, kind: str) -> WsslComponentStyle:
+    """Resolve flat FUSES WSSL text style."""
+    if kind == "group_label":
+        return WsslComponentStyle(
+            font="Arial",
+            font_size=ui_font_to_wssl_size(FUSES_2009_LABEL_UI_FONT_SIZE),
+            bold=False,
+            text_stretching_factor=_FUSES_2009_TEXT_STRETCH,
+        )
+    if text == "":
+        return WsslComponentStyle(
+            font="Arial",
+            font_size=ui_font_to_wssl_size(FUSES_2009_LABEL_UI_FONT_SIZE),
+            bold=False,
+            text_stretching_factor=_FUSES_2009_TEXT_STRETCH,
+        )
+    return WsslComponentStyle(
+        font="Arial",
+        font_size=ui_font_to_wssl_size(FUSES_2009_DATA_UI_FONT_SIZE),
+        bold=True,
+        text_stretching_factor=_FUSES_2009_TEXT_STRETCH,
+    )
+
+
+def _apply_fuses_2009_row_to_text_component(
+    text_component: ET.Element,
+    row: dict[str, Any],
+    index: int,
+) -> None:
+    """Apply one FUSES 2009-115 source row to a cloned flat WagoTextComponent."""
+    text = str(row["text"])
+    style = _fuses_2009_component_style(text, str(row["kind"]))
+    text_component.set("text", text)
+    text_component.set("xPos", _format_wssl_float(FUSES_2009_FIRST_X_POS + index * FUSES_2009_X_STEP))
+    text_component.set("xSize", _format_wssl_float(FUSES_2009_COMPONENT_X_SIZE))
+    text_component.set("yPos", _format_wssl_float(_FUSES_2009_COMPONENT_Y_POS))
+    text_component.set("ySize", _format_wssl_float(_FUSES_2009_COMPONENT_Y_SIZE))
+    text_component.set("identifier", str(uuid.uuid4()))
+    text_component.set("font", style.font)
+    text_component.set("fontSize", _format_wssl_float(style.font_size))
+    text_component.set("textSize", _format_wssl_float(style.font_size))
+    text_component.set("bold", str(style.bold).lower())
+    text_component.set("contentRotation", _FUSES_2009_CONTENT_ROTATION)
+    text_component.set("textStretchingFactorStr", str(style.text_stretching_factor))
+
+
+def _fuses_2009_generated_values_preview(normalized_rows: list[dict[str, Any]]) -> list[str]:
+    """Return the first generated FUSES values for developer diagnostics."""
+    return [str(row["text"]) for row in normalized_rows[:20]]
+
+
+def _fuses_2009_strip_x_size(row_count: int) -> float:
+    """Calculate flat FUSES 2009-115 strip width from generated component count."""
+    if row_count <= 0:
+        return FUSES_2009_RIGHT_MARGIN
+    last_x_pos = FUSES_2009_FIRST_X_POS + (row_count - 1) * FUSES_2009_X_STEP
+    return last_x_pos + FUSES_2009_COMPONENT_X_SIZE + FUSES_2009_RIGHT_MARGIN
+
+
+def _fuses_2009_debug_messages(normalized_rows: list[dict[str, Any]], strip_x_size: float) -> list[str]:
+    """Build developer debug messages for FUSES 2009-115 WSSL generation."""
+    blank_count = sum(1 for row in normalized_rows if row["text"] == "")
+    return [
+        "FUSES 2009-115 WSSL generated",
+        f"FUSES 2009-115 WSSL source row count = {len(normalized_rows)}",
+        f"FUSES 2009-115 WSSL non-empty count = {len(normalized_rows) - blank_count}",
+        f"FUSES 2009-115 WSSL blank count = {blank_count}",
+        "FUSES 2009-115 WSSL first 20 generated values -> "
+        + repr(_fuses_2009_generated_values_preview(normalized_rows)),
+        f"FUSES 2009-115 WSSL strip xSize = {strip_x_size}",
+    ]
+
+
+def _validate_fuses_2009_layout(
+    root: ET.Element,
+    component_list: ET.Element,
+    normalized_rows: list[dict[str, Any]],
+) -> None:
+    """Validate flat FUSES 2009-115 WSSL output structure and source-row fidelity."""
+    if root.findall(".//Grid") or root.findall(".//GridCell") or root.findall(".//GridEndPlate"):
+        raise ValueError("FUSES 2009-115 WSSL must not contain Grid/GridCell/GridEndPlate nodes")
+    text_components = component_list.findall("./WagoTextComponent")
+    if len(text_components) != len(normalized_rows):
+        raise ValueError(
+            "FUSES 2009-115 WSSL component count does not match source rows: "
+            + f"components={len(text_components)}, rows={len(normalized_rows)}"
+        )
+    generated_values = [node.get("text", "") for node in text_components]
+    source_values = [str(row["text"]) for row in normalized_rows]
+    if generated_values != source_values:
+        raise ValueError("FUSES 2009-115 WSSL generated values do not match normalized source row order")
+    non_empty_values = [value for value in generated_values if value != ""]
+    if non_empty_values and non_empty_values[0] == "Fuses 24VDC":
+        raise ValueError("FUSES 2009-115 WSSL did not normalize Fuses 24VDC to 24VDC")
+
+
+def build_fuses_2009_wssl_debug_messages(rows: list[dict[str, Any]] | None = None) -> list[str]:
+    """Build developer debug messages without generating the FUSES WSSL archive."""
+    normalized_rows = _normalize_fuses_2009_rows(rows)
+    if not normalized_rows:
+        return ["FUSES 2009-115 WSSL skipped because no source rows were available"]
+    return _fuses_2009_debug_messages(normalized_rows, _fuses_2009_strip_x_size(len(normalized_rows)))
+
+
+def _build_fuses_2009_layout(rows: list[dict[str, Any]] | None = None) -> str:
+    """Build a flat Wago 2009-115 FUSES WSSL strip.layout from source rows."""
+    root = ET.fromstring(_FUSES_2009_TEMPLATE_LAYOUT)
+    strip = root.find(".//strip")
+    if strip is None:
+        raise ValueError("FUSES 2009-115 WSSL template missing strip node")
+    component_list = strip.find("./componentList")
+    if component_list is None:
+        raise ValueError("FUSES 2009-115 WSSL template missing componentList")
+    template_component = component_list.find("./WagoTextComponent")
+    if template_component is None:
+        raise ValueError("FUSES 2009-115 WSSL template missing WagoTextComponent")
+
+    normalized_rows = _normalize_fuses_2009_rows(rows)
+    for child in list(component_list):
+        component_list.remove(child)
+
+    for index, row in enumerate(normalized_rows):
+        cloned_component = copy.deepcopy(template_component)
+        _apply_fuses_2009_row_to_text_component(cloned_component, row, index)
+        component_list.append(cloned_component)
+
+    strip_x_size = _fuses_2009_strip_x_size(len(normalized_rows))
+    strip.set("xSize", _format_wssl_float(strip_x_size))
+    strip.set("ySize", _format_wssl_float(_FUSES_2009_STRIP_Y_SIZE))
+    _validate_fuses_2009_layout(root, component_list, normalized_rows)
+    for message in _fuses_2009_debug_messages(normalized_rows, strip_x_size):
+        print(message)
 
     ET.indent(root, space="   ")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
@@ -3552,5 +3740,18 @@ def build_relay_strip_wssl_bytes(strip_rows: list[dict[str, Any]] | None = None)
             WsslTemplateFile("meta.data", _RELAY_STRIP_TEMPLATE_METADATA.encode("utf-8")),
             WsslTemplateFile("table.config", _FUSE_STRIP_TEMPLATE_TABLE_CONFIG.encode("utf-8")),
             WsslTemplateFile("import.config", _FUSE_STRIP_TEMPLATE_IMPORT_CONFIG.encode("utf-8")),
+        ]
+    )
+
+
+def build_fuses_2009_wssl_bytes(rows: list[dict[str, Any]] | None = None) -> bytes:
+    """Build a flat FUSES Wago 2009-115 WSSL archive from Component Marking rows."""
+    return _build_wssl_zip_bytes(
+        [
+            WsslTemplateFile("version.info", _TERMINAL_STRIP_TEMPLATE_VERSION.encode("utf-8")),
+            WsslTemplateFile("strip.layout", _build_fuses_2009_layout(rows).encode("utf-8")),
+            WsslTemplateFile("meta.data", _FUSES_2009_TEMPLATE_METADATA.encode("utf-8")),
+            WsslTemplateFile("table.config", _FUSES_2009_TEMPLATE_TABLE_CONFIG.encode("utf-8")),
+            WsslTemplateFile("import.config", _FUSES_2009_TEMPLATE_IMPORT_CONFIG.encode("utf-8")),
         ]
     )
