@@ -604,12 +604,22 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
 
 
-def _is_repeated_gs5020_terminal_group(group_sorting_value: Any, group_rows: pd.DataFrame) -> bool:
-    """Return whether one grouped Name should use the GS 5020 De-Superheater TMB layout."""
-    return _stringify_cell(group_sorting_value) == "5020" and len(group_rows) >= 2
+def _is_feeders_signals_terminal_group(group_sorting_value: Any, group_rows: pd.DataFrame) -> bool:
+    """Return whether GS 5020/GS 6010 should use the Feeders+signals TMB layout."""
+    if _stringify_cell(group_sorting_value) not in {"5020", "6010"} or "Conns." not in group_rows.columns:
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell)
+    conns_roots = conns_values.map(_normalize_terminal_conns_root)
+    numeric_conns_count = int(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).sum())
+    return bool(
+        numeric_conns_count >= 3
+        and conns_roots.eq("230VL").any()
+        and conns_roots.eq("230VN").any()
+    )
 
 
-def _build_gs5020_de_superheater_terminal_blocks(
+def _build_feeders_signals_terminal_blocks(
     *,
     terminal_name: str,
     group_sorting_value: str,
@@ -617,16 +627,21 @@ def _build_gs5020_de_superheater_terminal_blocks(
     conns_values: list[str],
     source_indices: list[int],
 ) -> list[dict[str, Any]]:
-    """Build the special repeated GS 5020 TMB rows with numbers above 230V signals."""
+    """Build the GS 5020/GS 6010 Feeders+signals TMB rows with feeders before signals."""
     terminal_numbers = [
         conns_value
         for conns_value in conns_values
         if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
     ]
-    voltage_signals = [
+    voltage_230vl_values = [
         conns_value
         for conns_value in conns_values
-        if _normalize_terminal_conns_root(conns_value) in {"230VL", "230VN"}
+        if _normalize_terminal_conns_root(conns_value) == "230VL"
+    ]
+    voltage_230vn_values = [
+        conns_value
+        for conns_value in conns_values
+        if _normalize_terminal_conns_root(conns_value) == "230VN"
     ]
     other_values = [
         conns_value
@@ -635,14 +650,15 @@ def _build_gs5020_de_superheater_terminal_blocks(
         and _normalize_terminal_conns_root(conns_value) not in {"230VL", "230VN"}
     ]
 
-    top_chunk = terminal_numbers[:3]
-    bottom_chunk = ["", *voltage_signals[:2]]
-    if other_values:
-        bottom_chunk.extend(other_values)
-    remaining_values = [*bottom_chunk[3:], *terminal_numbers[3:], *voltage_signals[2:]]
-
     blocks: list[dict[str, Any]] = []
-    special_chunks = [top_chunk, bottom_chunk[:3]]
+    feeder_chunk = ["", voltage_230vl_values[0], voltage_230vn_values[0]]
+    remaining_values = [
+        *terminal_numbers,
+        *other_values,
+        *voltage_230vl_values[1:],
+        *voltage_230vn_values[1:],
+    ]
+    special_chunks = [feeder_chunk]
     special_chunks.extend(
         remaining_values[start_index:start_index + 3]
         for start_index in range(0, len(remaining_values), 3)
@@ -692,9 +708,9 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
         )
         source_indices = name_group_df.index.tolist()
 
-        if _is_repeated_gs5020_terminal_group(group_sorting_value, group_rows):
+        if _is_feeders_signals_terminal_group(group_sorting_value, group_rows):
             tmb_rows.extend(
-                _build_gs5020_de_superheater_terminal_blocks(
+                _build_feeders_signals_terminal_blocks(
                     terminal_name=terminal_name,
                     group_sorting_value=group_sorting_value,
                     terminal_type=terminal_type,
