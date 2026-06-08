@@ -111,6 +111,26 @@ def _normalize_terminal_conns_value(value: Any) -> str:
     return text
 
 
+def _normalize_terminal_conns_root(value: Any) -> str:
+    """Return the logical Conns. root used for placement decisions."""
+    text = _stringify_cell(value)
+    if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
+        return text
+    if text.startswith("0VDC"):
+        return "0VDC"
+    if text.startswith("230VN"):
+        return "230VN"
+    if text.startswith("230VL"):
+        return "230VL"
+    if text.startswith("24VDC"):
+        return "24VDC"
+    if text == "GND":
+        return "GND"
+    if text == "0V":
+        return "0V"
+    return text
+
+
 def _normalize_terminal_group_sorting_value(value: Any) -> str:
     """Normalize terminal Group Sorting values before validation and sorting."""
     return _stringify_cell(value).upper()
@@ -188,7 +208,8 @@ def _get_terminal_conn_position(value: Any) -> tuple[str, int, str]:
     text = _stringify_cell(value)
     if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
         return ("TOP", 1, text)
-    floor, index = _TERMINAL_CONN_POSITION_MAP.get(text, ("TOP_OTHER", 1))
+    conns_root = _normalize_terminal_conns_root(text)
+    floor, index = _TERMINAL_CONN_POSITION_MAP.get(conns_root, ("TOP_OTHER", 1))
     return floor, index, text
 
 
@@ -282,11 +303,11 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         first_blank_row = remaining_blank_rows.pop(0) if remaining_blank_rows else None
         first_230vl_row = _pop_first_matching_row(
             remaining_middle_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "230VL",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VL",
         )
         first_230vn_row = _pop_first_matching_row(
             remaining_bottom_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "230VN",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VN",
         )
 
         reordered_rows = [row for row in (first_blank_row, first_230vl_row, first_230vn_row) if row is not None]
@@ -296,11 +317,11 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
             next_signal_row = signal_like_rows.pop(0) if signal_like_rows else None
             next_230vl_row = _pop_first_matching_row(
                 remaining_middle_rows,
-                lambda row: _stringify_cell(row.get("Conns.", "")) == "230VL",
+                lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VL",
             )
             next_230vn_or_blank_row = _pop_first_matching_row(
                 remaining_bottom_rows,
-                lambda row: _stringify_cell(row.get("Conns.", "")) == "230VN",
+                lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VN",
             )
             if next_230vn_or_blank_row is None and remaining_blank_rows:
                 next_230vn_or_blank_row = remaining_blank_rows.pop(0)
@@ -327,7 +348,7 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         first_blank_row = remaining_blank_rows.pop(0) if remaining_blank_rows else None
         zero_vdc_row = _pop_first_matching_row(
             remaining_bottom_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "0VDC",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "0VDC",
         )
 
         reordered_rows = [row for row in (first_numeric_row, first_blank_row, zero_vdc_row) if row is not None]
@@ -420,7 +441,7 @@ def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
     group_sorting_values = name_group_df["Group Sorting"].apply(_stringify_cell) if "Group Sorting" in name_group_df.columns else pd.Series(dtype=str)
     conns_values = name_group_df["Conns."].apply(_stringify_cell) if "Conns." in name_group_df.columns else pd.Series(dtype=str)
     is_group_sorting_4010 = bool(group_sorting_values.eq("4010").any())
-    has_zero_vdc = bool(conns_values.eq("0VDC").any())
+    has_zero_vdc = bool(conns_values.map(lambda value: _normalize_terminal_conns_root(value) == "0VDC").any())
     has_numeric_conns = bool(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any())
     has_blank_conns = bool(conns_values.eq("").any())
     if is_group_sorting_4010 and has_zero_vdc and has_numeric_conns and has_blank_conns:
@@ -593,13 +614,13 @@ def _build_gs5020_de_superheater_terminal_blocks(
     voltage_signals = [
         conns_value
         for conns_value in conns_values
-        if conns_value in {"230VL", "230VN"}
+        if _normalize_terminal_conns_root(conns_value) in {"230VL", "230VN"}
     ]
     other_values = [
         conns_value
         for conns_value in conns_values
         if not _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
-        and conns_value not in {"230VL", "230VN"}
+        and _normalize_terminal_conns_root(conns_value) not in {"230VL", "230VN"}
     ]
 
     top_chunk = terminal_numbers[:3]
