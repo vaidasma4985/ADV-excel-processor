@@ -55,6 +55,7 @@ _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<o
 _TERMINAL_WAGO_CABINET_PREFIX_PATTERN = re.compile(r"^\+(?P<cabinet>A\d+)-", re.IGNORECASE)
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
 _TERMINAL_GROUP_SORTING_PATTERN = re.compile(r"^(?P<number>\d+)(?P<suffix>[A-Z])?$")
+_TERMINAL_X8_NAME_PATTERN = re.compile(r"^-X.*8$")
 _TERMINAL_SPECIAL_X6311_NAME = "-X6311"
 _TERMINAL_TYPE_SPECIAL_X6311 = "SPECIAL_X6311"
 _TERMINAL_STRIP_START_STOP_SPACE = 6.2
@@ -186,6 +187,11 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
         )
 
     return (10**9, 10**9, 10**9, text)
+
+
+def _is_x8_terminal_name(name: Any) -> bool:
+    """Return whether a terminal name should keep the X*8 signal layout."""
+    return bool(_TERMINAL_X8_NAME_PATTERN.fullmatch(_stringify_cell(name)))
 
 
 def _terminal_group_sorting_sort_key(value: Any) -> tuple[int, int, str]:
@@ -371,7 +377,7 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         remaining_bottom_rows = list(bottom_rows)
         reordered_rows = []
 
-        while remaining_bottom_rows:
+        while remaining_middle_rows or remaining_bottom_rows:
             triplet_rows: list[pd.Series] = []
             if remaining_other_rows:
                 triplet_rows.append(remaining_other_rows.pop(0))
@@ -379,10 +385,11 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
                 triplet_rows.append(remaining_middle_rows.pop(0))
             elif remaining_other_rows:
                 triplet_rows.append(remaining_other_rows.pop(0))
-            triplet_rows.append(remaining_bottom_rows.pop(0))
+            if remaining_bottom_rows:
+                triplet_rows.append(remaining_bottom_rows.pop(0))
             reordered_rows.extend(triplet_rows)
 
-        reordered_rows.extend([*remaining_other_rows, *remaining_middle_rows])
+        reordered_rows.extend(remaining_other_rows)
 
     if not reordered_rows:
         return group_df.iloc[0:0].copy()
@@ -447,8 +454,14 @@ def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
         return "SPECIAL_GS_4010"
 
     numeric_conns_count = int(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).sum())
+    has_middle_or_bottom_conns = bool(
+        conns_values.map(lambda value: _get_terminal_conn_position(value)[0] in {"MIDDLE", "BOTTOM"}).any()
+    )
     if numeric_conns_count >= 3:
-        return "SIGNAL"
+        if _is_x8_terminal_name(name_value):
+            return "SIGNAL"
+        if not has_middle_or_bottom_conns:
+            return "SIGNAL"
     return "NORMAL"
 
 
