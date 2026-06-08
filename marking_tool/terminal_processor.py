@@ -221,14 +221,16 @@ def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
     if text == "":
         return (2, 10**9, text)
 
+    conns_root = _normalize_terminal_conns_root(text)
     floor, _, normalized_value = _get_terminal_conn_position(text)
+    sort_value = conns_root if conns_root in _TERMINAL_CONN_POSITION_MAP else normalized_value
     if floor in {"TOP", "TOP_OTHER"}:
-        return (1, 10**9, normalized_value)
+        return (1, 10**9, sort_value)
     if floor == "MIDDLE":
-        return (3, 10**9, normalized_value)
+        return (3, 10**9, sort_value)
     if floor == "BOTTOM":
-        return (4, 10**9, text)
-    return (1, 10**9, normalized_value)
+        return (4, 10**9, sort_value)
+    return (1, 10**9, sort_value)
 
 
 def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
@@ -364,26 +366,23 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
     elif terminal_type == "SIGNAL":
         reordered_rows = _signal_style_rows(numeric_rows, top_like_rows, blank_rows, middle_rows, bottom_rows)
     else:
-        normal_top_rows = [*numeric_rows, *top_like_rows]
-        if not normal_top_rows and middle_rows and bottom_rows:
-            reordered_rows = [
-                *blank_rows,
-                *middle_rows,
-                *bottom_rows,
-            ]
-        else:
-            first_top_row = normal_top_rows[0] if normal_top_rows else None
-            remaining_top_rows = normal_top_rows[1:] if len(normal_top_rows) > 1 else []
-            first_middle_row = middle_rows[0] if middle_rows else None
-            remaining_middle_rows = middle_rows[1:] if len(middle_rows) > 1 else []
-            reordered_rows = [
-                *([first_top_row] if first_top_row is not None else []),
-                *([first_middle_row] if first_middle_row is not None else []),
-                *remaining_top_rows,
-                *remaining_middle_rows,
-                *blank_rows,
-                *bottom_rows,
-            ]
+        remaining_other_rows = [*numeric_rows, *top_like_rows, *blank_rows]
+        remaining_middle_rows = list(middle_rows)
+        remaining_bottom_rows = list(bottom_rows)
+        reordered_rows = []
+
+        while remaining_bottom_rows:
+            triplet_rows: list[pd.Series] = []
+            if remaining_other_rows:
+                triplet_rows.append(remaining_other_rows.pop(0))
+            if remaining_middle_rows:
+                triplet_rows.append(remaining_middle_rows.pop(0))
+            elif remaining_other_rows:
+                triplet_rows.append(remaining_other_rows.pop(0))
+            triplet_rows.append(remaining_bottom_rows.pop(0))
+            reordered_rows.extend(triplet_rows)
+
+        reordered_rows.extend([*remaining_other_rows, *remaining_middle_rows])
 
     if not reordered_rows:
         return group_df.iloc[0:0].copy()
