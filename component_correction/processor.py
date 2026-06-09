@@ -9,6 +9,8 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+from component_correction.terminal_count_shared import get_terminal_tmb_block_count_for_conns
+
 YELLOW_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
 
@@ -369,8 +371,9 @@ def _allocate_category_gs(
 
 def _terminal_base_name(name: str) -> str:
     s = str(name)
-    s = re.sub(r"^=[A-Z]+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^=[^+]+", "", s, flags=re.IGNORECASE)
     s = s.lstrip("=")
+    s = re.sub(r"^\+GS\d+", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^\+\d+", "", s)
     return s
 
@@ -494,6 +497,74 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     return {int(gs): int((count + 2) // 3) for gs, count in counts.items()}
 
 
+def _build_terminal_tmb_count_map_from_terminal_list(terminal_list_bytes: bytes | None) -> dict[tuple[int, str], int]:
+    if not terminal_list_bytes:
+        return {}
+    try:
+        term_df = pd.read_excel(BytesIO(terminal_list_bytes), sheet_name=0, engine="openpyxl")
+    except Exception:
+        return {}
+
+    term_df = _drop_unnamed_cols(term_df)
+    term_df.columns = term_df.columns.astype(str).str.strip()
+
+    normalized_cols = {
+        re.sub(r"\s+", " ", str(col).strip()).casefold(): col
+        for col in term_df.columns
+    }
+    name_col = normalized_cols.get("name")
+    conns_col = normalized_cols.get("conns.")
+    gs_col = normalized_cols.get("group sorting")
+    visible_col = normalized_cols.get("visible")
+
+    if conns_col is None or gs_col is None or name_col is None:
+        return {}
+
+    work_df = term_df.copy()
+    work_df["_Name"] = work_df[name_col].astype(str).str.strip()
+    work_df["_Conns"] = work_df[conns_col].apply(lambda value: "" if pd.isna(value) else str(value).strip())
+    work_df["_Conns"] = work_df["_Conns"].replace({"0": ""})
+    pe_conns_values = {"\u23da", "PE", "\u00e2\u008f\u009a"}
+    work_df = work_df.loc[~work_df["_Conns"].isin(pe_conns_values)].copy()
+    work_df["Group Sorting"] = work_df[gs_col].astype(str).str.strip().str.upper()
+
+    if visible_col is not None:
+        visible_values = work_df[visible_col].astype(str).str.strip().str.casefold()
+        work_df = work_df.loc[~visible_values.eq("no")].copy()
+
+    valid_group_mask = work_df["Group Sorting"].str.fullmatch(r"\d+[A-Z]?", na=False)
+    work_df = work_df.loc[valid_group_mask].copy()
+    if work_df.empty:
+        return {}
+
+    work_df = _normalize_alphanumeric_gs(work_df)
+    work_df["_Group Sorting"] = pd.to_numeric(work_df["Group Sorting"], errors="coerce")
+    work_df = work_df.loc[work_df["_Group Sorting"].notna()].copy()
+    work_df["_Group Sorting"] = work_df["_Group Sorting"].astype(int)
+
+    name_mask = work_df["_Name"].ne("")
+    xtb_mask = work_df["_Name"].str.startswith("-XTB", na=False)
+    xpe_mask = work_df["_Name"].eq("-XPE")
+    work_df = work_df.loc[name_mask & ~xtb_mask & ~xpe_mask].copy()
+    if work_df.empty:
+        return {}
+
+    count_map: dict[tuple[int, str], int] = {}
+    for (group_sorting, name), group_df in work_df.groupby(["_Group Sorting", "_Name"], sort=False, dropna=False):
+        base_name = _terminal_base_name(str(name))
+        if not base_name:
+            continue
+        count = get_terminal_tmb_block_count_for_conns(
+            group_df["_Conns"].tolist(),
+            group_sorting=str(int(group_sorting)),
+            terminal_name=base_name,
+        )
+        if count > 0:
+            count_map[(int(group_sorting), base_name)] = int(count)
+
+    return count_map
+
+
 def _normalize_terminal_name(name: str) -> str:
     """
     Normalizuoja terminalo pavadinimą deduplikavimui, nuimdama
@@ -566,7 +637,7 @@ def apply_x192a_terminal_gs_rules(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 def process_excel(
     file_bytes: bytes, terminal_list_bytes: bytes | None = None, terminal_layout_mode: str | None = None
-) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, int]]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, bytes, Dict[str, Any]]:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
     df = _normalize_component_input_columns(df)
     df = _drop_unnamed_cols(df)
@@ -691,6 +762,10 @@ def process_excel(
     df["Type"] = df["Type"].replace(relay_map)
 
     required_pe_qty_by_gs = _load_terminal_list_pe_requirements(terminal_list_bytes)
+    terminal_tmb_count_map = _build_terminal_tmb_count_map_from_terminal_list(terminal_list_bytes)
+    shared_tmb_count_overrides_applied = 0
+    shared_tmb_count_matched_groups = 0
+    shared_tmb_count_match_previews: list[str] = []
 
     terminal_like = df["Name"].astype(str).str.match(r"^-X\d+\b", na=False)
     unsupported_terminal_type = terminal_like & ~df["Type"].astype(str).isin(_TERMINAL_TYPES)
@@ -1039,8 +1114,14 @@ def process_excel(
         return fuse_data, pd.DataFrame(columns=list(fuse_data.columns) + ["Removed Reason"])
 
     def process_terminals(
-        term_data: pd.DataFrame, pe_requirements: Dict[int, int], terminal_layout_mode: str | None = None
+        term_data: pd.DataFrame,
+        pe_requirements: Dict[int, int],
+        tmb_count_map: dict[tuple[int, str], int],
+        terminal_layout_mode: str | None = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        nonlocal shared_tmb_count_matched_groups
+        nonlocal shared_tmb_count_overrides_applied
+        nonlocal shared_tmb_count_match_previews
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
@@ -1195,6 +1276,61 @@ def process_excel(
 
             term_data = pd.concat([term_data, pd.DataFrame([prototype])], ignore_index=True)
 
+        if tmb_count_map:
+            terminal_non_pe_mask = term_data["Type"].astype(str).isin(terminal_types) & ~_is_pe_terminal_row(term_data)
+            key_to_indices: dict[tuple[int, str], list[int]] = {}
+            for idx in term_data.loc[terminal_non_pe_mask].index:
+                gs_value = pd.to_numeric(term_data.at[idx, "Group Sorting"], errors="coerce")
+                if pd.isna(gs_value) and "_gs_orig" in term_data.columns:
+                    gs_value = pd.to_numeric(term_data.at[idx, "_gs_orig"], errors="coerce")
+                if pd.isna(gs_value):
+                    continue
+
+                base_name = _terminal_base_name(str(term_data.at[idx, "Name"]))
+                key = (int(gs_value), base_name)
+                if key in tmb_count_map:
+                    key_to_indices.setdefault(key, []).append(idx)
+
+            shared_tmb_count_matched_groups += len(key_to_indices)
+            for key, idxs in key_to_indices.items():
+                desired_qty = int(tmb_count_map[key])
+                if desired_qty <= 0:
+                    continue
+
+                current_qty = len(idxs)
+                if len(shared_tmb_count_match_previews) < 10:
+                    shared_tmb_count_match_previews.append(
+                        f"{key[0]}:{key[1]} {current_qty}->{desired_qty}"
+                    )
+                if current_qty != desired_qty:
+                    shared_tmb_count_overrides_applied += 1
+
+                if desired_qty > current_qty:
+                    prototype = term_data.loc[idxs[0]].copy()
+                    for extra_idx in range(current_qty, desired_qty):
+                        new_row = prototype.copy()
+                        new_row["Quantity"] = 1
+                        new_row["Accessories"] = ""
+                        new_row["Quantity of accessories"] = 0
+                        new_row["Accessories2"] = ""
+                        new_row["Quantity of accessories2"] = 0
+                        new_row["Designation"] = str(extra_idx) if extra_idx > 0 else ""
+                        term_data = pd.concat([term_data, pd.DataFrame([new_row])], ignore_index=True)
+                        idxs.append(term_data.index[-1])
+
+                for offset, idx in enumerate(idxs[:desired_qty]):
+                    term_data.at[idx, "Quantity"] = 1
+                    term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
+
+                removed_idxs = idxs[desired_qty:]
+                if removed_idxs:
+                    _append_removed(
+                        removed_local,
+                        term_data.loc[removed_idxs],
+                        "Removed: terminal shared TMB count reduction",
+                    )
+                    term_data = term_data.drop(index=removed_idxs).copy()
+
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
         term_data["Accessories2"] = term_data["Accessories2"].fillna("")
@@ -1316,7 +1452,10 @@ def process_excel(
     relay_clean, relay_removed = process_relays(relay_df)
     fuse_clean, fuse_removed = process_fuses(fuse_df)
     terminal_clean, terminal_removed = process_terminals(
-        terminal_df, required_pe_qty_by_gs, terminal_layout_mode=terminal_layout_mode
+        terminal_df,
+        required_pe_qty_by_gs,
+        terminal_tmb_count_map,
+        terminal_layout_mode=terminal_layout_mode,
     )
 
     cleaned_df = pd.concat([relay_clean, fuse_clean, terminal_clean], ignore_index=True)
@@ -1456,6 +1595,10 @@ def process_excel(
         "input_rows": input_rows,
         "cleaned_rows": len(out_clean),
         "removed_rows": len(removed_df),
+        "terminal_shared_tmb_count_map_size": len(terminal_tmb_count_map),
+        "terminal_shared_tmb_count_matched_groups": shared_tmb_count_matched_groups,
+        "terminal_shared_tmb_count_overrides_applied": shared_tmb_count_overrides_applied,
+        "terminal_shared_tmb_count_first_matched_keys": " | ".join(shared_tmb_count_match_previews),
     }
 
     removed_df = _excel_safe(removed_df)

@@ -7,6 +7,8 @@ from copy import copy
 
 import pandas as pd
 
+from component_correction.terminal_count_shared import get_terminal_tmb_block_count_for_conns
+
 
 PLACEHOLDER_FILENAME = "Markings_placeholder.xlsx"
 
@@ -55,7 +57,7 @@ _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<o
 _TERMINAL_WAGO_CABINET_PREFIX_PATTERN = re.compile(r"^\+(?P<cabinet>A\d+)-", re.IGNORECASE)
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
 _TERMINAL_GROUP_SORTING_PATTERN = re.compile(r"^(?P<number>\d+)(?P<suffix>[A-Z])?$")
-_TERMINAL_X8_NAME_PATTERN = re.compile(r"^-X.*8$")
+_TERMINAL_X8_NAME_PATTERN = re.compile(r"^-X[1-4]\d[A-Z]?8$")
 _TERMINAL_SPECIAL_X6311_NAME = "-X6311"
 _TERMINAL_TYPE_SPECIAL_X6311 = "SPECIAL_X6311"
 _TERMINAL_STRIP_START_STOP_SPACE = 6.2
@@ -190,8 +192,38 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
 
 
 def _is_x8_terminal_name(name: Any) -> bool:
-    """Return whether a terminal name should keep the X*8 signal layout."""
+    """Return whether a terminal name should keep the X**8 signal layout."""
     return bool(_TERMINAL_X8_NAME_PATTERN.fullmatch(_stringify_cell(name)))
+
+
+def _validate_x8_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for X**8 terminal groups that do not match the expected TMB template."""
+    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    required_numeric_values = {"1", "2", "3", "4", "5", "6"}
+    allowed_roots = {*required_numeric_values, "230VN"}
+    for name_value, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
+        terminal_name = _stringify_cell(name_value)
+        if not _is_x8_terminal_name(terminal_name):
+            continue
+
+        roots = [
+            _normalize_terminal_conns_root(conns_value)
+            for conns_value in name_group_df["Conns."].apply(_stringify_cell).tolist()
+            if _stringify_cell(conns_value) != ""
+        ]
+        numeric_roots = [root for root in roots if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(root)]
+        has_duplicate_numeric = len(numeric_roots) != len(set(numeric_roots))
+        missing_required_numeric = required_numeric_values - set(numeric_roots)
+        missing_230vn = "230VN" not in roots
+        has_extra_values = any(root not in allowed_roots for root in roots)
+
+        if has_duplicate_numeric or missing_required_numeric or missing_230vn or has_extra_values:
+            warnings.append(f"{terminal_name} neatitinka X**8 TMB šablono, pasitikrinti schemas.")
+
+    return warnings
 
 
 def _terminal_group_sorting_sort_key(value: Any) -> tuple[int, int, str]:
@@ -488,13 +520,20 @@ def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
     if name_value == _TERMINAL_SPECIAL_X6311_NAME:
         return _TERMINAL_TYPE_SPECIAL_X6311
 
-    group_sorting_values = name_group_df["Group Sorting"].apply(_stringify_cell) if "Group Sorting" in name_group_df.columns else pd.Series(dtype=str)
-    conns_values = name_group_df["Conns."].apply(_stringify_cell) if "Conns." in name_group_df.columns else pd.Series(dtype=str)
-    is_group_sorting_4010 = bool(group_sorting_values.eq("4010").any())
+    group_sorting_value = (
+        _stringify_cell(name_group_df["Group Sorting"].iloc[0])
+        if "Group Sorting" in name_group_df.columns and not name_group_df.empty
+        else ""
+    )
+    conns_values = (
+        name_group_df["Conns."].apply(_stringify_cell)
+        if "Conns." in name_group_df.columns
+        else pd.Series(dtype=str)
+    )
     has_zero_vdc = bool(conns_values.map(lambda value: _normalize_terminal_conns_root(value) == "0VDC").any())
     has_numeric_conns = bool(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any())
     has_blank_conns = bool(conns_values.eq("").any())
-    if is_group_sorting_4010 and has_zero_vdc and has_numeric_conns and has_blank_conns:
+    if group_sorting_value == "4010" and has_zero_vdc and has_numeric_conns and has_blank_conns:
         return "SPECIAL_GS_4010"
 
     numeric_conns_count = int(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).sum())
@@ -1068,6 +1107,58 @@ def _build_terminal_tmb_count_map(terminal_df: pd.DataFrame) -> dict[tuple[str, 
     return tmb_count_map
 
 
+def _validate_terminal_tmb_count_map_with_shared_logic(
+    terminal_df: pd.DataFrame,
+    tmb_count_map: dict[tuple[str, str], int],
+) -> list[str]:
+    """Compare existing TMB block counts with shared count logic without changing output."""
+    if terminal_df.empty or "Name" not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    group_columns = ["Name"]
+    if "Group Sorting" in terminal_df.columns:
+        group_columns = ["Group Sorting", "Name"]
+
+    for _, name_group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
+        group_rows = name_group_df.reset_index(drop=True)
+        terminal_name = _stringify_cell(group_rows["Name"].iloc[0]) if not group_rows.empty else ""
+        group_sorting_value = (
+            _stringify_cell(group_rows["Group Sorting"].iloc[0])
+            if "Group Sorting" in group_rows.columns and not group_rows.empty
+            else ""
+        )
+        terminal_type = (
+            _stringify_cell(group_rows["Terminal Type"].iloc[0])
+            if "Terminal Type" in group_rows.columns and not group_rows.empty
+            else ""
+        )
+        conns_values = (
+            group_rows["Conns."].apply(_stringify_cell).tolist()
+            if "Conns." in group_rows.columns
+            else [""] * len(group_rows)
+        )
+        current_count = int(tmb_count_map.get((group_sorting_value, terminal_name), 0))
+        shared_count = get_terminal_tmb_block_count_for_conns(
+            conns_values,
+            group_sorting=group_sorting_value,
+            terminal_name=terminal_name,
+            terminal_type=terminal_type,
+        )
+        if current_count != shared_count:
+            warnings.append(
+                "terminal tmb shared count mismatch: gs={gs} name={name} current={current} shared={shared} conns=[{conns}]".format(
+                    gs=group_sorting_value or "-",
+                    name=terminal_name or "-",
+                    current=current_count,
+                    shared=shared_count,
+                    conns=", ".join(conns_values[:12]),
+                )
+            )
+
+    return warnings
+
+
 def _build_terminal_strip_sequences(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build ordered strip sequences from flat terminal rows without TMB chunking."""
     if terminal_df.empty or "Group Sorting" not in terminal_df.columns:
@@ -1504,6 +1595,7 @@ def _build_terminal_strip_sheet_with_debug(
     strip_input_df["_strip_source_row_index"] = strip_input_df.index
     strip_sequences = _build_terminal_strip_sequences(strip_input_df)
     tmb_count_map = _build_terminal_tmb_count_map(terminal_df)
+    shared_tmb_count_warnings = _validate_terminal_tmb_count_map_with_shared_logic(terminal_df, tmb_count_map)
     strip_blocks = _build_terminal_strip_blocks(strip_input_df, tmb_count_map)
     terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
     terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
@@ -1637,6 +1729,7 @@ def _build_terminal_strip_sheet_with_debug(
         "terminal strip: first 10 missing PE TMB size keys -> "
         + (" | ".join(missing_pe_tmb_size_keys[:10]) if missing_pe_tmb_size_keys else "none")
     )
+    developer_debug_messages.extend(shared_tmb_count_warnings[:10])
     developer_debug_messages.append(
         "terminal strip: first 10 rendered rows preview -> "
         + (" | ".join(str(row) for row in strip_preview_rows) if strip_preview_rows else "none")
@@ -2037,6 +2130,12 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     xpe_mask = terminal_df["Name"].eq("-XPE")
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
+
+    x8_template_warnings = _validate_x8_tmb_template(terminal_df)
+    user_info_messages.extend(x8_template_warnings)
+    developer_debug_messages.extend(
+        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+    )
 
     normal_terminal_df, pe_terminal_contacts_df, pe_stats = _split_terminal_pe_rows(terminal_df)
     expanded_pe_terminal_df, expanded_pe_stats = _expand_terminal_pe_rows(pe_terminal_contacts_df)

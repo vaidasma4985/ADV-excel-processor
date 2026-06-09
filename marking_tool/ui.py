@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import uuid
 from typing import Any
 
@@ -199,6 +200,17 @@ def render_marking_tool() -> None:
             st.caption(f"Project number: {resolved_project_number}")
         user_info_messages = st.session_state.get("marking_user_info") or []
         developer_debug_messages = results.get("developer_debug_messages", [])
+        for message in user_info_messages:
+            if "neatitinka X**8 TMB šablono" in str(message):
+                escaped_message = html.escape(str(message))
+                st.markdown(
+                    (
+                        '<div style="background-color: #FF8C00; color: #111111; '
+                        "font-weight: 700; padding: 0.85rem 1rem; border-radius: 0.5rem; "
+                        f'margin: 0.5rem 0;">{escaped_message}</div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
         st.download_button(
             f"Download {results['filename']}",
             data=results["workbook_bytes"],
