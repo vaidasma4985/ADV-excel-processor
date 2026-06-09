@@ -743,8 +743,7 @@ def _is_power_header_with_positional_numbers_group(group_rows: pd.DataFrame) -> 
     conns_values = group_rows["Conns."].apply(_stringify_cell)
     conns_roots = conns_values.map(_normalize_terminal_conns_root)
     return bool(
-        conns_values.eq("").any()
-        and conns_roots.eq("230VL").any()
+        conns_roots.eq("230VL").any()
         and conns_roots.eq("230VN").any()
         and conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any()
     )
