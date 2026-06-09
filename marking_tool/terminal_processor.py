@@ -7,6 +7,8 @@ from copy import copy
 
 import pandas as pd
 
+from component_correction.terminal_count_shared import get_terminal_tmb_block_count_for_conns
+
 
 PLACEHOLDER_FILENAME = "Markings_placeholder.xlsx"
 
@@ -55,6 +57,7 @@ _TERMINAL_NAME_STANDARD_PATTERN = re.compile(r"^(?P<prefix>-X)(?P<base>\d+)(?P<o
 _TERMINAL_WAGO_CABINET_PREFIX_PATTERN = re.compile(r"^\+(?P<cabinet>A\d+)-", re.IGNORECASE)
 _TERMINAL_NUMERIC_CONN_PATTERN = re.compile(r"^\d+$")
 _TERMINAL_GROUP_SORTING_PATTERN = re.compile(r"^(?P<number>\d+)(?P<suffix>[A-Z])?$")
+_TERMINAL_X8_NAME_PATTERN = re.compile(r"^-X[1-4]\d[A-Z]?8$")
 _TERMINAL_SPECIAL_X6311_NAME = "-X6311"
 _TERMINAL_TYPE_SPECIAL_X6311 = "SPECIAL_X6311"
 _TERMINAL_STRIP_START_STOP_SPACE = 6.2
@@ -108,6 +111,26 @@ def _normalize_terminal_conns_value(value: Any) -> str:
     text = _stringify_cell(value)
     if text == "0":
         return ""
+    return text
+
+
+def _normalize_terminal_conns_root(value: Any) -> str:
+    """Return the logical Conns. root used for placement decisions."""
+    text = _stringify_cell(value)
+    if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
+        return text
+    if text.startswith("0VDC"):
+        return "0VDC"
+    if text.startswith("230VN"):
+        return "230VN"
+    if text.startswith("230VL"):
+        return "230VL"
+    if text.startswith("24VDC"):
+        return "24VDC"
+    if text == "GND":
+        return "GND"
+    if text == "0V":
+        return "0V"
     return text
 
 
@@ -168,6 +191,41 @@ def _terminal_name_sort_key(name: Any) -> tuple[int, int, int, str]:
     return (10**9, 10**9, 10**9, text)
 
 
+def _is_x8_terminal_name(name: Any) -> bool:
+    """Return whether a terminal name should keep the X**8 signal layout."""
+    return bool(_TERMINAL_X8_NAME_PATTERN.fullmatch(_stringify_cell(name)))
+
+
+def _validate_x8_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for X**8 terminal groups that do not match the expected TMB template."""
+    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    required_numeric_values = {"1", "2", "3", "4", "5", "6"}
+    allowed_roots = {*required_numeric_values, "230VN"}
+    for name_value, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
+        terminal_name = _stringify_cell(name_value)
+        if not _is_x8_terminal_name(terminal_name):
+            continue
+
+        roots = [
+            _normalize_terminal_conns_root(conns_value)
+            for conns_value in name_group_df["Conns."].apply(_stringify_cell).tolist()
+            if _stringify_cell(conns_value) != ""
+        ]
+        numeric_roots = [root for root in roots if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(root)]
+        has_duplicate_numeric = len(numeric_roots) != len(set(numeric_roots))
+        missing_required_numeric = required_numeric_values - set(numeric_roots)
+        missing_230vn = "230VN" not in roots
+        has_extra_values = any(root not in allowed_roots for root in roots)
+
+        if has_duplicate_numeric or missing_required_numeric or missing_230vn or has_extra_values:
+            warnings.append(f"{terminal_name} neatitinka X**8 TMB šablono, pasitikrinti schemas.")
+
+    return warnings
+
+
 def _terminal_group_sorting_sort_key(value: Any) -> tuple[int, int, str]:
     """Sort GS by numeric base first, then optional suffix alphabetically."""
     text = _normalize_terminal_group_sorting_value(value)
@@ -188,8 +246,53 @@ def _get_terminal_conn_position(value: Any) -> tuple[str, int, str]:
     text = _stringify_cell(value)
     if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
         return ("TOP", 1, text)
-    floor, index = _TERMINAL_CONN_POSITION_MAP.get(text, ("TOP_OTHER", 1))
+    conns_root = _normalize_terminal_conns_root(text)
+    floor, index = _TERMINAL_CONN_POSITION_MAP.get(conns_root, ("TOP_OTHER", 1))
     return floor, index, text
+
+
+def _get_numeric_conn_physical_slot(value: Any) -> str:
+    """Return the physical TMB slot for pure numeric Conns. values."""
+    text = _stringify_cell(value)
+    if not _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
+        return ""
+
+    numeric_value = int(text)
+    modulo_value = numeric_value % 3
+    if modulo_value == 1:
+        return "TOP"
+    if modulo_value == 2:
+        return "MIDDLE"
+    return "BOTTOM"
+
+
+def _build_positional_numeric_rows(numeric_rows: list[Any]) -> list[list[str]]:
+    """Build TMB chunks that keep numeric Conns. values in their physical slots."""
+    blocks: list[list[str]] = []
+    current_block = ["", "", ""]
+    current_block_index: int | None = None
+    slot_indices = {"TOP": 0, "MIDDLE": 1, "BOTTOM": 2}
+
+    for numeric_row in numeric_rows:
+        conns_value = _stringify_cell(numeric_row)
+        physical_slot = _get_numeric_conn_physical_slot(conns_value)
+        if not physical_slot:
+            continue
+
+        numeric_value = int(conns_value)
+        block_index = (numeric_value - 1) // 3
+        slot_index = slot_indices[physical_slot]
+        if current_block_index is None:
+            current_block_index = block_index
+        if block_index != current_block_index or current_block[slot_index]:
+            blocks.append(current_block)
+            current_block = ["", "", ""]
+            current_block_index = block_index
+        current_block[slot_index] = conns_value
+
+    if current_block_index is not None:
+        blocks.append(current_block)
+    return blocks
 
 
 def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
@@ -200,14 +303,16 @@ def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
     if text == "":
         return (2, 10**9, text)
 
+    conns_root = _normalize_terminal_conns_root(text)
     floor, _, normalized_value = _get_terminal_conn_position(text)
+    sort_value = conns_root if conns_root in _TERMINAL_CONN_POSITION_MAP else normalized_value
     if floor in {"TOP", "TOP_OTHER"}:
-        return (1, 10**9, normalized_value)
+        return (1, 10**9, sort_value)
     if floor == "MIDDLE":
-        return (3, 10**9, normalized_value)
+        return (3, 10**9, sort_value)
     if floor == "BOTTOM":
-        return (4, 10**9, text)
-    return (1, 10**9, normalized_value)
+        return (4, 10**9, sort_value)
+    return (1, 10**9, sort_value)
 
 
 def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
@@ -282,11 +387,11 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         first_blank_row = remaining_blank_rows.pop(0) if remaining_blank_rows else None
         first_230vl_row = _pop_first_matching_row(
             remaining_middle_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "230VL",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VL",
         )
         first_230vn_row = _pop_first_matching_row(
             remaining_bottom_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "230VN",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VN",
         )
 
         reordered_rows = [row for row in (first_blank_row, first_230vl_row, first_230vn_row) if row is not None]
@@ -296,11 +401,11 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
             next_signal_row = signal_like_rows.pop(0) if signal_like_rows else None
             next_230vl_row = _pop_first_matching_row(
                 remaining_middle_rows,
-                lambda row: _stringify_cell(row.get("Conns.", "")) == "230VL",
+                lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VL",
             )
             next_230vn_or_blank_row = _pop_first_matching_row(
                 remaining_bottom_rows,
-                lambda row: _stringify_cell(row.get("Conns.", "")) == "230VN",
+                lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "230VN",
             )
             if next_230vn_or_blank_row is None and remaining_blank_rows:
                 next_230vn_or_blank_row = remaining_blank_rows.pop(0)
@@ -327,7 +432,7 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
         first_blank_row = remaining_blank_rows.pop(0) if remaining_blank_rows else None
         zero_vdc_row = _pop_first_matching_row(
             remaining_bottom_rows,
-            lambda row: _stringify_cell(row.get("Conns.", "")) == "0VDC",
+            lambda row: _normalize_terminal_conns_root(row.get("Conns.", "")) == "0VDC",
         )
 
         reordered_rows = [row for row in (first_numeric_row, first_blank_row, zero_vdc_row) if row is not None]
@@ -343,26 +448,24 @@ def _reorder_terminal_name_group(group_df: pd.DataFrame) -> pd.DataFrame:
     elif terminal_type == "SIGNAL":
         reordered_rows = _signal_style_rows(numeric_rows, top_like_rows, blank_rows, middle_rows, bottom_rows)
     else:
-        normal_top_rows = [*numeric_rows, *top_like_rows]
-        if not normal_top_rows and middle_rows and bottom_rows:
-            reordered_rows = [
-                *blank_rows,
-                *middle_rows,
-                *bottom_rows,
-            ]
-        else:
-            first_top_row = normal_top_rows[0] if normal_top_rows else None
-            remaining_top_rows = normal_top_rows[1:] if len(normal_top_rows) > 1 else []
-            first_middle_row = middle_rows[0] if middle_rows else None
-            remaining_middle_rows = middle_rows[1:] if len(middle_rows) > 1 else []
-            reordered_rows = [
-                *([first_top_row] if first_top_row is not None else []),
-                *([first_middle_row] if first_middle_row is not None else []),
-                *remaining_top_rows,
-                *remaining_middle_rows,
-                *blank_rows,
-                *bottom_rows,
-            ]
+        remaining_other_rows = [*numeric_rows, *top_like_rows, *blank_rows]
+        remaining_middle_rows = list(middle_rows)
+        remaining_bottom_rows = list(bottom_rows)
+        reordered_rows = []
+
+        while remaining_middle_rows or remaining_bottom_rows:
+            triplet_rows: list[pd.Series] = []
+            if remaining_other_rows:
+                triplet_rows.append(remaining_other_rows.pop(0))
+            if remaining_middle_rows:
+                triplet_rows.append(remaining_middle_rows.pop(0))
+            elif remaining_other_rows:
+                triplet_rows.append(remaining_other_rows.pop(0))
+            if remaining_bottom_rows:
+                triplet_rows.append(remaining_bottom_rows.pop(0))
+            reordered_rows.extend(triplet_rows)
+
+        reordered_rows.extend(remaining_other_rows)
 
     if not reordered_rows:
         return group_df.iloc[0:0].copy()
@@ -417,18 +520,31 @@ def _classify_terminal_name_group(name_group_df: pd.DataFrame) -> str:
     if name_value == _TERMINAL_SPECIAL_X6311_NAME:
         return _TERMINAL_TYPE_SPECIAL_X6311
 
-    group_sorting_values = name_group_df["Group Sorting"].apply(_stringify_cell) if "Group Sorting" in name_group_df.columns else pd.Series(dtype=str)
-    conns_values = name_group_df["Conns."].apply(_stringify_cell) if "Conns." in name_group_df.columns else pd.Series(dtype=str)
-    is_group_sorting_4010 = bool(group_sorting_values.eq("4010").any())
-    has_zero_vdc = bool(conns_values.eq("0VDC").any())
+    group_sorting_value = (
+        _stringify_cell(name_group_df["Group Sorting"].iloc[0])
+        if "Group Sorting" in name_group_df.columns and not name_group_df.empty
+        else ""
+    )
+    conns_values = (
+        name_group_df["Conns."].apply(_stringify_cell)
+        if "Conns." in name_group_df.columns
+        else pd.Series(dtype=str)
+    )
+    has_zero_vdc = bool(conns_values.map(lambda value: _normalize_terminal_conns_root(value) == "0VDC").any())
     has_numeric_conns = bool(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any())
     has_blank_conns = bool(conns_values.eq("").any())
-    if is_group_sorting_4010 and has_zero_vdc and has_numeric_conns and has_blank_conns:
+    if group_sorting_value == "4010" and has_zero_vdc and has_numeric_conns and has_blank_conns:
         return "SPECIAL_GS_4010"
 
     numeric_conns_count = int(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).sum())
+    has_middle_or_bottom_conns = bool(
+        conns_values.map(lambda value: _get_terminal_conn_position(value)[0] in {"MIDDLE", "BOTTOM"}).any()
+    )
     if numeric_conns_count >= 3:
-        return "SIGNAL"
+        if _is_x8_terminal_name(name_value):
+            return "SIGNAL"
+        if not has_middle_or_bottom_conns:
+            return "SIGNAL"
     return "NORMAL"
 
 
@@ -571,12 +687,22 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(tmb_rows, columns=tmb_columns)
 
 
-def _is_repeated_gs5020_terminal_group(group_sorting_value: Any, group_rows: pd.DataFrame) -> bool:
-    """Return whether one grouped Name should use the GS 5020 De-Superheater TMB layout."""
-    return _stringify_cell(group_sorting_value) == "5020" and len(group_rows) >= 2
+def _is_feeders_signals_terminal_group(group_sorting_value: Any, group_rows: pd.DataFrame) -> bool:
+    """Return whether GS 5020/GS 6010 should use the Feeders+signals TMB layout."""
+    if _stringify_cell(group_sorting_value) not in {"5020", "6010"} or "Conns." not in group_rows.columns:
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell)
+    conns_roots = conns_values.map(_normalize_terminal_conns_root)
+    numeric_conns_count = int(conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).sum())
+    return bool(
+        numeric_conns_count >= 3
+        and conns_roots.eq("230VL").any()
+        and conns_roots.eq("230VN").any()
+    )
 
 
-def _build_gs5020_de_superheater_terminal_blocks(
+def _build_feeders_signals_terminal_blocks(
     *,
     terminal_name: str,
     group_sorting_value: str,
@@ -584,35 +710,41 @@ def _build_gs5020_de_superheater_terminal_blocks(
     conns_values: list[str],
     source_indices: list[int],
 ) -> list[dict[str, Any]]:
-    """Build the special repeated GS 5020 TMB rows with numbers above 230V signals."""
+    """Build the GS 5020/GS 6010 Feeders+signals TMB rows with feeders before signals."""
     terminal_numbers = [
         conns_value
         for conns_value in conns_values
         if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
     ]
-    voltage_signals = [
+    voltage_230vl_values = [
         conns_value
         for conns_value in conns_values
-        if conns_value in {"230VL", "230VN"}
+        if _normalize_terminal_conns_root(conns_value) == "230VL"
+    ]
+    voltage_230vn_values = [
+        conns_value
+        for conns_value in conns_values
+        if _normalize_terminal_conns_root(conns_value) == "230VN"
     ]
     other_values = [
         conns_value
         for conns_value in conns_values
         if not _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
-        and conns_value not in {"230VL", "230VN"}
+        and _normalize_terminal_conns_root(conns_value) not in {"230VL", "230VN"}
     ]
 
-    top_chunk = terminal_numbers[:3]
-    bottom_chunk = ["", *voltage_signals[:2]]
-    if other_values:
-        bottom_chunk.extend(other_values)
-    remaining_values = [*bottom_chunk[3:], *terminal_numbers[3:], *voltage_signals[2:]]
-
     blocks: list[dict[str, Any]] = []
-    special_chunks = [top_chunk, bottom_chunk[:3]]
+    feeder_chunk = ["", voltage_230vl_values[0], voltage_230vn_values[0]]
+    trailing_values = [
+        *other_values,
+        *voltage_230vl_values[1:],
+        *voltage_230vn_values[1:],
+    ]
+    special_chunks = [feeder_chunk]
+    special_chunks.extend(_build_positional_numeric_rows(terminal_numbers))
     special_chunks.extend(
-        remaining_values[start_index:start_index + 3]
-        for start_index in range(0, len(remaining_values), 3)
+        trailing_values[start_index:start_index + 3]
+        for start_index in range(0, len(trailing_values), 3)
     )
     for chunk_index, chunk in enumerate(special_chunks):
         if not any(_stringify_cell(value) for value in chunk):
@@ -629,12 +761,181 @@ def _build_gs5020_de_superheater_terminal_blocks(
     return blocks
 
 
+def _is_power_header_with_positional_numbers_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group should use physical numeric TMB positioning."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell)
+    conns_roots = conns_values.map(_normalize_terminal_conns_root)
+    return bool(
+        conns_roots.eq("230VL").any()
+        and conns_roots.eq("230VN").any()
+        and conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any()
+    )
+
+
+def _build_power_header_with_positional_numbers_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build TMB blocks for blank/230VL/230VN headers followed by physical numeric slots."""
+    blocks: list[dict[str, Any]] = []
+    used_indices: set[int] = set()
+
+    def _first_index_matching(matcher: Any) -> int | None:
+        for index, conns_value in enumerate(conns_values):
+            if index not in used_indices and matcher(conns_value):
+                return index
+        return None
+
+    blank_index = _first_index_matching(lambda value: _stringify_cell(value) == "")
+    if blank_index is not None:
+        used_indices.add(blank_index)
+    voltage_230vl_index = _first_index_matching(
+        lambda value: _normalize_terminal_conns_root(value) == "230VL"
+    )
+    if voltage_230vl_index is not None:
+        used_indices.add(voltage_230vl_index)
+    voltage_230vn_index = _first_index_matching(
+        lambda value: _normalize_terminal_conns_root(value) == "230VN"
+    )
+    if voltage_230vn_index is not None:
+        used_indices.add(voltage_230vn_index)
+
+    header_chunk = [
+        conns_values[blank_index] if blank_index is not None else "",
+        conns_values[voltage_230vl_index] if voltage_230vl_index is not None else "",
+        conns_values[voltage_230vn_index] if voltage_230vn_index is not None else "",
+    ]
+    blocks.append(
+        {
+            "terminal_name": terminal_name,
+            "group_sorting": group_sorting_value,
+            "terminal_type": terminal_type,
+            "chunk": header_chunk,
+            "end_row_index": source_indices[min(2, len(source_indices) - 1)],
+        }
+    )
+
+    numeric_values: list[str] = []
+    other_values: list[str] = []
+    for index, conns_value in enumerate(conns_values):
+        if index in used_indices:
+            continue
+        if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value):
+            numeric_values.append(conns_value)
+        else:
+            other_values.append(conns_value)
+
+    positional_chunks = _build_positional_numeric_rows(numeric_values)
+    for chunk_index, chunk in enumerate(positional_chunks, start=1):
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[min(2 + chunk_index, len(source_indices) - 1)],
+            }
+        )
+
+    for start_index in range(0, len(other_values), 3):
+        chunk = other_values[start_index:start_index + 3]
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[
+                    min(3 + len(positional_chunks) + start_index, len(source_indices) - 1)
+                ],
+            }
+        )
+
+    return blocks
+
+
+def _is_normal_numeric_position_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal numeric-only group should use physical TMB slots."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell).tolist()
+    if not any(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value) for value in conns_values):
+        return False
+    return all(value == "" or _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value) for value in conns_values)
+
+
+def _build_normal_numeric_position_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build TMB blocks for normal numeric values using their physical slots."""
+    numeric_values = [
+        conns_value
+        for conns_value in conns_values
+        if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
+    ]
+    chunks = _build_positional_numeric_rows(numeric_values)
+
+    blocks: list[dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        if not any(_stringify_cell(value) for value in chunk):
+            continue
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[min(chunk_index, len(source_indices) - 1)],
+            }
+        )
+    return blocks
+
+
 def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
     if terminal_df.empty or "Name" not in terminal_df.columns:
         return []
 
-    tmb_rows: list[dict[str, str]] = []
+    tmb_rows: list[dict[str, Any]] = []
     group_columns = ["Name"]
     if "Group Sorting" in terminal_df.columns:
         group_columns = ["Group Sorting", "Name"]
@@ -659,9 +960,33 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
         )
         source_indices = name_group_df.index.tolist()
 
-        if _is_repeated_gs5020_terminal_group(group_sorting_value, group_rows):
+        if _is_feeders_signals_terminal_group(group_sorting_value, group_rows):
             tmb_rows.extend(
-                _build_gs5020_de_superheater_terminal_blocks(
+                _build_feeders_signals_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_power_header_with_positional_numbers_group(group_rows):
+            tmb_rows.extend(
+                _build_power_header_with_positional_numbers_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_normal_numeric_position_group(group_rows):
+            tmb_rows.extend(
+                _build_normal_numeric_position_terminal_blocks(
                     terminal_name=terminal_name,
                     group_sorting_value=group_sorting_value,
                     terminal_type=terminal_type,
@@ -780,6 +1105,58 @@ def _build_terminal_tmb_count_map(terminal_df: pd.DataFrame) -> dict[tuple[str, 
         tmb_count_map[key] = tmb_count_map.get(key, 0) + 1
 
     return tmb_count_map
+
+
+def _validate_terminal_tmb_count_map_with_shared_logic(
+    terminal_df: pd.DataFrame,
+    tmb_count_map: dict[tuple[str, str], int],
+) -> list[str]:
+    """Compare existing TMB block counts with shared count logic without changing output."""
+    if terminal_df.empty or "Name" not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    group_columns = ["Name"]
+    if "Group Sorting" in terminal_df.columns:
+        group_columns = ["Group Sorting", "Name"]
+
+    for _, name_group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
+        group_rows = name_group_df.reset_index(drop=True)
+        terminal_name = _stringify_cell(group_rows["Name"].iloc[0]) if not group_rows.empty else ""
+        group_sorting_value = (
+            _stringify_cell(group_rows["Group Sorting"].iloc[0])
+            if "Group Sorting" in group_rows.columns and not group_rows.empty
+            else ""
+        )
+        terminal_type = (
+            _stringify_cell(group_rows["Terminal Type"].iloc[0])
+            if "Terminal Type" in group_rows.columns and not group_rows.empty
+            else ""
+        )
+        conns_values = (
+            group_rows["Conns."].apply(_stringify_cell).tolist()
+            if "Conns." in group_rows.columns
+            else [""] * len(group_rows)
+        )
+        current_count = int(tmb_count_map.get((group_sorting_value, terminal_name), 0))
+        shared_count = get_terminal_tmb_block_count_for_conns(
+            conns_values,
+            group_sorting=group_sorting_value,
+            terminal_name=terminal_name,
+            terminal_type=terminal_type,
+        )
+        if current_count != shared_count:
+            warnings.append(
+                "terminal tmb shared count mismatch: gs={gs} name={name} current={current} shared={shared} conns=[{conns}]".format(
+                    gs=group_sorting_value or "-",
+                    name=terminal_name or "-",
+                    current=current_count,
+                    shared=shared_count,
+                    conns=", ".join(conns_values[:12]),
+                )
+            )
+
+    return warnings
 
 
 def _build_terminal_strip_sequences(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -1218,6 +1595,7 @@ def _build_terminal_strip_sheet_with_debug(
     strip_input_df["_strip_source_row_index"] = strip_input_df.index
     strip_sequences = _build_terminal_strip_sequences(strip_input_df)
     tmb_count_map = _build_terminal_tmb_count_map(terminal_df)
+    shared_tmb_count_warnings = _validate_terminal_tmb_count_map_with_shared_logic(terminal_df, tmb_count_map)
     strip_blocks = _build_terminal_strip_blocks(strip_input_df, tmb_count_map)
     terminal_strip_df = _render_terminal_strip_blocks(strip_blocks)
     terminal_strip_debug_df = _build_terminal_strip_debug_sheet(strip_blocks)
@@ -1351,6 +1729,7 @@ def _build_terminal_strip_sheet_with_debug(
         "terminal strip: first 10 missing PE TMB size keys -> "
         + (" | ".join(missing_pe_tmb_size_keys[:10]) if missing_pe_tmb_size_keys else "none")
     )
+    developer_debug_messages.extend(shared_tmb_count_warnings[:10])
     developer_debug_messages.append(
         "terminal strip: first 10 rendered rows preview -> "
         + (" | ".join(str(row) for row in strip_preview_rows) if strip_preview_rows else "none")
@@ -1751,6 +2130,12 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     xpe_mask = terminal_df["Name"].eq("-XPE")
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
+
+    x8_template_warnings = _validate_x8_tmb_template(terminal_df)
+    user_info_messages.extend(x8_template_warnings)
+    developer_debug_messages.extend(
+        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+    )
 
     normal_terminal_df, pe_terminal_contacts_df, pe_stats = _split_terminal_pe_rows(terminal_df)
     expanded_pe_terminal_df, expanded_pe_stats = _expand_terminal_pe_rows(pe_terminal_contacts_df)

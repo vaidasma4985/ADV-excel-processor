@@ -37,6 +37,14 @@ def _bytes_sig(name: str, b: bytes) -> tuple[str, int, str]:
     return (name or "", len(b), hashlib.md5(b).hexdigest())
 
 
+def derive_component_output_filename(input_file_name: str) -> str:
+    """Build the Component Correction output filename from the uploaded file name."""
+    match = re.match(r"^\s*(\d{4}-\d{3})\b", input_file_name or "")
+    if not match:
+        return "processed_components.xlsx"
+    return f"{match.group(1)}_processed_components.xlsx"
+
+
 def _img_to_data_url(path: str) -> str:
     b = Path(path).read_bytes()
     return "data:image/png;base64," + base64.b64encode(b).decode("utf-8")
@@ -888,7 +896,7 @@ def render_component_correction() -> None:
         st.download_button(
             label="Atsisiųsti rezultatą (Excel)",
             data=excel_bytes,
-            file_name="processed_components.xlsx",
+            file_name=derive_component_output_filename(st.session_state.get("component_name", "")),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
