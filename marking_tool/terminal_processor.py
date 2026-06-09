@@ -219,6 +219,50 @@ def _get_terminal_conn_position(value: Any) -> tuple[str, int, str]:
     return floor, index, text
 
 
+def _get_numeric_conn_physical_slot(value: Any) -> str:
+    """Return the physical TMB slot for pure numeric Conns. values."""
+    text = _stringify_cell(value)
+    if not _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(text):
+        return ""
+
+    numeric_value = int(text)
+    modulo_value = numeric_value % 3
+    if modulo_value == 1:
+        return "TOP"
+    if modulo_value == 2:
+        return "MIDDLE"
+    return "BOTTOM"
+
+
+def _build_positional_numeric_rows(numeric_rows: list[Any]) -> list[list[str]]:
+    """Build TMB chunks that keep numeric Conns. values in their physical slots."""
+    blocks: list[list[str]] = []
+    current_block = ["", "", ""]
+    current_block_index: int | None = None
+    slot_indices = {"TOP": 0, "MIDDLE": 1, "BOTTOM": 2}
+
+    for numeric_row in numeric_rows:
+        conns_value = _stringify_cell(numeric_row)
+        physical_slot = _get_numeric_conn_physical_slot(conns_value)
+        if not physical_slot:
+            continue
+
+        numeric_value = int(conns_value)
+        block_index = (numeric_value - 1) // 3
+        slot_index = slot_indices[physical_slot]
+        if current_block_index is None:
+            current_block_index = block_index
+        if block_index != current_block_index or current_block[slot_index]:
+            blocks.append(current_block)
+            current_block = ["", "", ""]
+            current_block_index = block_index
+        current_block[slot_index] = conns_value
+
+    if current_block_index is not None:
+        blocks.append(current_block)
+    return blocks
+
+
 def _terminal_conns_sort_key(value: Any) -> tuple[int, int, str]:
     """Build a stable base sort for later Name-local connection reordering."""
     text = _stringify_cell(value)
@@ -652,16 +696,16 @@ def _build_feeders_signals_terminal_blocks(
 
     blocks: list[dict[str, Any]] = []
     feeder_chunk = ["", voltage_230vl_values[0], voltage_230vn_values[0]]
-    remaining_values = [
-        *terminal_numbers,
+    trailing_values = [
         *other_values,
         *voltage_230vl_values[1:],
         *voltage_230vn_values[1:],
     ]
     special_chunks = [feeder_chunk]
+    special_chunks.extend(_build_positional_numeric_rows(terminal_numbers))
     special_chunks.extend(
-        remaining_values[start_index:start_index + 3]
-        for start_index in range(0, len(remaining_values), 3)
+        trailing_values[start_index:start_index + 3]
+        for start_index in range(0, len(trailing_values), 3)
     )
     for chunk_index, chunk in enumerate(special_chunks):
         if not any(_stringify_cell(value) for value in chunk):
@@ -678,12 +722,182 @@ def _build_feeders_signals_terminal_blocks(
     return blocks
 
 
+def _is_power_header_with_positional_numbers_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group should use physical numeric TMB positioning."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell)
+    conns_roots = conns_values.map(_normalize_terminal_conns_root)
+    return bool(
+        conns_values.eq("").any()
+        and conns_roots.eq("230VL").any()
+        and conns_roots.eq("230VN").any()
+        and conns_values.map(lambda value: bool(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value))).any()
+    )
+
+
+def _build_power_header_with_positional_numbers_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build TMB blocks for blank/230VL/230VN headers followed by physical numeric slots."""
+    blocks: list[dict[str, Any]] = []
+    used_indices: set[int] = set()
+
+    def _first_index_matching(matcher: Any) -> int | None:
+        for index, conns_value in enumerate(conns_values):
+            if index not in used_indices and matcher(conns_value):
+                return index
+        return None
+
+    blank_index = _first_index_matching(lambda value: _stringify_cell(value) == "")
+    if blank_index is not None:
+        used_indices.add(blank_index)
+    voltage_230vl_index = _first_index_matching(
+        lambda value: _normalize_terminal_conns_root(value) == "230VL"
+    )
+    if voltage_230vl_index is not None:
+        used_indices.add(voltage_230vl_index)
+    voltage_230vn_index = _first_index_matching(
+        lambda value: _normalize_terminal_conns_root(value) == "230VN"
+    )
+    if voltage_230vn_index is not None:
+        used_indices.add(voltage_230vn_index)
+
+    header_chunk = [
+        conns_values[blank_index] if blank_index is not None else "",
+        conns_values[voltage_230vl_index] if voltage_230vl_index is not None else "",
+        conns_values[voltage_230vn_index] if voltage_230vn_index is not None else "",
+    ]
+    blocks.append(
+        {
+            "terminal_name": terminal_name,
+            "group_sorting": group_sorting_value,
+            "terminal_type": terminal_type,
+            "chunk": header_chunk,
+            "end_row_index": source_indices[min(2, len(source_indices) - 1)],
+        }
+    )
+
+    numeric_values: list[str] = []
+    other_values: list[str] = []
+    for index, conns_value in enumerate(conns_values):
+        if index in used_indices:
+            continue
+        if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value):
+            numeric_values.append(conns_value)
+        else:
+            other_values.append(conns_value)
+
+    positional_chunks = _build_positional_numeric_rows(numeric_values)
+    for chunk_index, chunk in enumerate(positional_chunks, start=1):
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[min(2 + chunk_index, len(source_indices) - 1)],
+            }
+        )
+
+    for start_index in range(0, len(other_values), 3):
+        chunk = other_values[start_index:start_index + 3]
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[
+                    min(3 + len(positional_chunks) + start_index, len(source_indices) - 1)
+                ],
+            }
+        )
+
+    return blocks
+
+
+def _is_normal_numeric_position_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal numeric-only group should use physical TMB slots."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    conns_values = group_rows["Conns."].apply(_stringify_cell).tolist()
+    if not any(_TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value) for value in conns_values):
+        return False
+    return all(value == "" or _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(value) for value in conns_values)
+
+
+def _build_normal_numeric_position_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build TMB blocks for normal numeric values using their physical slots."""
+    numeric_values = [
+        conns_value
+        for conns_value in conns_values
+        if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(conns_value)
+    ]
+    chunks = _build_positional_numeric_rows(numeric_values)
+
+    blocks: list[dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        if not any(_stringify_cell(value) for value in chunk):
+            continue
+        blocks.append(
+            {
+                "terminal_name": terminal_name,
+                "group_sorting": group_sorting_value,
+                "terminal_type": terminal_type,
+                "chunk": chunk,
+                "end_row_index": source_indices[min(chunk_index, len(source_indices) - 1)],
+            }
+        )
+    return blocks
+
+
 def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
     if terminal_df.empty or "Name" not in terminal_df.columns:
         return []
 
-    tmb_rows: list[dict[str, str]] = []
+    tmb_rows: list[dict[str, Any]] = []
     group_columns = ["Name"]
     if "Group Sorting" in terminal_df.columns:
         group_columns = ["Group Sorting", "Name"]
@@ -711,6 +925,30 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
         if _is_feeders_signals_terminal_group(group_sorting_value, group_rows):
             tmb_rows.extend(
                 _build_feeders_signals_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_power_header_with_positional_numbers_group(group_rows):
+            tmb_rows.extend(
+                _build_power_header_with_positional_numbers_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_normal_numeric_position_group(group_rows):
+            tmb_rows.extend(
+                _build_normal_numeric_position_terminal_blocks(
                     terminal_name=terminal_name,
                     group_sorting_value=group_sorting_value,
                     terminal_type=terminal_type,
