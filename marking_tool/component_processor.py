@@ -2947,6 +2947,7 @@ def _write_component_production_sheet(
             worksheet.write_blank(row_offset, marked_col_index, None, marked_format)
 
     last_data_row = len(production_df)
+    worksheet.autofilter(0, 0, last_data_row, technical_flag_col_index)
     if last_data_row >= 1:
         marked_col_letter = xl_col_to_name(marked_col_index)
         technical_flag_col_letter = xl_col_to_name(technical_flag_col_index)
