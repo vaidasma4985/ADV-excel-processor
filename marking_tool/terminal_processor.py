@@ -134,6 +134,17 @@ def _normalize_terminal_conns_root(value: Any) -> str:
     return text
 
 
+def _normalize_terminal_tmb_display_value(value: Any) -> str:
+    """Normalize only the displayed/exported Terminal TMB cell value."""
+    text = _stringify_cell(value)
+    if "," in text:
+        return text.split(",", 1)[0].strip()
+    conns_root = _normalize_terminal_conns_root(text).upper()
+    if conns_root in {"SHDL", "SHIELD", "SHLD"}:
+        return "SH"
+    return text
+
+
 def _normalize_terminal_group_sorting_value(value: Any) -> str:
     """Normalize terminal Group Sorting values before validation and sorting."""
     return _stringify_cell(value).upper()
@@ -682,9 +693,9 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     tmb_rows = [
         {
             "Terminal Name": terminal_block["terminal_name"],
-            "Top": terminal_block["chunk"][0] if len(terminal_block["chunk"]) >= 1 else "",
-            "Middle": terminal_block["chunk"][1] if len(terminal_block["chunk"]) >= 2 else "",
-            "Bottom": terminal_block["chunk"][2] if len(terminal_block["chunk"]) >= 3 else "",
+            "Top": _normalize_terminal_tmb_display_value(terminal_block["chunk"][0]) if len(terminal_block["chunk"]) >= 1 else "",
+            "Middle": _normalize_terminal_tmb_display_value(terminal_block["chunk"][1]) if len(terminal_block["chunk"]) >= 2 else "",
+            "Bottom": _normalize_terminal_tmb_display_value(terminal_block["chunk"][2]) if len(terminal_block["chunk"]) >= 3 else "",
         }
         for terminal_block in terminal_blocks
     ]
