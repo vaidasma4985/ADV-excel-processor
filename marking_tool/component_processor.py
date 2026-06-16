@@ -1389,6 +1389,16 @@ def _build_component_cm_relay_groups(cm_source_df: pd.DataFrame) -> list[tuple[s
     return relay_groups
 
 
+def _component_relay_xmlil_header_short_label(group_label: str) -> str:
+    short_group_label = _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.get(
+        group_label,
+        group_label,
+    )
+    if short_group_label in {"1_Pole", "1 Pole"}:
+        return "1POLE"
+    return short_group_label
+
+
 def _build_component_relay_xmlil_marking_groups(
     component_df_by_cabinet: dict[str, pd.DataFrame],
 ) -> dict[str, dict[str, list[str]]]:
@@ -1440,9 +1450,11 @@ def _build_component_relay_xmlil_marking_groups(
 def _flatten_component_relay_xmlil_marking_groups(
     relay_xmlil_marking_groups: dict[str, dict[str, list[str]]],
 ) -> list[str]:
-    """Flatten XMLIL LabelText values in VBA-style RELAYS order with blank separators."""
-    relay_sections: list[tuple[str, list[str]]] = []
-    for cabinet_relay_groups in relay_xmlil_marking_groups.values():
+    """Flatten XMLIL LabelText values cabinet-first with blank separators."""
+    cabinet_sections: list[tuple[str, list[tuple[str, list[str]]]]] = []
+    for cabinet_id in sorted(relay_xmlil_marking_groups, key=_component_cabinet_sort_key):
+        cabinet_relay_groups = relay_xmlil_marking_groups[cabinet_id]
+        relay_sections: list[tuple[str, list[str]]] = []
         for group_label in _COMPONENT_RELAY_XMLIL_GROUP_ORDER:
             relay_names = [
                 _stringify_cell(relay_name)
@@ -1451,18 +1463,24 @@ def _flatten_component_relay_xmlil_marking_groups(
             ]
             if not relay_names:
                 continue
-            short_group_label = _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.get(
-                group_label,
-                group_label,
-            )
+            short_group_label = _component_relay_xmlil_header_short_label(group_label)
             relay_sections.append((short_group_label, relay_names))
+        if relay_sections:
+            cabinet_sections.append((_stringify_cell(cabinet_id), relay_sections))
 
     label_text_values: list[str] = []
-    for section_index, (short_group_label, relay_names) in enumerate(relay_sections):
-        if section_index > 0:
+    use_cabinet_prefix = len(cabinet_sections) > 1
+    for cabinet_index, (cabinet_label, relay_sections) in enumerate(cabinet_sections):
+        if cabinet_index > 0:
             label_text_values.append("")
-        label_text_values.append(short_group_label)
-        label_text_values.extend(relay_names)
+        for section_index, (short_group_label, relay_names) in enumerate(relay_sections):
+            if section_index > 0:
+                label_text_values.append("")
+            if use_cabinet_prefix:
+                label_text_values.append(f"+{cabinet_label}\\\\{short_group_label}")
+            else:
+                label_text_values.append(short_group_label)
+            label_text_values.extend(relay_names)
     return label_text_values
 
 
@@ -1553,6 +1571,10 @@ def _build_component_relay_xmlil_group_value(project_number: str | None) -> str:
 def _component_relay_xmlil_font_size(label_text: str) -> str:
     """Choose XMLIL font size: fixed for group labels, length-based for relay markings."""
     if label_text in _COMPONENT_RELAY_XMLIL_SHORT_GROUP_LABELS.values():
+        return "1.8"
+    if label_text == "1POLE":
+        return "1.8"
+    if re.match(r"^\+[^\\]+\\\\[^\\]+$", _stringify_cell(label_text)):
         return "1.8"
     if _normalize_component_name(label_text).startswith("-K"):
         label_length = len(label_text)
