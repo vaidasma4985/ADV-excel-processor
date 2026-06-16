@@ -134,6 +134,17 @@ def _normalize_terminal_conns_root(value: Any) -> str:
     return text
 
 
+def _normalize_terminal_tmb_display_value(value: Any) -> str:
+    """Normalize only the displayed/exported Terminal TMB cell value."""
+    text = _stringify_cell(value)
+    if "," in text:
+        return text.split(",", 1)[0].strip()
+    conns_root = _normalize_terminal_conns_root(text).upper()
+    if conns_root in {"SHDL", "SHIELD", "SHLD"}:
+        return "SH"
+    return text
+
+
 def _normalize_terminal_group_sorting_value(value: Any) -> str:
     """Normalize terminal Group Sorting values before validation and sorting."""
     return _stringify_cell(value).upper()
@@ -196,31 +207,35 @@ def _is_x8_terminal_name(name: Any) -> bool:
     return bool(_TERMINAL_X8_NAME_PATTERN.fullmatch(_stringify_cell(name)))
 
 
-def _validate_x8_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
-    """Return user warnings for X**8 terminal groups that do not match the expected TMB template."""
-    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+def _validate_x8_tmb_template(terminal_tmb_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for final X**8 TMB rows that do not match the expected template."""
+    required_columns = {"Terminal Name", "Top", "Middle", "Bottom"}
+    if terminal_tmb_df.empty or not required_columns.issubset(terminal_tmb_df.columns):
         return []
 
     warnings: list[str] = []
-    required_numeric_values = {"1", "2", "3", "4", "5", "6"}
-    allowed_roots = {*required_numeric_values, "230VN"}
-    for name_value, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
-        terminal_name = _stringify_cell(name_value)
+    accepted_patterns = [
+        [("1", "2", "3"), ("4", "5", "230VN")],
+        [("1", "2", "3"), ("4", "5", "6"), ("", "", "230VN")],
+    ]
+    for terminal_name_value, terminal_name_tmb_df in terminal_tmb_df.groupby("Terminal Name", sort=False, dropna=False):
+        terminal_name = _stringify_cell(terminal_name_value)
         if not _is_x8_terminal_name(terminal_name):
             continue
 
-        roots = [
-            _normalize_terminal_conns_root(conns_value)
-            for conns_value in name_group_df["Conns."].apply(_stringify_cell).tolist()
-            if _stringify_cell(conns_value) != ""
+        normalized_rows = [
+            tuple(
+                _normalize_terminal_conns_root(cell_value) if cell_value else ""
+                for cell_value in (
+                    _stringify_cell(row["Top"]),
+                    _stringify_cell(row["Middle"]),
+                    _stringify_cell(row["Bottom"]),
+                )
+            )
+            for _, row in terminal_name_tmb_df.iterrows()
         ]
-        numeric_roots = [root for root in roots if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(root)]
-        has_duplicate_numeric = len(numeric_roots) != len(set(numeric_roots))
-        missing_required_numeric = required_numeric_values - set(numeric_roots)
-        missing_230vn = "230VN" not in roots
-        has_extra_values = any(root not in allowed_roots for root in roots)
 
-        if has_duplicate_numeric or missing_required_numeric or missing_230vn or has_extra_values:
+        if normalized_rows not in accepted_patterns:
             warnings.append(f"{terminal_name} neatitinka X**8 TMB šablono, pasitikrinti schemas.")
 
     return warnings
@@ -678,9 +693,9 @@ def _build_terminal_tmb_sheet(terminal_df: pd.DataFrame) -> pd.DataFrame:
     tmb_rows = [
         {
             "Terminal Name": terminal_block["terminal_name"],
-            "Top": terminal_block["chunk"][0] if len(terminal_block["chunk"]) >= 1 else "",
-            "Middle": terminal_block["chunk"][1] if len(terminal_block["chunk"]) >= 2 else "",
-            "Bottom": terminal_block["chunk"][2] if len(terminal_block["chunk"]) >= 3 else "",
+            "Top": _normalize_terminal_tmb_display_value(terminal_block["chunk"][0]) if len(terminal_block["chunk"]) >= 1 else "",
+            "Middle": _normalize_terminal_tmb_display_value(terminal_block["chunk"][1]) if len(terminal_block["chunk"]) >= 2 else "",
+            "Bottom": _normalize_terminal_tmb_display_value(terminal_block["chunk"][2]) if len(terminal_block["chunk"]) >= 3 else "",
         }
         for terminal_block in terminal_blocks
     ]
@@ -930,6 +945,127 @@ def _build_normal_numeric_position_terminal_blocks(
     return blocks
 
 
+_AB_SHIELD_A_ROOTS = {"A", "A+"}
+_AB_SHIELD_B_ROOTS = {"B", "B-"}
+_AB_SHIELD_SHIELD_ROOTS = {"SH", "SHDL", "SHIELD", "SHLD"}
+
+
+def _ab_shield_group_parts(group_rows: pd.DataFrame) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return A, B, shield, and extra nonblank values for an A/B/shield candidate group."""
+    a_values: list[str] = []
+    b_values: list[str] = []
+    shield_values: list[str] = []
+    extra_values: list[str] = []
+
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return a_values, b_values, shield_values, extra_values
+
+    for conns_value in group_rows["Conns."].apply(_stringify_cell).tolist():
+        if conns_value == "":
+            continue
+        conns_root = _normalize_terminal_conns_root(conns_value).upper()
+        if conns_root in _AB_SHIELD_A_ROOTS:
+            a_values.append(conns_value)
+        elif conns_root in _AB_SHIELD_B_ROOTS:
+            b_values.append(conns_value)
+        elif conns_root in _AB_SHIELD_SHIELD_ROOTS:
+            shield_values.append(conns_value)
+        else:
+            extra_values.append(conns_value)
+
+    return a_values, b_values, shield_values, extra_values
+
+
+def _is_ab_shield_candidate_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group contains any A/B/shield values."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    a_values, b_values, shield_values, _ = _ab_shield_group_parts(group_rows)
+    return bool(a_values or b_values or shield_values)
+
+
+def _is_ab_shield_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group should be packed as A/B/shield in one TMB row."""
+    if not _is_ab_shield_candidate_group(group_rows):
+        return False
+
+    a_values, b_values, shield_values, extra_values = _ab_shield_group_parts(group_rows)
+    nonblank_count = sum(
+        1
+        for conns_value in group_rows["Conns."].apply(_stringify_cell).tolist()
+        if conns_value != ""
+    )
+    return bool(
+        nonblank_count == 3
+        and len(a_values) == 1
+        and len(b_values) == 1
+        and len(shield_values) == 1
+        and not extra_values
+    )
+
+
+def _validate_ab_shield_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for A/B/shield candidate groups that are not exact templates."""
+    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    group_columns = ["Group Sorting", "Name"] if "Group Sorting" in terminal_df.columns else ["Name"]
+    for group_key, group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
+        name_value = group_key[-1] if isinstance(group_key, tuple) else group_key
+        terminal_name = _stringify_cell(name_value)
+        if _is_ab_shield_candidate_group(group_df) and not _is_ab_shield_group(group_df):
+            warnings.append(f"{terminal_name} neatitinka A/B/SH TMB šablono, pasitikrinti schemas.")
+
+    return warnings
+
+
+def _build_ab_shield_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build a single A/B/shield TMB row."""
+    a_value = ""
+    b_value = ""
+    shield_value = ""
+    for conns_value in conns_values:
+        conns_root = _normalize_terminal_conns_root(conns_value).upper()
+        if not a_value and conns_root in _AB_SHIELD_A_ROOTS:
+            a_value = conns_value
+        elif not b_value and conns_root in _AB_SHIELD_B_ROOTS:
+            b_value = conns_value
+        elif not shield_value and conns_root in _AB_SHIELD_SHIELD_ROOTS:
+            shield_value = "SH"
+
+    return [
+        {
+            "terminal_name": terminal_name,
+            "group_sorting": group_sorting_value,
+            "terminal_type": terminal_type,
+            "chunk": [a_value, b_value, shield_value],
+            "end_row_index": source_indices[min(2, len(source_indices) - 1)],
+        }
+    ]
+
+
 def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
     if terminal_df.empty or "Name" not in terminal_df.columns:
@@ -987,6 +1123,18 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
         if _is_normal_numeric_position_group(group_rows):
             tmb_rows.extend(
                 _build_normal_numeric_position_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_ab_shield_group(group_rows):
+            tmb_rows.extend(
+                _build_ab_shield_terminal_blocks(
                     terminal_name=terminal_name,
                     group_sorting_value=group_sorting_value,
                     terminal_type=terminal_type,
@@ -2131,12 +2279,6 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
 
-    x8_template_warnings = _validate_x8_tmb_template(terminal_df)
-    user_info_messages.extend(x8_template_warnings)
-    developer_debug_messages.extend(
-        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
-    )
-
     normal_terminal_df, pe_terminal_contacts_df, pe_stats = _split_terminal_pe_rows(terminal_df)
     expanded_pe_terminal_df, expanded_pe_stats = _expand_terminal_pe_rows(pe_terminal_contacts_df)
 
@@ -2175,6 +2317,11 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_x6311_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
 
     terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, expanded_pe_terminal_df)
+    ab_shield_warnings = _validate_ab_shield_tmb_template(terminal_df)
+    user_info_messages.extend(ab_shield_warnings)
+    developer_debug_messages.extend(
+        f"terminal a/b/sh template warning: {warning}" for warning in ab_shield_warnings
+    )
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
@@ -2334,6 +2481,13 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
         terminal_debug_messages.extend(terminal_pe_tmb_debug)
         developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
         terminal_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+        x8_template_warnings = _validate_x8_tmb_template(terminal_tmb_df)
+        user_info_messages.extend(x8_template_warnings)
+        x8_template_debug_messages = [
+            f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+        ]
+        developer_debug_messages.extend(x8_template_debug_messages)
+        terminal_debug_messages.extend(x8_template_debug_messages)
         terminal_tmb_preview_rows = (
             terminal_tmb_df.head(5).to_dict(orient="records")
             if terminal_tmb_df is not None and not terminal_tmb_df.empty
@@ -2423,6 +2577,13 @@ def build_placeholder_results(
                     terminal_debug_messages.extend(terminal_pe_tmb_debug)
                     developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
                     terminal_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+                    x8_template_warnings = _validate_x8_tmb_template(terminal_tmb_df)
+                    user_info_messages.extend(x8_template_warnings)
+                    x8_template_debug_messages = [
+                        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+                    ]
+                    developer_debug_messages.extend(x8_template_debug_messages)
+                    terminal_debug_messages.extend(x8_template_debug_messages)
                     terminal_tmb_preview_rows = (
                         terminal_tmb_df.head(5).to_dict(orient="records")
                         if terminal_tmb_df is not None and not terminal_tmb_df.empty

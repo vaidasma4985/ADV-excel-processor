@@ -32,6 +32,7 @@ _ALLOWED_RAW_TYPES: set[str] = {
     "A9F04604",
     "RE17LCBM",
     "RE22R1AMR",
+    "RE22R1KMR",
     "39.00.8.230.8240",
 }
 
@@ -68,6 +69,7 @@ _ADV_TYPE_MAP: Dict[str, str] = {
 _RELAY_TYPE_MAP: Dict[str, str] = {
     "RE17LCBM": "SE.RE17LCBM_ADV",
     "RE22R1AMR": "SE.RE22R1AMR_ADV",
+    "RE22R1KMR": "SE.RE22R1KMR_ADV",
     "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
 }
 
@@ -322,6 +324,7 @@ def _apply_function_designation(df: pd.DataFrame) -> pd.DataFrame:
             "WAGO.2002-3201_ADV_L": "CONTROL",
             "WAGO.2002-3207_ADV": "CONTROL",
             "SE.RE22R1AMR_ADV": "2POLE",
+            "SE.RE22R1KMR_ADV": "2POLE",
             "FIN.39.00.8.230.8240_ADV": "1POLE",
             "SE.RE17LCBM_ADV": "TIMED_RELAYS",
         }
@@ -708,6 +711,7 @@ def process_excel(
         "A9F04604",
         "RE17LCBM",
         "RE22R1AMR",
+        "RE22R1KMR",
         "39.00.8.230.8240",
     }
     type_for_allow = df["Type"].astype(str).str.strip()
@@ -757,6 +761,7 @@ def process_excel(
     relay_map = {
         "RE17LCBM": "SE.RE17LCBM_ADV",
         "RE22R1AMR": "SE.RE22R1AMR_ADV",
+        "RE22R1KMR": "SE.RE22R1KMR_ADV",
         "39.00.8.230.8240": "FIN.39.00.8.230.8240_ADV",
     }
     df["Type"] = df["Type"].replace(relay_map)
@@ -849,7 +854,7 @@ def process_excel(
 
         combo_mask = relay_data["Type"].astype(str).isin(relay_combo_types)
 
-        all_2pole = relay_data["Type"].astype(str).isin([type_2pole, "SE.RE22R1AMR_ADV"])
+        all_2pole = relay_data["Type"].astype(str).isin([type_2pole, "SE.RE22R1AMR_ADV", "SE.RE22R1KMR_ADV"])
         all_4pole = relay_data["Type"].astype(str).eq(type_4pole)
 
         def _assign_missing(
@@ -1486,6 +1491,7 @@ def process_excel(
     relay_type_priority = {
         "SE.RGZE1S48M + SE.RXG22P7": 0,  # 2POLE before 4POLE when GS is equal
         "SE.RE22R1AMR_ADV": 0,
+        "SE.RE22R1KMR_ADV": 0,
         "SE.RXZE2S114M + SE.RXM4GB2BD": 1,
         "FIN.39.00.8.230.8240_ADV": 3,
     }

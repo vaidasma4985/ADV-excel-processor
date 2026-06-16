@@ -201,7 +201,10 @@ def render_marking_tool() -> None:
         user_info_messages = st.session_state.get("marking_user_info") or []
         developer_debug_messages = results.get("developer_debug_messages", [])
         for message in user_info_messages:
-            if "neatitinka X**8 TMB šablono" in str(message):
+            if (
+                "neatitinka X**8 TMB šablono" in str(message)
+                or "neatitinka A/B/SH TMB šablono" in str(message)
+            ):
                 escaped_message = html.escape(str(message))
                 st.markdown(
                     (

@@ -2884,16 +2884,37 @@ def _derive_fuse_strip_row_kind(row: dict[str, Any], text: str) -> str:
 def _normalize_fuse_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Normalize real Component Marking Fuse Strip rows for WSSL generation."""
     normalized_rows: list[dict[str, Any]] = []
-    for row in strip_rows or []:
+    source_rows = list(strip_rows or [])
+    row_index = 0
+    while row_index < len(source_rows):
+        row = source_rows[row_index]
         text = str(row.get("Text") or "")
+        if text.strip().upper() == "STOP":
+            row_index += 1
+            continue
         space = _safe_terminal_strip_space(row.get("Space"))
+        kind = _derive_fuse_strip_row_kind(row, text)
+        next_row = source_rows[row_index + 1] if row_index + 1 < len(source_rows) else None
+        if kind in {"group_label", "generated_label", "section_label"} and text not in {"24VDC", "230VAC"} and next_row is not None:
+            next_text = str(next_row.get("Text") or "")
+            if next_text in {"24VDC", "230VAC"}:
+                normalized_rows.append(
+                    {
+                        "space": space,
+                        "text": f"+{text.lstrip('+')} {next_text}",
+                        "kind": "group_label",
+                    }
+                )
+                row_index += 2
+                continue
         normalized_rows.append(
             {
                 "space": space,
                 "text": text,
-                "kind": _derive_fuse_strip_row_kind(row, text),
+                "kind": kind,
             }
         )
+        row_index += 1
     return normalized_rows
 
 
@@ -3213,6 +3234,8 @@ def _normalize_relay_strip_wssl_rows(strip_rows: list[dict[str, Any]] | None) ->
     normalized_rows: list[dict[str, Any]] = []
     for row in strip_rows or []:
         text = str(row.get("Text") or "")
+        if text in {"START", "STOP"}:
+            continue
         space = _safe_terminal_strip_space(row.get("Space"))
         normalized_rows.append(
             {
@@ -3253,6 +3276,12 @@ def _relay_strip_component_style(text: str, kind: str | None = None) -> WsslComp
     )
 
 
+def _relay_strip_content_rotation(kind: str | None) -> str:
+    if _is_generated_label_kind(kind) or kind == "relay_1pole":
+        return _FUSE_STRIP_CONTENT_ROTATION
+    return _RELAY_STRIP_CONTENT_ROTATION
+
+
 def _apply_relay_strip_row_to_text_component(
     text_component: ET.Element,
     row: dict[str, Any],
@@ -3265,8 +3294,7 @@ def _apply_relay_strip_row_to_text_component(
     text_component.set("fontSize", _format_wssl_float(style.font_size))
     text_component.set("textSize", _format_wssl_float(style.font_size))
     text_component.set("bold", str(style.bold).lower())
-    content_rotation = _FUSE_STRIP_CONTENT_ROTATION if _is_generated_label_kind(str(row["kind"])) else _RELAY_STRIP_CONTENT_ROTATION
-    text_component.set("contentRotation", content_rotation)
+    text_component.set("contentRotation", _relay_strip_content_rotation(str(row["kind"])))
     text_component.set("textStretchingFactorStr", str(style.text_stretching_factor))
 
 
@@ -3516,9 +3544,7 @@ def _build_relay_strip_layout(strip_rows: list[dict[str, Any]] | None = None) ->
     ):
         print(message)
     if any(
-        text_component.get("contentRotation") != _RELAY_STRIP_CONTENT_ROTATION
-        for text_component in text_components
-        if not _is_generated_label_kind(
+        text_component.get("contentRotation") != _relay_strip_content_rotation(
             next(
                 (
                     str(row["kind"])
@@ -3528,6 +3554,7 @@ def _build_relay_strip_layout(strip_rows: list[dict[str, Any]] | None = None) ->
                 None,
             )
         )
+        for text_component in text_components
     ):
         raise ValueError("Relay Strip WSSL generated text component has wrong contentRotation")
 
@@ -3550,8 +3577,13 @@ def _normalize_fuses_2009_rows(rows: list[dict[str, Any]] | None) -> list[dict[s
     normalized_rows: list[dict[str, Any]] = []
     for row in rows or []:
         text = _normalize_fuses_2009_text(str(row.get("Text") or ""))
+        row_kind = str(row.get("kind") or "")
         kind = "blank"
-        if text in {"24VDC", "230VAC"}:
+        if row_kind in {"group_label", "generated_label", "section_label"}:
+            kind = "group_label"
+        elif row_kind in {"blank", "blank_separator"}:
+            kind = "blank"
+        elif text in {"24VDC", "230VAC"}:
             kind = "group_label"
         elif text != "":
             kind = "real_data"
