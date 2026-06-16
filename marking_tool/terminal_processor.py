@@ -934,6 +934,127 @@ def _build_normal_numeric_position_terminal_blocks(
     return blocks
 
 
+_AB_SHIELD_A_ROOTS = {"A", "A+"}
+_AB_SHIELD_B_ROOTS = {"B", "B-"}
+_AB_SHIELD_SHIELD_ROOTS = {"SH", "SHDL", "SHIELD", "SHLD"}
+
+
+def _ab_shield_group_parts(group_rows: pd.DataFrame) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return A, B, shield, and extra nonblank values for an A/B/shield candidate group."""
+    a_values: list[str] = []
+    b_values: list[str] = []
+    shield_values: list[str] = []
+    extra_values: list[str] = []
+
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return a_values, b_values, shield_values, extra_values
+
+    for conns_value in group_rows["Conns."].apply(_stringify_cell).tolist():
+        if conns_value == "":
+            continue
+        conns_root = _normalize_terminal_conns_root(conns_value).upper()
+        if conns_root in _AB_SHIELD_A_ROOTS:
+            a_values.append(conns_value)
+        elif conns_root in _AB_SHIELD_B_ROOTS:
+            b_values.append(conns_value)
+        elif conns_root in _AB_SHIELD_SHIELD_ROOTS:
+            shield_values.append(conns_value)
+        else:
+            extra_values.append(conns_value)
+
+    return a_values, b_values, shield_values, extra_values
+
+
+def _is_ab_shield_candidate_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group contains any A/B/shield values."""
+    if group_rows.empty or "Conns." not in group_rows.columns:
+        return False
+
+    terminal_type = (
+        _stringify_cell(group_rows["Terminal Type"].iloc[0])
+        if "Terminal Type" in group_rows.columns and not group_rows.empty
+        else "NORMAL"
+    ) or "NORMAL"
+    terminal_name = (
+        _stringify_cell(group_rows["Name"].iloc[0])
+        if "Name" in group_rows.columns and not group_rows.empty
+        else ""
+    )
+    if terminal_type != "NORMAL" or _is_x8_terminal_name(terminal_name):
+        return False
+
+    a_values, b_values, shield_values, _ = _ab_shield_group_parts(group_rows)
+    return bool(a_values or b_values or shield_values)
+
+
+def _is_ab_shield_group(group_rows: pd.DataFrame) -> bool:
+    """Return whether a normal group should be packed as A/B/shield in one TMB row."""
+    if not _is_ab_shield_candidate_group(group_rows):
+        return False
+
+    a_values, b_values, shield_values, extra_values = _ab_shield_group_parts(group_rows)
+    nonblank_count = sum(
+        1
+        for conns_value in group_rows["Conns."].apply(_stringify_cell).tolist()
+        if conns_value != ""
+    )
+    return bool(
+        nonblank_count == 3
+        and len(a_values) == 1
+        and len(b_values) == 1
+        and len(shield_values) == 1
+        and not extra_values
+    )
+
+
+def _validate_ab_shield_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for A/B/shield candidate groups that are not exact templates."""
+    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+        return []
+
+    warnings: list[str] = []
+    group_columns = ["Group Sorting", "Name"] if "Group Sorting" in terminal_df.columns else ["Name"]
+    for group_key, group_df in terminal_df.groupby(group_columns, sort=False, dropna=False):
+        name_value = group_key[-1] if isinstance(group_key, tuple) else group_key
+        terminal_name = _stringify_cell(name_value)
+        if _is_ab_shield_candidate_group(group_df) and not _is_ab_shield_group(group_df):
+            warnings.append(f"{terminal_name} neatitinka A/B/SH TMB šablono, pasitikrinti schemas.")
+
+    return warnings
+
+
+def _build_ab_shield_terminal_blocks(
+    *,
+    terminal_name: str,
+    group_sorting_value: str,
+    terminal_type: str,
+    conns_values: list[str],
+    source_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Build a single A/B/shield TMB row."""
+    a_value = ""
+    b_value = ""
+    shield_value = ""
+    for conns_value in conns_values:
+        conns_root = _normalize_terminal_conns_root(conns_value).upper()
+        if not a_value and conns_root in _AB_SHIELD_A_ROOTS:
+            a_value = conns_value
+        elif not b_value and conns_root in _AB_SHIELD_B_ROOTS:
+            b_value = conns_value
+        elif not shield_value and conns_root in _AB_SHIELD_SHIELD_ROOTS:
+            shield_value = "SH"
+
+    return [
+        {
+            "terminal_name": terminal_name,
+            "group_sorting": group_sorting_value,
+            "terminal_type": terminal_type,
+            "chunk": [a_value, b_value, shield_value],
+            "end_row_index": source_indices[min(2, len(source_indices) - 1)],
+        }
+    ]
+
+
 def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
     """Build terminal blocks from the prepared flat terminal stream using the TMB chunking rules."""
     if terminal_df.empty or "Name" not in terminal_df.columns:
@@ -991,6 +1112,18 @@ def _build_terminal_blocks(terminal_df: pd.DataFrame) -> list[dict[str, Any]]:
         if _is_normal_numeric_position_group(group_rows):
             tmb_rows.extend(
                 _build_normal_numeric_position_terminal_blocks(
+                    terminal_name=terminal_name,
+                    group_sorting_value=group_sorting_value,
+                    terminal_type=terminal_type,
+                    conns_values=conns_values,
+                    source_indices=source_indices,
+                )
+            )
+            continue
+
+        if _is_ab_shield_group(group_rows):
+            tmb_rows.extend(
+                _build_ab_shield_terminal_blocks(
                     terminal_name=terminal_name,
                     group_sorting_value=group_sorting_value,
                     terminal_type=terminal_type,
@@ -2173,6 +2306,11 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     normal_terminal_df, reordered_group_counts, reordered_groups_preview, normal_groups_preview, special_x6311_groups_preview = _reorder_terminal_conns_by_name(normal_terminal_df)
 
     terminal_df = _reintegrate_terminal_pe_rows(normal_terminal_df, expanded_pe_terminal_df)
+    ab_shield_warnings = _validate_ab_shield_tmb_template(terminal_df)
+    user_info_messages.extend(ab_shield_warnings)
+    developer_debug_messages.extend(
+        f"terminal a/b/sh template warning: {warning}" for warning in ab_shield_warnings
+    )
 
     user_info_messages.append("terminal input processed successfully")
     user_info_messages.append(f"terminal rows exported: {len(terminal_df)}")
