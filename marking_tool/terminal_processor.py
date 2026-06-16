@@ -196,31 +196,35 @@ def _is_x8_terminal_name(name: Any) -> bool:
     return bool(_TERMINAL_X8_NAME_PATTERN.fullmatch(_stringify_cell(name)))
 
 
-def _validate_x8_tmb_template(terminal_df: pd.DataFrame) -> list[str]:
-    """Return user warnings for X**8 terminal groups that do not match the expected TMB template."""
-    if terminal_df.empty or "Name" not in terminal_df.columns or "Conns." not in terminal_df.columns:
+def _validate_x8_tmb_template(terminal_tmb_df: pd.DataFrame) -> list[str]:
+    """Return user warnings for final X**8 TMB rows that do not match the expected template."""
+    required_columns = {"Terminal Name", "Top", "Middle", "Bottom"}
+    if terminal_tmb_df.empty or not required_columns.issubset(terminal_tmb_df.columns):
         return []
 
     warnings: list[str] = []
-    required_numeric_values = {"1", "2", "3", "4", "5", "6"}
-    allowed_roots = {*required_numeric_values, "230VN"}
-    for name_value, name_group_df in terminal_df.groupby("Name", sort=False, dropna=False):
-        terminal_name = _stringify_cell(name_value)
+    accepted_patterns = [
+        [("1", "2", "3"), ("4", "5", "230VN")],
+        [("1", "2", "3"), ("4", "5", "6"), ("", "", "230VN")],
+    ]
+    for terminal_name_value, terminal_name_tmb_df in terminal_tmb_df.groupby("Terminal Name", sort=False, dropna=False):
+        terminal_name = _stringify_cell(terminal_name_value)
         if not _is_x8_terminal_name(terminal_name):
             continue
 
-        roots = [
-            _normalize_terminal_conns_root(conns_value)
-            for conns_value in name_group_df["Conns."].apply(_stringify_cell).tolist()
-            if _stringify_cell(conns_value) != ""
+        normalized_rows = [
+            tuple(
+                _normalize_terminal_conns_root(cell_value) if cell_value else ""
+                for cell_value in (
+                    _stringify_cell(row["Top"]),
+                    _stringify_cell(row["Middle"]),
+                    _stringify_cell(row["Bottom"]),
+                )
+            )
+            for _, row in terminal_name_tmb_df.iterrows()
         ]
-        numeric_roots = [root for root in roots if _TERMINAL_NUMERIC_CONN_PATTERN.fullmatch(root)]
-        has_duplicate_numeric = len(numeric_roots) != len(set(numeric_roots))
-        missing_required_numeric = required_numeric_values - set(numeric_roots)
-        missing_230vn = "230VN" not in roots
-        has_extra_values = any(root not in allowed_roots for root in roots)
 
-        if has_duplicate_numeric or missing_required_numeric or missing_230vn or has_extra_values:
+        if normalized_rows not in accepted_patterns:
             warnings.append(f"{terminal_name} neatitinka X**8 TMB šablono, pasitikrinti schemas.")
 
     return warnings
@@ -2131,12 +2135,6 @@ def parse_terminal_input(file_bytes: bytes) -> tuple[pd.DataFrame, list[str], li
     removed_xpe = int(xpe_mask.sum())
     terminal_df = terminal_df[~xpe_mask].copy().reset_index(drop=True)
 
-    x8_template_warnings = _validate_x8_tmb_template(terminal_df)
-    user_info_messages.extend(x8_template_warnings)
-    developer_debug_messages.extend(
-        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
-    )
-
     normal_terminal_df, pe_terminal_contacts_df, pe_stats = _split_terminal_pe_rows(terminal_df)
     expanded_pe_terminal_df, expanded_pe_stats = _expand_terminal_pe_rows(pe_terminal_contacts_df)
 
@@ -2334,6 +2332,13 @@ def process_terminal_result(file_bytes: bytes, file_name: str) -> dict[str, Any]
         terminal_debug_messages.extend(terminal_pe_tmb_debug)
         developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
         terminal_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+        x8_template_warnings = _validate_x8_tmb_template(terminal_tmb_df)
+        user_info_messages.extend(x8_template_warnings)
+        x8_template_debug_messages = [
+            f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+        ]
+        developer_debug_messages.extend(x8_template_debug_messages)
+        terminal_debug_messages.extend(x8_template_debug_messages)
         terminal_tmb_preview_rows = (
             terminal_tmb_df.head(5).to_dict(orient="records")
             if terminal_tmb_df is not None and not terminal_tmb_df.empty
@@ -2423,6 +2428,13 @@ def build_placeholder_results(
                     terminal_debug_messages.extend(terminal_pe_tmb_debug)
                     developer_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
                     terminal_debug_messages.append(f"terminal tmb: generated rows -> {len(terminal_tmb_df)}")
+                    x8_template_warnings = _validate_x8_tmb_template(terminal_tmb_df)
+                    user_info_messages.extend(x8_template_warnings)
+                    x8_template_debug_messages = [
+                        f"terminal x8 template warning: {warning}" for warning in x8_template_warnings
+                    ]
+                    developer_debug_messages.extend(x8_template_debug_messages)
+                    terminal_debug_messages.extend(x8_template_debug_messages)
                     terminal_tmb_preview_rows = (
                         terminal_tmb_df.head(5).to_dict(orient="records")
                         if terminal_tmb_df is not None and not terminal_tmb_df.empty
