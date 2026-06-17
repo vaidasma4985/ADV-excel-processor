@@ -6,10 +6,8 @@ from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .component_marking import process_component_result
-from .terminal_marking import (
-    export_placeholder_workbook,
-    process_terminal_result,
-)
+from .render import export_placeholder_workbook
+from .terminal_marking import process_terminal_result
 from .wago_exports import (
     build_fuses_2009_wssl_bytes,
     build_fuses_2009_wssl_debug_messages,
