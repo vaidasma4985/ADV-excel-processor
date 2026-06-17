@@ -889,7 +889,7 @@ def _build_component_debug_workbook(
     """Reuse the shared workbook exporter for component debug support sheets."""
     if not debug_sheets:
         return None
-    from .terminal_processor import export_placeholder_workbook
+    from ..render import export_placeholder_workbook
 
     return export_placeholder_workbook(debug_sheets)
 

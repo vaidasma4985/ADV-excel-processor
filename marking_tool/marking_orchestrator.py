@@ -5,17 +5,10 @@ import re
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from .component_processor import process_component_result
-from .terminal_processor import (
-    export_placeholder_workbook,
-    process_terminal_result,
-)
-from .wago_processor import (
-    build_fuse_strip_wscx_bytes,
-    build_terminal_strip_wscx_bytes,
-)
-from .wago_tmb_processor import build_terminal_tmb_wssl_bytes, build_wago_tmb_wssl_filename
-from .wago_wssl_processor import (
+from .component_marking import process_component_result
+from .render import export_placeholder_workbook
+from .terminal_marking import process_terminal_result
+from .wago_exports import (
     build_fuses_2009_wssl_bytes,
     build_fuses_2009_wssl_debug_messages,
     build_fuses_2009_wssl_filename,
@@ -25,11 +18,13 @@ from .wago_wssl_processor import (
     build_relay_strip_wssl_bytes,
     build_relay_strip_wssl_debug_messages,
     build_relay_strip_wssl_filename,
+    build_terminal_tmb_wssl_bytes,
     build_terminal_strip_wssl_bytes,
     build_terminal_strip_wssl_debug_messages,
     build_terminal_strip_wssl_filename,
+    build_wago_tmb_wssl_filename,
 )
-from .wire_processor import build_wire_placeholder_result
+from .wire_cable_marking import build_wire_placeholder_result
 
 
 _SOURCE_LABELS = {
@@ -82,12 +77,6 @@ def build_component_relay_xmlil_filename(project_number: str | None) -> str:
     if not project_number:
         return "1.xmlil"
     return f"{project_number}.xmlil"
-
-
-def build_wago_markings_filename(project_number: str | None, marking_type: str) -> str:
-    """Build one WAGO SmartScript filename from project and marking type."""
-    project_prefix = project_number or "1"
-    return f"{project_prefix}_{marking_type}.wscx"
 
 
 def build_wago_markings_zip_filename(project_number: str | None) -> str:
@@ -165,10 +154,8 @@ def build_placeholder_results(
         "component_relays": None,
     }
     wago_outputs: dict[str, dict[str, bytes | str] | None] = {
-        "terminal_markings": None,
         "terminal_strip_wssl": None,
         "terminal_tmb": None,
-        "fuse_markings": None,
         "fuse_strip_wssl": None,
         "fuses_2009_wssl": None,
         "relay_strip_wssl": None,
@@ -194,16 +181,6 @@ def build_placeholder_results(
             developer_debug_messages.extend(terminal_result["developer_debug_messages"])
             debug_workbooks["terminal"] = terminal_result["debug_workbook"]
             wago_strip_rows = terminal_result.get("wago_strip_rows") or []
-            wago_outputs["terminal_markings"] = {
-                "bytes": build_terminal_strip_wscx_bytes(wago_strip_rows),
-                "filename": build_wago_markings_filename(resolved_project_number, "Terminal Strip"),
-            }
-            developer_debug_messages.append("WAGO WSCX generated")
-            developer_debug_messages.append("Terminal Strip WSCX profile used")
-            if wago_strip_rows:
-                developer_debug_messages.append(f"WAGO WSCX terminal strip rows count = {len(wago_strip_rows)}")
-            else:
-                developer_debug_messages.append("WAGO WSCX placeholder test rows count = 2")
             wago_outputs["terminal_strip_wssl"] = {
                 "bytes": build_terminal_strip_wssl_bytes(wago_strip_rows),
                 "filename": build_terminal_strip_wssl_filename(resolved_project_number),
@@ -239,14 +216,9 @@ def build_placeholder_results(
                 xmlil_outputs["component_relays"] = {
                     "bytes": component_result["relay_xmlil_bytes"],
                     "filename": build_component_relay_xmlil_filename(resolved_project_number),
-                }
+            }
             wago_fuse_strip_rows = component_result.get("wago_fuse_strip_rows") or []
             if wago_fuse_strip_rows:
-                wago_outputs["fuse_markings"] = {
-                    "bytes": build_fuse_strip_wscx_bytes(wago_fuse_strip_rows),
-                    "filename": build_wago_markings_filename(resolved_project_number, "Fuse Strip"),
-                }
-                developer_debug_messages.append("Fuse Strip WSCX profile used")
                 wago_outputs["fuse_strip_wssl"] = {
                     "bytes": build_fuse_strip_wssl_bytes(wago_fuse_strip_rows),
                     "filename": build_fuse_strip_wssl_filename(resolved_project_number),

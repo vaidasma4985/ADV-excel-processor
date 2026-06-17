@@ -6,7 +6,7 @@ from typing import Any
 
 import streamlit as st
 
-from marking_tool.processor import (
+from marking_tool.marking_orchestrator import (
     build_marking_output_filename,
     build_placeholder_results,
     export_placeholder_workbook,
@@ -244,7 +244,7 @@ def render_marking_tool() -> None:
                 key="marking_component_relay_xmlil_download",
             )
         wago_outputs = results.get("wago_outputs") or {}
-        wago_markings_download = wago_outputs.get("markings_zip") or wago_outputs.get("terminal_markings")
+        wago_markings_download = wago_outputs.get("markings_zip")
         if wago_markings_download:
             wago_filename = str(wago_markings_download["filename"])
             st.download_button(
