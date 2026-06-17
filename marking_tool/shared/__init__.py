@@ -1,4 +1,4 @@
-from .shared.natural_sort import (
+from .natural_sort import (
     natural_marking_name_sort_key,
     natural_marking_suffix_sort_key,
 )

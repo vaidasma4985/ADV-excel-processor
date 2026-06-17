@@ -7,7 +7,7 @@ from typing import Any
 import uuid
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from marking_tool.wago_wssl_processor import ui_font_to_wssl_size
+from marking_tool.wago_exports.shared_wssl import ui_font_to_wssl_size
 
 
 # SmartScript UI font size -> WSSL fontSize/textSize conversion
