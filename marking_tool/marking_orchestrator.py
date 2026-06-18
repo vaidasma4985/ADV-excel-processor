@@ -239,9 +239,10 @@ def build_placeholder_results(
                 }
                 developer_debug_messages.extend(build_fuses_2009_wssl_debug_messages(wago_fuses_2009_rows))
         else:
-            wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label)
+            wire_sheet, wire_user_info = build_wire_placeholder_result(file_name, source_label, file_bytes)
             sheets[sheet_name] = wire_sheet
             user_info_messages.extend(wire_user_info)
+            developer_debug_messages.extend(wire_sheet.get("developer_debug_messages", []))
 
         developer_debug_messages.append(f"{source_key}: uploaded `{file_name or 'uploaded_file'}` -> sheet `{sheet_name}`")
 
