@@ -27,10 +27,10 @@ _WIRE_POWER_WIRES_BLOCK_TITLE = "POWER WIRES"
 _WIRE_POWER_WIRES_BLOCK_SUBTITLE = "Phoenix UC-WMT (15x4)"
 _COMPONENT_MARKING_HEADER_BLOCK_RANGES = ("A1:B2", "E1:F2", "J1:L2", "O1:O2", "R1:R2")
 _TERMINAL_MARKING_HEADER_BLOCK_RANGES = ("A1:D2", "G1:H2")
-_WIRE_MARKING_HEADER_BLOCK_RANGES = ("A1:E2", "H1:L2")
+_WIRE_MARKING_HEADER_BLOCK_RANGES = ("A1:A2", "C1:C2")
 _COMPONENT_MARKING_HEADER_MERGE_RANGES = ("A1:B1", "A2:B2", "E1:F1", "E2:F2", "J1:L1", "J2:L2")
 _TERMINAL_MARKING_HEADER_MERGE_RANGES = ("A1:D1", "A2:D2", "G1:H1", "G2:H2")
-_WIRE_MARKING_HEADER_MERGE_RANGES = ("A1:E1", "A2:E2", "H1:L1", "H2:L2")
+_WIRE_MARKING_HEADER_MERGE_RANGES: tuple[str, ...] = ()
 
 
 def _stringify_cell(value: Any) -> str:
@@ -385,7 +385,7 @@ def _write_wire_markings_sheet(
         for column_name in export_df.columns:
             export_df[column_name] = export_df[column_name].apply(_make_excel_text_safe)
 
-    power_wires_start_col = len(cables_export_df.columns) + 2
+    power_wires_start_col = len(cables_export_df.columns) + 1
     data_start_row = _MARKINGS_BLOCK_HEADER_ROW_COUNT
     worksheet = writer.book.create_sheet(title=sheet_name)
     writer.sheets[sheet_name] = worksheet
@@ -408,6 +408,7 @@ def _write_wire_markings_sheet(
     cables_export_df.to_excel(
         writer,
         sheet_name=sheet_name,
+        header=False,
         index=False,
         startrow=data_start_row,
         startcol=0,
@@ -415,10 +416,93 @@ def _write_wire_markings_sheet(
     power_wires_export_df.to_excel(
         writer,
         sheet_name=sheet_name,
+        header=False,
         index=False,
         startrow=data_start_row,
         startcol=power_wires_start_col,
     )
+
+    for row in worksheet.iter_rows():
+        for cell in row:
+            if cell.__class__.__name__ == "MergedCell":
+                continue
+            cell.number_format = "@"
+            if cell.value is None:
+                cell.value = ""
+            else:
+                cell.value = str(cell.value)
+
+
+def _write_wire_marking_blocks_sheet(
+    writer: Any,
+    sheet_name: str,
+    cable_blocks: list[dict[str, Any]],
+    power_wire_blocks: list[dict[str, Any]],
+) -> None:
+    """Write one Cable/Power Wire pair per cabinet from left to right."""
+    from openpyxl.utils import get_column_letter
+
+    data_start_row = _MARKINGS_BLOCK_HEADER_ROW_COUNT
+    worksheet = writer.book.create_sheet(title=sheet_name)
+    writer.sheets[sheet_name] = worksheet
+
+    for block_index, cable_block in enumerate(cable_blocks):
+        cable_start_col = block_index * 4
+        power_wires_start_col = cable_start_col + 2
+        power_wire_block = (
+            power_wire_blocks[block_index]
+            if block_index < len(power_wire_blocks)
+            else {}
+        )
+        cable_export_df = cable_block.get("df", pd.DataFrame()).copy()
+        power_wires_export_df = power_wire_block.get("df", pd.DataFrame()).copy()
+        for export_df in (cable_export_df, power_wires_export_df):
+            for column_name in export_df.columns:
+                export_df[column_name] = export_df[column_name].apply(_make_excel_text_safe)
+
+        _write_markings_block_header(
+            worksheet,
+            startrow=0,
+            startcol=cable_start_col,
+            block_width=1,
+            title=str(cable_block.get("title") or _WIRE_CABLES_BLOCK_TITLE),
+            subtitle=str(cable_block.get("subtitle") or _WIRE_CABLES_BLOCK_SUBTITLE),
+        )
+        _write_markings_block_header(
+            worksheet,
+            startrow=0,
+            startcol=power_wires_start_col,
+            block_width=1,
+            title=str(power_wire_block.get("title") or _WIRE_POWER_WIRES_BLOCK_TITLE),
+            subtitle=str(power_wire_block.get("subtitle") or _WIRE_POWER_WIRES_BLOCK_SUBTITLE),
+        )
+        cable_export_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            header=False,
+            index=False,
+            startrow=data_start_row,
+            startcol=cable_start_col,
+        )
+        power_wires_export_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            header=False,
+            index=False,
+            startrow=data_start_row,
+            startcol=power_wires_start_col,
+        )
+
+        for column_index in (cable_start_col + 1, power_wires_start_col + 1):
+            worksheet.column_dimensions[get_column_letter(column_index)].width = 25
+            _apply_center_alignment_to_range(
+                worksheet,
+                f"{get_column_letter(column_index)}1:{get_column_letter(column_index)}2",
+            )
+            _apply_outer_thin_border_to_range(
+                worksheet,
+                f"{get_column_letter(column_index)}1:{get_column_letter(column_index)}2",
+            )
 
     for row in worksheet.iter_rows():
         for cell in row:
@@ -436,7 +520,12 @@ def _apply_workbook_block_header_formatting(workbook: Any) -> None:
     for worksheet in workbook.worksheets:
         for column_index in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=1, column=column_index)
-            if _stringify_cell(cell.value) not in _BLOCK_HEADER_TITLES:
+            cell_text = _stringify_cell(cell.value)
+            if (
+                cell_text not in _BLOCK_HEADER_TITLES
+                and not cell_text.endswith(" - CABLES")
+                and not cell_text.endswith(" - POWER WIRES")
+            ):
                 continue
             _set_excel_font(cell, name="Arial", bold=True)
 
@@ -540,7 +629,7 @@ def _is_final_wire_marking_sheet(worksheet: Any) -> bool:
     """Return whether one worksheet is the header-formatted Cable Marking layout."""
     return (
         _stringify_cell(worksheet["A1"].value) == _WIRE_CABLES_BLOCK_TITLE
-        and _stringify_cell(worksheet["H1"].value) == _WIRE_POWER_WIRES_BLOCK_TITLE
+        and _stringify_cell(worksheet["C1"].value) == _WIRE_POWER_WIRES_BLOCK_TITLE
     )
 
 
@@ -572,6 +661,8 @@ def _apply_terminal_marking_header_polish(worksheet: Any) -> None:
 
 def _apply_wire_marking_header_polish(worksheet: Any) -> None:
     """Apply fixed final Cable Marking header alignment and borders."""
+    worksheet.column_dimensions["A"].width = 25
+    worksheet.column_dimensions["C"].width = 25
     _merge_worksheet_ranges_if_needed(worksheet, _WIRE_MARKING_HEADER_MERGE_RANGES)
     for cell_range in _WIRE_MARKING_HEADER_BLOCK_RANGES:
         _apply_center_alignment_to_range(worksheet, cell_range)
@@ -654,12 +745,20 @@ def export_placeholder_workbook(sheets: dict[str, Any]) -> bytes:
                 isinstance(sheet_content, dict)
                 and sheet_content.get("layout") == "wire_markings"
             ):
-                _write_wire_markings_sheet(
-                    writer,
-                    sheet_name,
-                    sheet_content.get("cables_df", pd.DataFrame()),
-                    sheet_content.get("power_wires_df", pd.DataFrame()),
-                )
+                if sheet_content.get("cable_blocks") is not None:
+                    _write_wire_marking_blocks_sheet(
+                        writer,
+                        sheet_name,
+                        sheet_content.get("cable_blocks", []),
+                        sheet_content.get("power_wire_blocks", []),
+                    )
+                else:
+                    _write_wire_markings_sheet(
+                        writer,
+                        sheet_name,
+                        sheet_content.get("cables_df", pd.DataFrame()),
+                        sheet_content.get("power_wires_df", pd.DataFrame()),
+                    )
                 continue
 
             export_df = sheet_content.copy()
