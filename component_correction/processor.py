@@ -537,13 +537,14 @@ def _load_terminal_list_pe_requirements(terminal_list_bytes: bytes | None) -> Di
     if conns_col is None or gs_col is None or name_col is None:
         return {}
 
-    conns = term_df[conns_col].astype(str).str.strip()
+    conns = term_df[conns_col].apply(lambda value: "" if pd.isna(value) else str(value).strip())
     names = term_df[name_col].astype(str).str.strip()
     gs_numeric = pd.to_numeric(term_df[gs_col], errors="coerce")
     gs_ok = gs_numeric.notna()
     pe_gs_ok = (gs_numeric % 10) == 5
-    name_ok = names.str.match(r"^-X\d+\b")
-    pe_mask = conns.eq("⏚") & name_ok & gs_ok & pe_gs_ok
+    name_ok = names.str.match(r"^-X", na=False)
+    pe_conns_values = {"\u23da", "PE", "\u00e2\u008f\u009a", "âš", "â"}
+    pe_mask = conns.isin(pe_conns_values) & name_ok & gs_ok & pe_gs_ok
     if not pe_mask.any():
         return {}
 
@@ -888,6 +889,8 @@ def process_excel(
         .astype(int)
     )
     required_pe_qty_by_gs = {gs: qty for gs, qty in required_pe_qty_by_gs.items() if gs in real_pe_gs}
+    terminal_pe_real_gs_preview = sorted(real_pe_gs)[:20]
+    terminal_pe_requirements_preview = sorted(required_pe_qty_by_gs.items())[:20]
 
     def process_relays(relay_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if relay_data.empty:
@@ -1629,6 +1632,9 @@ def process_excel(
         "terminal_shared_tmb_count_matched_groups": shared_tmb_count_matched_groups,
         "terminal_shared_tmb_count_overrides_applied": shared_tmb_count_overrides_applied,
         "terminal_shared_tmb_count_first_matched_keys": " | ".join(shared_tmb_count_match_previews),
+        "terminal_pe_requirements_map_size": len(required_pe_qty_by_gs),
+        "terminal_pe_requirements_preview": terminal_pe_requirements_preview,
+        "terminal_pe_real_gs_preview": terminal_pe_real_gs_preview,
         "terminal_pe_after_expanded_block_gs_overrides_applied": terminal_pe_after_expanded_block_gs_overrides_applied,
         "terminal_pe_after_expanded_block_gs_override_previews": " | ".join(
             terminal_pe_after_expanded_block_gs_override_previews[:10]
