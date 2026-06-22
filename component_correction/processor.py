@@ -389,6 +389,58 @@ def _is_pe_terminal_row(df: pd.DataFrame) -> pd.Series:
     return pe_type | pe_name
 
 
+def _replace_pe_name_gs_prefix(name: Any, new_gs: int) -> str:
+    return re.sub(r"^\+\d+(-PE\d+\b)", rf"+{new_gs}\1", str(name), count=1, flags=re.IGNORECASE)
+
+
+def _apply_pe_gs_after_expanded_terminal_blocks(term_data: pd.DataFrame) -> tuple[pd.DataFrame, int, list[str]]:
+    if term_data.empty or "_gs_orig" not in term_data.columns or "Group Sorting" not in term_data.columns:
+        return term_data, 0, []
+
+    normal_terminal_mask = term_data["Type"].astype(str).isin({"WAGO.2002-3201_ADV", "WAGO.2002-3201_ADV_L"})
+    pe_mask = _is_pe_terminal_row(term_data)
+    if not normal_terminal_mask.any() or not pe_mask.any():
+        return term_data, 0, []
+
+    gs_orig_numeric = pd.to_numeric(term_data["_gs_orig"], errors="coerce")
+    gs_current_numeric = pd.to_numeric(term_data["Group Sorting"], errors="coerce")
+    existing_gs = set(gs_current_numeric.dropna().astype(int).tolist())
+    overrides_applied = 0
+    previews: list[str] = []
+
+    pe_work = term_data.loc[pe_mask & gs_orig_numeric.notna()].copy()
+    if pe_work.empty:
+        return term_data, 0, []
+
+    for pe_original_gs, pe_group in pe_work.groupby(gs_orig_numeric.loc[pe_work.index].astype(int), sort=True):
+        base_gs = (int(pe_original_gs) // 10) * 10
+        normal_block_mask = normal_terminal_mask & gs_orig_numeric.eq(base_gs) & gs_current_numeric.notna()
+        if not normal_block_mask.any():
+            continue
+
+        max_normal_current_gs = int(gs_current_numeric.loc[normal_block_mask].max())
+        pe_current_values = gs_current_numeric.loc[pe_group.index].dropna()
+        if pe_current_values.empty:
+            continue
+
+        current_pe_gs = int(pe_current_values.iloc[0])
+        if max_normal_current_gs < current_pe_gs:
+            continue
+
+        existing_gs.discard(current_pe_gs)
+        new_pe_gs = _next_free_gs(existing_gs, max_normal_current_gs + 1)
+        pe_indices = pe_group.index.to_list()
+        term_data.loc[pe_indices, "Group Sorting"] = new_pe_gs
+        for idx in pe_indices:
+            term_data.at[idx, "Name"] = _replace_pe_name_gs_prefix(term_data.at[idx, "Name"], new_pe_gs)
+
+        overrides_applied += 1
+        if len(previews) < 10:
+            previews.append(f"{int(pe_original_gs)}:PE {current_pe_gs}->{new_pe_gs}")
+
+    return term_data, overrides_applied, previews
+
+
 def _excel_safe(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -771,6 +823,8 @@ def process_excel(
     shared_tmb_count_overrides_applied = 0
     shared_tmb_count_matched_groups = 0
     shared_tmb_count_match_previews: list[str] = []
+    terminal_pe_after_expanded_block_gs_overrides_applied = 0
+    terminal_pe_after_expanded_block_gs_override_previews: list[str] = []
 
     terminal_like = df["Name"].astype(str).str.match(r"^-X\d+\b", na=False)
     unsupported_terminal_type = terminal_like & ~df["Type"].astype(str).isin(_TERMINAL_TYPES)
@@ -1127,6 +1181,8 @@ def process_excel(
         nonlocal shared_tmb_count_matched_groups
         nonlocal shared_tmb_count_overrides_applied
         nonlocal shared_tmb_count_match_previews
+        nonlocal terminal_pe_after_expanded_block_gs_overrides_applied
+        nonlocal terminal_pe_after_expanded_block_gs_override_previews
         removed_local: List[pd.DataFrame] = []
         if term_data.empty:
             empty_removed = pd.DataFrame(columns=list(term_data.columns) + ["Removed Reason"])
@@ -1335,6 +1391,14 @@ def process_excel(
                         "Removed: terminal shared TMB count reduction",
                     )
                     term_data = term_data.drop(index=removed_idxs).copy()
+
+        (
+            term_data,
+            pe_after_block_overrides_applied,
+            pe_after_block_override_previews,
+        ) = _apply_pe_gs_after_expanded_terminal_blocks(term_data)
+        terminal_pe_after_expanded_block_gs_overrides_applied += pe_after_block_overrides_applied
+        terminal_pe_after_expanded_block_gs_override_previews.extend(pe_after_block_override_previews)
 
         # Accessories
         term_data["Accessories"] = term_data["Accessories"].fillna("")
@@ -1605,6 +1669,10 @@ def process_excel(
         "terminal_shared_tmb_count_matched_groups": shared_tmb_count_matched_groups,
         "terminal_shared_tmb_count_overrides_applied": shared_tmb_count_overrides_applied,
         "terminal_shared_tmb_count_first_matched_keys": " | ".join(shared_tmb_count_match_previews),
+        "terminal_pe_after_expanded_block_gs_overrides_applied": terminal_pe_after_expanded_block_gs_overrides_applied,
+        "terminal_pe_after_expanded_block_gs_override_previews": " | ".join(
+            terminal_pe_after_expanded_block_gs_override_previews[:10]
+        ),
     }
 
     removed_df = _excel_safe(removed_df)
