@@ -1317,6 +1317,10 @@ def process_excel(
 
             shared_tmb_count_matched_groups += len(key_to_indices)
             for key, idxs in key_to_indices.items():
+                idxs = [idx for idx in idxs if idx in term_data.index]
+                if not idxs:
+                    continue
+
                 desired_qty = int(tmb_count_map[key])
                 if desired_qty <= 0:
                     continue
@@ -1346,7 +1350,7 @@ def process_excel(
                     term_data.at[idx, "Quantity"] = 1
                     term_data.at[idx, "Designation"] = "" if offset == 0 else str(offset)
 
-                removed_idxs = idxs[desired_qty:]
+                removed_idxs = [idx for idx in idxs[desired_qty:] if idx in term_data.index]
                 if removed_idxs:
                     _append_removed(
                         removed_local,
