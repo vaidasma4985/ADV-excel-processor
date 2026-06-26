@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import re
+import traceback
 from io import BytesIO
 from pathlib import Path
 
@@ -683,6 +684,8 @@ def render_component_correction() -> None:
             _run_final_processing(component_bytes, terminal_bytes)
         except Exception as e:
             st.error(f"Įvyko netikėta klaida apdorojant failą: {e}")
+            st.exception(e)
+            st.code(traceback.format_exc(), language="python")
 
     if st.session_state.get("workflow_state") == "debug":
         st.subheader("Terminal corrections")
